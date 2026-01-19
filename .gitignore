@@ -17,3 +17,7 @@ checkpoints/
 *.ckpt
 *.safetensors
 *.bin
+# keep data folder ignored, but include specific JSONs
+data/*
+!data/.gitkeep
+!data/*.json

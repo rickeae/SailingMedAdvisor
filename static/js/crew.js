@@ -1,5 +1,8 @@
 // Crew management functionality
 
+// Reuse the chat dropdown storage key without redefining the global constant
+const CREW_LAST_PATIENT_KEY = typeof LAST_PATIENT_KEY !== 'undefined' ? LAST_PATIENT_KEY : 'sailingmed:lastPatient';
+
 // Calculate age from birthdate
 function calculateAge(birthdate) {
     if (!birthdate) return '';
@@ -31,6 +34,11 @@ function getCrewFullName(crew) {
 
 // Load crew data for both medical and vessel/crew info
 function loadCrewData(data) {
+    if (!Array.isArray(data)) {
+        console.warn('loadCrewData expected array, got', data);
+        return;
+    }
+    console.log('[DEBUG] loadCrewData called with', data.length, 'entries');
     // Sort crew data
     const sortBy = document.getElementById('crew-sort')?.value || 'last';
     data.sort((a, b) => {
@@ -58,7 +66,17 @@ function loadCrewData(data) {
 
     // Update patient select dropdown
     const pSelect = document.getElementById('p-select');
-    if (pSelect) pSelect.innerHTML = `<option>Unnamed Crew</option>` + data.map(p=> `<option>${getCrewFullName(p)}</option>`).join('');
+    if (pSelect) {
+        const previousSelection = pSelect.value || localStorage.getItem(CREW_LAST_PATIENT_KEY) || 'Unnamed Crew';
+        pSelect.innerHTML = `<option>Unnamed Crew</option>` + data.map(p=> `<option>${getCrewFullName(p)}</option>`).join('');
+        const hasPrev = Array.from(pSelect.options).some(opt => opt.value === previousSelection);
+        pSelect.value = hasPrev ? previousSelection : 'Unnamed Crew';
+        console.log('[DEBUG] p-select options', pSelect.options.length, 'prev', previousSelection, 'hasPrev', hasPrev);
+        pSelect.onchange = (e) => {
+            try { localStorage.setItem(CREW_LAST_PATIENT_KEY, e.target.value); } catch (err) { /* ignore */ }
+            console.log('[DEBUG] p-select changed to', e.target.value);
+        };
+    }
     
     // Medical histories list
     const medicalContainer = document.getElementById('crew-medical-list');
@@ -170,6 +188,17 @@ function loadCrewData(data) {
     }
 }
 
+// Expose for other scripts that call loadData() before bundling
+window.loadCrewData = loadCrewData;
+console.log('[DEBUG] crew.js loaded and loadCrewData attached');
+
+// Debug immediately after attach
+if (typeof window.loadCrewData === 'function') {
+    console.log('[DEBUG] window.loadCrewData is available');
+} else {
+    console.error('[DEBUG] window.loadCrewData is NOT available after attach');
+}
+
 // Add new crew member
 async function addCrew() {
     const firstName = document.getElementById('cn-first').value.trim();
@@ -215,7 +244,7 @@ async function addCrew() {
         return;
     }
     
-    const data = await (await fetch('/api/data/patients')).json();
+    const data = await (await fetch('/api/data/patients', {credentials:'same-origin'})).json();
     data.push({ 
         id: Date.now().toString(), 
         firstName: firstName,
@@ -238,7 +267,7 @@ async function addCrew() {
         passportPage: '',
         history: '' 
     });
-    await fetch('/api/data/patients', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)});
+    await fetch('/api/data/patients', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data), credentials:'same-origin'});
     
     // Clear form
     document.getElementById('cn-first').value = '';
@@ -273,7 +302,7 @@ async function autoSaveProfile(id) {
     
     // Set new timer to save after 1 second of no changes
     saveTimers[id] = setTimeout(async () => {
-        const data = await (await fetch('/api/data/patients')).json();
+        const data = await (await fetch('/api/data/patients', {credentials:'same-origin'})).json();
         const patient = data.find(p => p.id === id);
         const val = (prefix) => {
             const el = document.getElementById(prefix + id);
@@ -303,7 +332,7 @@ async function autoSaveProfile(id) {
                 if (v !== undefined) patient[k] = k === 'history' ? v : (typeof v === 'string' ? v.trim() : v);
             });
             
-            await fetch('/api/data/patients', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)});
+            await fetch('/api/data/patients', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data), credentials:'same-origin'});
             console.log(`Auto-saved profile for ${patient.firstName || ''} ${patient.lastName || ''}`);
         }
     }, 1000);
@@ -313,7 +342,7 @@ async function autoSaveProfile(id) {
 async function copyEmergencyContact(targetId, sourceId) {
     if (!sourceId) return;
     
-    const data = await (await fetch('/api/data/patients')).json();
+    const data = await (await fetch('/api/data/patients', {credentials:'same-origin'})).json();
     const source = data.find(p => p.id === sourceId);
     
     if (source) {
@@ -348,11 +377,11 @@ async function uploadDocument(id, fieldName, inputElement) {
         const base64Data = e.target.result;
         
         // Save to crew member data
-        const data = await (await fetch('/api/data/patients')).json();
+        const data = await (await fetch('/api/data/patients', {credentials:'same-origin'})).json();
         const patient = data.find(p => p.id === id);
         if (patient) {
             patient[fieldName] = base64Data;
-            await fetch('/api/data/patients', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)});
+            await fetch('/api/data/patients', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data), credentials:'same-origin'});
             loadData(); // Refresh to show the new document
             alert('Document uploaded successfully!');
         }
@@ -364,11 +393,11 @@ async function uploadDocument(id, fieldName, inputElement) {
 async function deleteDocument(id, fieldName) {
     if (!confirm('Are you sure you want to delete this document?')) return;
     
-    const data = await (await fetch('/api/data/patients')).json();
+    const data = await (await fetch('/api/data/patients', {credentials:'same-origin'})).json();
     const patient = data.find(p => p.id === id);
     if (patient) {
         patient[fieldName] = '';
-        await fetch('/api/data/patients', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)});
+        await fetch('/api/data/patients', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data), credentials:'same-origin'});
         loadData();
         alert('Document deleted.');
     }
@@ -423,7 +452,7 @@ function exportCrew(id, name) {
 
 // Export all crew data
 async function exportAllCrew() {
-    const data = await (await fetch('/api/data/patients')).json();
+    const data = await (await fetch('/api/data/patients', {credentials:'same-origin'})).json();
     
     if (data.length === 0) {
         alert('No crew data to export');
@@ -458,7 +487,7 @@ async function exportAllCrew() {
 
 // Export all medical histories into one text file
 async function exportAllMedical() {
-    const data = await (await fetch('/api/data/patients')).json();
+    const data = await (await fetch('/api/data/patients', {credentials:'same-origin'})).json();
     
     if (data.length === 0) {
         alert('No crew data to export');
@@ -510,17 +539,17 @@ async function deleteCrewMember(category, id, name) {
     }
     
     // Proceed with deletion
-    const data = await (await fetch(`/api/data/${category}`)).json();
+    const data = await (await fetch(`/api/data/${category}`, {credentials:'same-origin'})).json();
     const filtered = data.filter(item => item.id !== id);
-    await fetch(`/api/data/${category}`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(filtered)});
+    await fetch(`/api/data/${category}`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(filtered), credentials:'same-origin'});
     loadData();
     alert(`${name}'s data has been permanently deleted.`);
 }
 
 // Export Crew List (CSV for border crossings)
 async function exportCrewList() {
-    const data = await (await fetch('/api/data/patients')).json();
-    const vessel = await (await fetch('/api/data/vessel')).json();
+    const data = await (await fetch('/api/data/patients', {credentials:'same-origin'})).json();
+    const vessel = await (await fetch('/api/data/vessel', {credentials:'same-origin'})).json();
     
     if (data.length === 0) {
         alert('No crew data to export');
@@ -569,7 +598,7 @@ async function exportCrewList() {
 
 // Vessel info load/save
 async function loadVesselInfo() {
-    const v = await (await fetch('/api/data/vessel')).json();
+    const v = await (await fetch('/api/data/vessel', {credentials:'same-origin'})).json();
     const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val || ''; };
     setVal('vessel-name', v.vesselName);
     setVal('vessel-registration', v.registrationNumber);
@@ -590,6 +619,6 @@ async function saveVesselInfo() {
         tonnage: document.getElementById('vessel-tonnage')?.value || '',
         crewCapacity: document.getElementById('vessel-crewcap')?.value || ''
     };
-    await fetch('/api/data/vessel', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(v)});
+    await fetch('/api/data/vessel', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(v), credentials:'same-origin'});
     alert('Vessel information saved.');
 }

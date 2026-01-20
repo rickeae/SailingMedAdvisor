@@ -43,6 +43,12 @@
         .history-arrow { font-size: 18px; width: 18px; text-align: center; }
         .crew-med-header { padding: 6px 10px !important; min-height: 38px; display: flex; align-items: center; gap: 10px; }
         #CrewMedical .crew-med-header { background: #fff; font-size: 16px; }
+        #VesselCrewInfo .panel-wrapper { font-size: 15px; }
+        #VesselCrewInfo .col-body { font-size: 15px; }
+        #VesselCrewInfo .col-body label { font-size: 13px !important; }
+        #VesselCrewInfo .col-body input,
+        #VesselCrewInfo .col-body select,
+        #VesselCrewInfo .col-body textarea { font-size: 15px; }
 
         .collapsible { background: white; border: 1px solid #ddd; margin-bottom: 4px; border-radius: 4px; }
         .col-header { padding: 8px 12px; cursor: pointer; background: #f8f9fa; display: flex; justify-content: space-between; font-weight: bold; font-size: 14px; }
@@ -95,7 +101,7 @@
         </div>
         <div id="banner-controls-crew" class="banner-controls" style="justify-content:space-between; gap:12px;">
             <div style="display:flex; gap:12px; align-items:center; flex:1;">
-                <select id="crew-sort" onchange="loadData()" style="padding:10px; font-size:13px;">
+                <select id="crew-sort" onchange="loadData()" style="padding:10px; font-size:15px;">
                 <option value="last">Sort: Last Name</option>
                 <option value="first">Sort: First Name</option>
                 <option value="birthdate-asc">Sort: Birthdate (Youngest First)</option>
@@ -155,7 +161,7 @@
                 <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Vessel Information</span>
             </div>
             <div class="col-body" style="padding:15px; background:#f8f9fa;">
-                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-bottom:12px; font-size:13px;">
+                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-bottom:12px; font-size:15px;">
                     <div>
                         <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">Vessel Name</label>
                         <input type="text" id="vessel-name" style="padding:8px; width:100%;">
@@ -198,13 +204,13 @@
                         <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Add New Crew Member</span>
                     </div>
                     <div class="col-body" style="padding:15px; background:#f8f9fa;">
-                    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:8px; margin-bottom:8px; font-size:13px;">
-                        <div><label style="font-size:11px; margin-bottom:2px;">First Name *</label><input type="text" id="cn-first" style="padding:6px; width:100%;"></div>
-                        <div><label style="font-size:11px; margin-bottom:2px;">Middle Name(s)</label><input type="text" id="cn-middle" style="padding:6px; width:100%;"></div>
-                        <div><label style="font-size:11px; margin-bottom:2px;">Last Name *</label><input type="text" id="cn-last" style="padding:6px; width:100%;"></div>
+                    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:8px; margin-bottom:8px; font-size:15px;">
+                        <div><label style="font-size:13px; margin-bottom:2px;">First Name *</label><input type="text" id="cn-first" style="padding:6px; width:100%;"></div>
+                        <div><label style="font-size:13px; margin-bottom:2px;">Middle Name(s)</label><input type="text" id="cn-middle" style="padding:6px; width:100%;"></div>
+                        <div><label style="font-size:13px; margin-bottom:2px;">Last Name *</label><input type="text" id="cn-last" style="padding:6px; width:100%;"></div>
                     </div>
-                    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:8px; margin-bottom:8px; font-size:13px;">
-                        <div><label style="font-size:11px; margin-bottom:2px;">Sex *</label><select id="cn-sex" style="padding:6px; width:100%;">
+                    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:8px; margin-bottom:8px; font-size:15px;">
+                        <div><label style="font-size:13px; margin-bottom:2px;">Sex *</label><select id="cn-sex" style="padding:6px; width:100%;">
                             <option value="">Select...</option>
                             <option value="Male">Male</option>
                             <option value="Female">Female</option>
@@ -212,34 +218,34 @@
                             <option value="Other">Other</option>
                             <option value="Prefer not to say">Prefer not to say</option>
                         </select></div>
-                        <div><label style="font-size:11px; margin-bottom:2px;">Birthdate *</label><input type="date" id="cn-birthdate" style="padding:6px; width:100%;"></div>
-                        <div><label style="font-size:11px; margin-bottom:2px;">Position *</label><select id="cn-position" style="padding:6px; width:100%;">
+                        <div><label style="font-size:13px; margin-bottom:2px;">Birthdate *</label><input type="date" id="cn-birthdate" style="padding:6px; width:100%;"></div>
+                        <div><label style="font-size:13px; margin-bottom:2px;">Position *</label><select id="cn-position" style="padding:6px; width:100%;">
                             <option value="">Select...</option>
                             <option value="Captain">Captain</option>
                             <option value="Crew">Crew</option>
                             <option value="Passenger">Passenger</option>
                         </select></div>
                     </div>
-                    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap:8px; margin-bottom:8px; font-size:13px;">
-                        <div><label style="font-size:11px; margin-bottom:2px;">Citizenship *</label><input type="text" id="cn-citizenship" list="countries" style="padding:6px; width:100%;"></div>
-                        <div><label style="font-size:11px; margin-bottom:2px;">Passport Number *</label><input type="text" id="cn-passport" style="padding:6px; width:100%;"></div>
-                        <div><label style="font-size:11px; margin-bottom:2px;">Issue Date</label><input type="date" id="cn-pass-issue" style="padding:6px; width:100%;"></div>
-                        <div><label style="font-size:11px; margin-bottom:2px;">Expiry Date</label><input type="date" id="cn-pass-expiry" style="padding:6px; width:100%;"></div>
+                    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap:8px; margin-bottom:8px; font-size:15px;">
+                        <div><label style="font-size:13px; margin-bottom:2px;">Citizenship *</label><input type="text" id="cn-citizenship" list="countries" style="padding:6px; width:100%;"></div>
+                        <div><label style="font-size:13px; margin-bottom:2px;">Passport Number *</label><input type="text" id="cn-passport" style="padding:6px; width:100%;"></div>
+                        <div><label style="font-size:13px; margin-bottom:2px;">Issue Date</label><input type="date" id="cn-pass-issue" style="padding:6px; width:100%;"></div>
+                        <div><label style="font-size:13px; margin-bottom:2px;">Expiry Date</label><input type="date" id="cn-pass-expiry" style="padding:6px; width:100%;"></div>
                     </div>
-                    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:8px; margin-bottom:8px; font-size:13px;">
-                        <div><label style="font-size:11px; margin-bottom:2px;">Cell/WhatsApp</label><input type="text" id="cn-phone" placeholder="+1234567890" style="padding:6px; width:100%;"></div>
-                        <div><label style="font-size:11px; margin-bottom:2px;">Passport Photo/PDF</label><input type="file" id="cn-passport-photo" accept="image/*,.pdf" style="padding:4px; width:100%; font-size:11px;"></div>
-                        <div><label style="font-size:11px; margin-bottom:2px;">Passport Page Photo/PDF</label><input type="file" id="cn-passport-page" accept="image/*,.pdf" style="padding:4px; width:100%; font-size:11px;"></div>
+                    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:8px; margin-bottom:8px; font-size:15px;">
+                        <div><label style="font-size:13px; margin-bottom:2px;">Cell/WhatsApp</label><input type="text" id="cn-phone" placeholder="+1234567890" style="padding:6px; width:100%;"></div>
+                        <div><label style="font-size:13px; margin-bottom:2px;">Passport Photo/PDF</label><input type="file" id="cn-passport-photo" accept="image/*,.pdf" style="padding:4px; width:100%; font-size:13px;"></div>
+                        <div><label style="font-size:13px; margin-bottom:2px;">Passport Page Photo/PDF</label><input type="file" id="cn-passport-page" accept="image/*,.pdf" style="padding:4px; width:100%; font-size:13px;"></div>
                     </div>
                     <div style="margin-bottom:8px;"><label style="font-size:12px; font-weight:bold;">Emergency Contact</label></div>
-                    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap:8px; margin-bottom:8px; font-size:13px;">
-                        <div><label style="font-size:11px; margin-bottom:2px;">Name</label><input type="text" id="cn-emerg-name" style="padding:6px; width:100%;"></div>
-                        <div><label style="font-size:11px; margin-bottom:2px;">Relationship</label><input type="text" id="cn-emerg-rel" style="padding:6px; width:100%;"></div>
-                        <div><label style="font-size:11px; margin-bottom:2px;">Phone</label><input type="text" id="cn-emerg-phone" style="padding:6px; width:100%;"></div>
-                        <div><label style="font-size:11px; margin-bottom:2px;">Email</label><input type="email" id="cn-emerg-email" style="padding:6px; width:100%;"></div>
+                    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap:8px; margin-bottom:8px; font-size:15px;">
+                        <div><label style="font-size:13px; margin-bottom:2px;">Name</label><input type="text" id="cn-emerg-name" style="padding:6px; width:100%;"></div>
+                        <div><label style="font-size:13px; margin-bottom:2px;">Relationship</label><input type="text" id="cn-emerg-rel" style="padding:6px; width:100%;"></div>
+                        <div><label style="font-size:13px; margin-bottom:2px;">Phone</label><input type="text" id="cn-emerg-phone" style="padding:6px; width:100%;"></div>
+                        <div><label style="font-size:13px; margin-bottom:2px;">Email</label><input type="email" id="cn-emerg-email" style="padding:6px; width:100%;"></div>
                     </div>
-                    <div style="margin-bottom:10px; font-size:13px;">
-                        <label style="font-size:11px; margin-bottom:2px;">Emergency Contact Notes</label>
+                    <div style="margin-bottom:10px; font-size:15px;">
+                        <label style="font-size:13px; margin-bottom:2px;">Emergency Contact Notes</label>
                         <input type="text" id="cn-emerg-notes" placeholder="Additional emergency contact information" style="padding:6px; width:100%;">
                     </div>
                     <datalist id="countries">
@@ -261,39 +267,73 @@
         <div class="panel-wrapper">
             <div class="collapsible" style="margin-bottom:12px;">
                 <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                    <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Triage Mode (Clinical Response)</span>
+                    <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">MedGemma Model Parameters</span>
                 </div>
                 <div class="col-body" style="padding:12px; background:#f8f9fa;">
-                    <label>Instruction Text Block</label>
-                    <textarea id="triage_instruction" style="height:120px;"></textarea>
-                    <div style="display:flex; gap:20px; margin-top:15px;">
-                        <div>Temp: <input type="number" id="tr_temp" step="0.1" style="width:60px;"></div>
-                        <div>Tokens: <input type="number" id="tr_tok" style="width:80px;"></div>
-                        <div>Top-P: <input type="number" id="tr_p" step="0.05" style="width:60px;"></div>
+                    <div class="collapsible" style="margin-bottom:12px;">
+                        <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                            <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Triage Mode (Clinical Response)</span>
+                        </div>
+                        <div class="col-body" style="padding:12px; background:#f8f9fa;">
+                            <label>Instruction Text Block</label>
+                            <textarea id="triage_instruction" style="height:120px;"></textarea>
+                            <div style="display:flex; gap:20px; margin-top:15px; align-items:center;">
+                                <div style="display:flex; align-items:center; gap:6px;">
+                                    <span title="Temperature: higher = more random, lower = more deterministic." style="font-weight:700;">Temp:</span>
+                                    <input type="number" id="tr_temp" step="0.1" style="width:60px;">
+                                </div>
+                                <div style="display:flex; align-items:center; gap:6px;">
+                                    <span title="Max new tokens the model can generate in the response." style="font-weight:700;">Tokens:</span>
+                                    <input type="number" id="tr_tok" style="width:80px;">
+                                </div>
+                                <div style="display:flex; align-items:center; gap:6px;">
+                                    <span title="Top-P (nucleus sampling): lower = safer, higher = more diverse." style="font-weight:700;">Top-P:</span>
+                                    <input type="number" id="tr_p" step="0.05" style="width:60px;">
+                                </div>
+                                <div style="margin-left:auto;">
+                                    <button class="btn btn-sm" style="background:var(--blue);" onclick="resetSection('triage')">Reset to Default</button>
+                                </div>
+                            </div>
+                        </div>
                     </div>
-                </div>
-            </div>
-            <div class="collapsible" style="margin-bottom:12px;">
-                <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                    <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Inquiry Mode (Research/Academic)</span>
-                </div>
-                <div class="col-body" style="padding:12px; background:#f8f9fa;">
-                    <label>Instruction Text Block</label>
-                    <textarea id="inquiry_instruction" style="height:120px;"></textarea>
-                    <div style="display:flex; gap:20px; margin-top:15px;">
-                        <div>Temp: <input type="number" id="in_temp" step="0.1" style="width:60px;"></div>
-                        <div>Tokens: <input type="number" id="in_tok" style="width:80px;"></div>
-                        <div>Top-P: <input type="number" id="in_p" step="0.05" style="width:60px;"></div>
+                    <div class="collapsible" style="margin-bottom:12px;">
+                        <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                            <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Inquiry Mode (Research/Academic)</span>
+                        </div>
+                        <div class="col-body" style="padding:12px; background:#f8f9fa;">
+                            <label>Instruction Text Block</label>
+                            <textarea id="inquiry_instruction" style="height:120px;"></textarea>
+                            <div style="display:flex; gap:20px; margin-top:15px; align-items:center;">
+                                <div style="display:flex; align-items:center; gap:6px;">
+                                    <span title="Temperature: higher = more creative, lower = more factual." style="font-weight:700;">Temp:</span>
+                                    <input type="number" id="in_temp" step="0.1" style="width:60px;">
+                                </div>
+                                <div style="display:flex; align-items:center; gap:6px;">
+                                    <span title="Max new tokens the model can generate in the response." style="font-weight:700;">Tokens:</span>
+                                    <input type="number" id="in_tok" style="width:80px;">
+                                </div>
+                                <div style="display:flex; align-items:center; gap:6px;">
+                                    <span title="Top-P (nucleus sampling): lower = safer, higher = more diverse." style="font-weight:700;">Top-P:</span>
+                                    <input type="number" id="in_p" step="0.05" style="width:60px;">
+                                </div>
+                                <div style="margin-left:auto;">
+                                    <button class="btn btn-sm" style="background:var(--blue);" onclick="resetSection('inquiry')">Reset to Default</button>
+                                </div>
+                            </div>
+                        </div>
                     </div>
-                </div>
-            </div>
-            <div class="collapsible" style="margin-bottom:12px;">
-                <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                    <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Global Mission Context</span>
-                </div>
-                <div class="col-body" style="padding:12px; background:#f8f9fa;">
-                    <textarea id="mission_context" style="height:60px;"></textarea>
-                    <button onclick="saveSettings()" class="btn" style="width:100%; background:var(--dark); margin-top:20px;">SYNC SYSTEM PARAMETERS</button>
+                    <div class="collapsible" style="margin-bottom:12px;">
+                        <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                            <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Global Mission Context</span>
+                        </div>
+                        <div class="col-body" style="padding:12px; background:#f8f9fa;">
+                            <textarea id="mission_context" style="height:60px;"></textarea>
+                            <div style="margin-top:12px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:10px;">
+                                <button class="btn btn-sm" style="background:var(--blue);" onclick="resetSection('mission')">Reset to Default</button>
+                                <button onclick="saveSettings()" class="btn" style="background:var(--dark);">SYNC SYSTEM PARAMETERS</button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
             <div class="collapsible">
@@ -308,9 +348,9 @@
     </div>
 </div>
 
-<script src="/static/js/chat.js?v=2000"></script>
-<script src="/static/js/crew.js?v=2000"></script>
-<script src="/static/js/settings.js?v=2000"></script>
-<script src="/static/js/main.js?v=2000"></script>
+<script src="/static/js/chat.js?v=2004"></script>
+<script src="/static/js/crew.js?v=2004"></script>
+<script src="/static/js/settings.js?v=2004"></script>
+<script src="/static/js/main.js?v=2004"></script>
 </body>
 </html>

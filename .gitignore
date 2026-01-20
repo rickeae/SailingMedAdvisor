@@ -1,9 +1,4 @@
-.venv/
-venv/
-__pycache__/
-*.pyc
-.ipynb_checkpoints/
-.env
+# --- Existing entries ---
 .env.*
 data/
 datasets/
@@ -17,7 +12,17 @@ checkpoints/
 *.ckpt
 *.safetensors
 *.bin
-# keep data folder ignored, but include specific JSONs
+
+# --- New FastAPI/Python Additions ---
+venv/
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+.vscode/
+.codium/
+
+# --- Data logic (Keep as is if you want JSONs in Gitea) ---
 data/*
 !data/.gitkeep
 !data/*.json

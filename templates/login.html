@@ -129,20 +129,19 @@
         <div id="error" class="error-message"></div>
         
         <form id="loginForm">
-            <div class="form-group">
+            <div class="form-group" id="user-row">
                 <label for="username">Username</label>
                 <input type="text" id="username" name="username" required placeholder="Enter your username">
             </div>
-            <div class="form-group">
+            <div class="form-group" id="pass-row">
                 <label for="password">Access Password</label>
                 <input type="password" id="password" name="password" required autofocus placeholder="Enter your password">
             </div>
-            <button type="submit" class="btn-login">Access System</button>
+            <button type="submit" class="btn-login" id="login-btn">Access System</button>
         </form>
         
         <div class="footer">
-            Default password: sailing2026<br>
-            Change via environment variable ADMIN_PASSWORD
+            Crew credentials are managed on the Settings page under "Crew Login Credentials."
         </div>
     </div>
 
@@ -151,6 +150,31 @@
         const errorDiv = document.getElementById('error');
         const passwordInput = document.getElementById('password');
         const usernameInput = document.getElementById('username');
+        const userRow = document.getElementById('user-row');
+        const passRow = document.getElementById('pass-row');
+        const loginBtn = document.getElementById('login-btn');
+        let credentialsRequired = true;
+
+        async function hydrateAuthUI() {
+            try {
+                const meta = await (await fetch('/api/auth/meta', { credentials: 'same-origin' })).json();
+                credentialsRequired = !!meta.has_credentials;
+                if (!credentialsRequired) {
+                    userRow.style.display = 'none';
+                    passRow.style.display = 'none';
+                    usernameInput.required = false;
+                    passwordInput.required = false;
+                    loginBtn.textContent = 'Enter System';
+                    errorDiv.style.display = 'block';
+                    errorDiv.style.background = '#eef9f1';
+                    errorDiv.style.color = '#1a5490';
+                    errorDiv.textContent = 'No crew login credentials are configured. Click Enter System to proceed.';
+                }
+            } catch (e) {
+                // If meta fails, fall back to showing the form
+                console.warn('Auth meta fetch failed', e);
+            }
+        }
 
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -165,6 +189,7 @@
                     headers: {
                         'Content-Type': 'application/json'
                     },
+                    credentials: 'same-origin',
                     body: JSON.stringify({ username, password })
                 });
                 
@@ -183,6 +208,8 @@
                 errorDiv.style.display = 'block';
             }
         });
+
+        hydrateAuthUI();
     </script>
 </body>
 </html>

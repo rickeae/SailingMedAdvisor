@@ -33,6 +33,7 @@ function toggleCrewSection(el) {
 
 // Tab navigation
 async function showTab(e, n) {
+    console.log('[DEBUG] showTab ->', n);
     document.querySelectorAll('.content').forEach(c=>c.style.display='none');
     document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
     document.getElementById(n).style.display='flex'; 
@@ -41,7 +42,7 @@ async function showTab(e, n) {
     if (n === 'Chat') updateUI();
     
     if(n === 'Settings') {
-        const s = await (await fetch('/api/data/settings')).json();
+        const s = await (await fetch('/api/data/settings', {credentials:'same-origin'})).json();
         Object.keys(s).forEach(k => { 
             if(document.getElementById(k)) document.getElementById(k).value = s[k]; 
         });
@@ -60,8 +61,26 @@ async function showTab(e, n) {
 
 // Load crew data only
 async function loadData() {
-    const data = await (await fetch('/api/data/patients')).json();
-    loadCrewData(data);
+    console.log('[DEBUG] loadData: start');
+    try {
+        const res = await fetch('/api/data/patients', { credentials: 'same-origin' });
+        console.log('[DEBUG] loadData: status', res.status);
+        if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+        const data = await res.json();
+        console.log('[DEBUG] loadData: raw data', data);
+        if (!Array.isArray(data)) throw new Error('Unexpected data format');
+        console.log('[DEBUG] loadData: length', data.length);
+        loadCrewData(data);
+    } catch (err) {
+        console.error('[DEBUG] Failed to load crew data', err);
+        // Gracefully clear UI to avoid JS errors
+        const pSelect = document.getElementById('p-select');
+        if (pSelect) pSelect.innerHTML = '<option>Unnamed Crew</option>';
+        const medicalContainer = document.getElementById('crew-medical-list');
+        if (medicalContainer) medicalContainer.innerHTML = `<div style="color:#666;">Unable to load crew data. ${err.message}</div>`;
+        const infoContainer = document.getElementById('crew-info-list');
+        if (infoContainer) infoContainer.innerHTML = `<div style="color:#666;">Unable to load crew data. ${err.message}</div>`;
+    }
 }
 
 function toggleBannerControls(activeTab) {
@@ -83,7 +102,7 @@ async function loadHistory() {
     if (!container) return;
     container.innerHTML = '<div style="color:#666;">Loading history...</div>';
     try {
-        let data = await (await fetch('/api/data/history')).json();
+        let data = await (await fetch('/api/data/history', {credentials:'same-origin'})).json();
         if (!data || data.length === 0) {
             container.innerHTML = '<div style="color:#666;">No history yet.</div>';
             return;
@@ -183,9 +202,9 @@ async function deleteHistory(id) {
         return;
     }
     try {
-        const data = await (await fetch('/api/data/history')).json();
+        const data = await (await fetch('/api/data/history', {credentials:'same-origin'})).json();
         const filtered = data.filter(item => item.id !== id);
-        await fetch('/api/data/history', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(filtered)});
+        await fetch('/api/data/history', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(filtered), credentials:'same-origin'});
         loadHistory();
     } catch (err) {
         alert(`Failed to delete: ${err.message}`);
@@ -225,7 +244,13 @@ function exportHistoryItem(item) {
 
 // Initialize on page load
 window.onload = () => { 
+    console.log('[DEBUG] window.onload: start');
     loadData(); 
     updateUI(); 
     toggleBannerControls('Chat');
 };
+
+// Ensure loadCrewData exists before any calls (safety for race conditions)
+if (typeof window.loadCrewData !== 'function') {
+    console.error('[DEBUG] window.loadCrewData is not defined at main.js load time.');
+}

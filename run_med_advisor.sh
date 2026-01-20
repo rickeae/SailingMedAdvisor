@@ -16,8 +16,8 @@ fi
 source venv/bin/activate
 
 # Check if required packages are installed
-python3 -c "import flask" 2>/dev/null || {
-    echo "❌ Error: Flask not installed. Run: pip install -r requirements.txt"
+python3 -c "import fastapi, uvicorn" 2>/dev/null || {
+    echo "❌ Error: FastAPI or Uvicorn not installed. Install with: pip install fastapi uvicorn[standard]"
     exit 1
 }
 
@@ -28,4 +28,4 @@ python3 -c "import flask" 2>/dev/null || {
 # Run the application
 echo "🚀 Starting server on http://127.0.0.1:5000"
 echo "=================================================="
-python3 app.py
+uvicorn app:app --host 0.0.0.0 --port 5000

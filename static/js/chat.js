@@ -5,6 +5,7 @@ let lastPrompt = '';
 let isProcessing = false;
 let currentMode = 'triage';
 const LAST_PROMPT_KEY = 'sailingmed:lastPrompt';
+const LAST_PATIENT_KEY = 'sailingmed:lastPatient';
 
 function updateUI() {
     const banner = document.getElementById('banner');
@@ -61,12 +62,14 @@ async function runChat(promptText = null) {
     try {
         const fd = new FormData();
         fd.append('message', txt);
-        fd.append('patient', document.getElementById('p-select').value);
+        const patientVal = document.getElementById('p-select').value;
+        try { localStorage.setItem(LAST_PATIENT_KEY, patientVal); } catch (err) { /* ignore */ }
+        fd.append('patient', patientVal);
         fd.append('mode', currentMode);
         fd.append('private', isPrivate);
         fd.append('model_choice', document.getElementById('model-select').value);
         
-        const res = await (await fetch('/api/chat', {method:'POST', body:fd})).json();
+        const res = await (await fetch('/api/chat', {method:'POST', body:fd, credentials:'same-origin'})).json();
         
         // Remove loading indicator
         loadingDiv.remove();
@@ -102,6 +105,7 @@ function repeatLast() {
 
 // Handle Enter key for submission
 document.addEventListener('DOMContentLoaded', () => {
+    console.log('[DEBUG] chat.js DOMContentLoaded');
     const msgTextarea = document.getElementById('msg');
     if (msgTextarea) {
         msgTextarea.addEventListener('keydown', (e) => {
@@ -113,6 +117,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     const savedPrompt = localStorage.getItem(LAST_PROMPT_KEY);
     if (savedPrompt) lastPrompt = savedPrompt;
+
+    // Debug current patient select state
+    const pSelect = document.getElementById('p-select');
+    if (pSelect) {
+        console.log('[DEBUG] p-select initial options', pSelect.options.length, Array.from(pSelect.options).map(o => o.value));
+    } else {
+        console.warn('[DEBUG] p-select not found on DOMContentLoaded');
+    }
 });
 
 function toggleMode() {

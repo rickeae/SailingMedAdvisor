@@ -29,7 +29,7 @@ function getCrewFullName(crew) {
     return crew.name || 'Unknown';
 }
 
-// Load crew data
+// Load crew data for both medical and vessel/crew info
 function loadCrewData(data) {
     // Sort crew data
     const sortBy = document.getElementById('crew-sort')?.value || 'last';
@@ -57,10 +57,32 @@ function loadCrewData(data) {
     });
 
     // Update patient select dropdown
-    document.getElementById('p-select').innerHTML = `<option>Unnamed Crew</option>` + data.map(p=> `<option>${getCrewFullName(p)}</option>`).join('');
+    const pSelect = document.getElementById('p-select');
+    if (pSelect) pSelect.innerHTML = `<option>Unnamed Crew</option>` + data.map(p=> `<option>${getCrewFullName(p)}</option>`).join('');
     
-    // Build crew list with structured data
-    document.getElementById('crew-list').innerHTML = data.map(p => {
+    // Medical histories list
+    const medicalContainer = document.getElementById('crew-medical-list');
+    if (medicalContainer) {
+        medicalContainer.innerHTML = data.map(p => {
+            const displayName = getCrewDisplayName(p);
+            return `
+            <div class="collapsible history-item">
+                <div class="col-header crew-med-header" onclick="toggleCrewSection(this)" style="justify-content:flex-start;">
+                    <span class="toggle-label history-arrow" style="font-size:18px; margin-right:8px;">▸</span>
+                    <span style="flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:700;">${displayName}</span>
+                    <button onclick="event.stopPropagation(); exportCrew('${p.id}', '${getCrewFullName(p).replace(/'/g, "\\'")}')" class="btn btn-sm history-action-btn" style="background:var(--blue); visibility:hidden;">📤 Export</button>
+                </div>
+                <div class="col-body" style="padding:12px;">
+                    <textarea id="h-${p.id}" class="compact-textarea" placeholder="Medical history, conditions, allergies, medications, etc." onchange="autoSaveProfile('${p.id}')">${p.history || ''}</textarea>
+                </div>
+            </div>`;
+        }).join('');
+    }
+    
+    // Vessel & crew info list
+    const infoContainer = document.getElementById('crew-info-list');
+    if (infoContainer) {
+        infoContainer.innerHTML = data.map(p => {
         const displayName = getCrewDisplayName(p);
         const ageStr = calculateAge(p.birthdate);
         const posInfo = p.position ? ` • ${p.position}` : '';
@@ -70,14 +92,15 @@ function loadCrewData(data) {
         const hasData = p.firstName && p.lastName && p.citizenship;
         
         return `
-        <div class="collapsible">
-            <div class="col-header" onclick="toggleCrewSection(this)" style="justify-content:flex-start;"><span class="toggle-label" style="font-size:14px; margin-right:8px;">➕</span><span>${info}</span></div>
-            <div class="col-body">
-                <div class="collapsible" style="margin-bottom:10px; border:1px solid #ddd;">
-                    <div class="col-header" onclick="toggleDetailSection(this)" style="background:#f0f8ff; padding:6px 10px; font-size:12px; justify-content:flex-start; gap:8px; align-items:center;">
-                        <span class="detail-icon" style="font-size:14px; line-height:1;">${hasData ? '➕' : '➖'}</span><span>Personal Details</span>
-                    </div>
-                    <div class="col-body" style="${hasData ? 'display:none;' : 'display:block;'} padding:10px;">
+        <div class="collapsible history-item">
+            <div class="col-header crew-med-header" onclick="toggleCrewSection(this)" style="justify-content:flex-start;">
+                <span class="toggle-label history-arrow" style="font-size:18px; margin-right:8px;">▸</span>
+                <span style="flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:700;">${info}</span>
+                <button onclick="event.stopPropagation(); importCrewData('${p.id}')" class="btn btn-sm history-action-btn" style="background:var(--blue); visibility:hidden;">📁 Import</button>
+                <button onclick="event.stopPropagation(); exportCrew('${p.id}', '${getCrewFullName(p).replace(/'/g, "\\'")}')" class="btn btn-sm history-action-btn" style="background:var(--blue); visibility:hidden;">📤 Export</button>
+                <button onclick="event.stopPropagation(); deleteCrewMember('patients','${p.id}', '${getCrewFullName(p).replace(/'/g, "\\'")}')" class="btn btn-sm history-action-btn" style="background:var(--red); visibility:hidden;">🗑 Delete</button>
+            </div>
+            <div class="col-body" style="padding:10px;">
                 <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:8px; margin-bottom:8px; font-size:13px;">
                     <input type="text" id="fn-${p.id}" value="${p.firstName || ''}" placeholder="First name" onchange="autoSaveProfile('${p.id}')" style="padding:5px; width:100%;">
                     <input type="text" id="mn-${p.id}" value="${p.middleName || ''}" placeholder="Middle name(s)" onchange="autoSaveProfile('${p.id}')" style="padding:5px; width:100%;">
@@ -142,15 +165,9 @@ function loadCrewData(data) {
                 </div>
                     </div>
                 </div>
-                <label style="font-weight:bold; font-size:12px; margin-bottom:4px; display:block;">Medical History & Notes:</label>
-                <textarea id="h-${p.id}" class="compact-textarea" placeholder="Medical history, conditions, allergies, medications, etc." onchange="autoSaveProfile('${p.id}')">${p.history || ''}</textarea>
-                <div class="btn-row">
-                    <button onclick="importCrewData('${p.id}')" class="btn btn-sm" style="background:var(--blue)">📁 Import</button>
-                    <button onclick="exportCrew('${p.id}', '${getCrewFullName(p).replace(/'/g, "\\'")}')" class="btn btn-sm" style="background:var(--blue)">📤 Export</button>
-                    <button onclick="deleteCrewMember('patients','${p.id}', '${getCrewFullName(p).replace(/'/g, "\\'")}')" class="btn btn-sm" style="background:var(--red)">🗑 Delete</button>
-                </div>
             </div>
         </div>`}).join('');
+    }
 }
 
 // Add new crew member
@@ -258,27 +275,36 @@ async function autoSaveProfile(id) {
     saveTimers[id] = setTimeout(async () => {
         const data = await (await fetch('/api/data/patients')).json();
         const patient = data.find(p => p.id === id);
+        const val = (prefix) => {
+            const el = document.getElementById(prefix + id);
+            return el ? el.value : undefined;
+        };
         if (patient) {
-            patient.firstName = document.getElementById('fn-' + id).value.trim();
-            patient.middleName = document.getElementById('mn-' + id).value.trim();
-            patient.lastName = document.getElementById('ln-' + id).value.trim();
-            patient.sex = document.getElementById('sx-' + id).value;
-            patient.birthdate = document.getElementById('bd-' + id).value;
-            patient.position = document.getElementById('pos-' + id).value;
-            patient.citizenship = document.getElementById('cit-' + id).value.trim();
-            patient.passportNumber = document.getElementById('pass-' + id).value.trim();
-            patient.passportIssue = document.getElementById('piss-' + id).value;
-            patient.passportExpiry = document.getElementById('pexp-' + id).value;
-            patient.emergencyContactName = document.getElementById('ename-' + id).value.trim();
-            patient.emergencyContactRelation = document.getElementById('erel-' + id).value.trim();
-            patient.emergencyContactPhone = document.getElementById('ephone-' + id).value.trim();
-            patient.emergencyContactEmail = document.getElementById('eemail-' + id).value.trim();
-            patient.emergencyContactNotes = document.getElementById('enotes-' + id).value.trim();
-            patient.phoneNumber = document.getElementById('phone-' + id).value.trim();
-            patient.history = document.getElementById('h-' + id).value;
+            const setters = {
+                firstName: val('fn-'),
+                middleName: val('mn-'),
+                lastName: val('ln-'),
+                sex: val('sx-'),
+                birthdate: val('bd-'),
+                position: val('pos-'),
+                citizenship: val('cit-'),
+                passportNumber: val('pass-'),
+                passportIssue: val('piss-'),
+                passportExpiry: val('pexp-'),
+                emergencyContactName: val('ename-'),
+                emergencyContactRelation: val('erel-'),
+                emergencyContactPhone: val('ephone-'),
+                emergencyContactEmail: val('eemail-'),
+                emergencyContactNotes: val('enotes-'),
+                phoneNumber: val('phone-'),
+                history: val('h-')
+            };
+            Object.entries(setters).forEach(([k,v]) => {
+                if (v !== undefined) patient[k] = k === 'history' ? v : (typeof v === 'string' ? v.trim() : v);
+            });
             
             await fetch('/api/data/patients', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)});
-            console.log(`Auto-saved profile for ${patient.firstName} ${patient.lastName}`);
+            console.log(`Auto-saved profile for ${patient.firstName || ''} ${patient.lastName || ''}`);
         }
     }, 1000);
 }
@@ -430,6 +456,42 @@ async function exportAllCrew() {
     alert(`Exported all crew data (${data.length} members) to ${filename}`);
 }
 
+// Export all medical histories into one text file
+async function exportAllMedical() {
+    const data = await (await fetch('/api/data/patients')).json();
+    
+    if (data.length === 0) {
+        alert('No crew data to export');
+        return;
+    }
+    
+    const date = new Date().toISOString().replace('T', ' ').substring(0, 19);
+    const fileDate = new Date().toISOString().split('T')[0];
+    
+    let content = '==========================================\n';
+    content += 'CREW MEDICAL HISTORY EXPORT\n';
+    content += `Date: ${date}\n`;
+    content += '==========================================\n\n';
+    
+    data.forEach((crew, index) => {
+        const name = getCrewFullName(crew);
+        content += `--- ${name} ---\n`;
+        content += (crew.history || '(No history recorded)') + '\n';
+        if (index < data.length - 1) content += '\n';
+    });
+    
+    const filename = `all_crew_medical_${fileDate}.txt`;
+    const blob = new Blob([content], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+    
+    alert(`Exported all crew medical histories (${data.length} members) to ${filename}`);
+}
+
 // Delete crew member with double confirmation
 async function deleteCrewMember(category, id, name) {
     // First warning
@@ -503,4 +565,31 @@ async function exportCrewList() {
     URL.revokeObjectURL(url);
     
     alert(`Crew list exported to crew_list_${date}.csv`);
+}
+
+// Vessel info load/save
+async function loadVesselInfo() {
+    const v = await (await fetch('/api/data/vessel')).json();
+    const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val || ''; };
+    setVal('vessel-name', v.vesselName);
+    setVal('vessel-registration', v.registrationNumber);
+    setVal('vessel-flag', v.flagCountry);
+    setVal('vessel-homeport', v.homePort);
+    setVal('vessel-callsign', v.callSign);
+    setVal('vessel-tonnage', v.tonnage);
+    setVal('vessel-crewcap', v.crewCapacity);
+}
+
+async function saveVesselInfo() {
+    const v = {
+        vesselName: document.getElementById('vessel-name')?.value || '',
+        registrationNumber: document.getElementById('vessel-registration')?.value || '',
+        flagCountry: document.getElementById('vessel-flag')?.value || '',
+        homePort: document.getElementById('vessel-homeport')?.value || '',
+        callSign: document.getElementById('vessel-callsign')?.value || '',
+        tonnage: document.getElementById('vessel-tonnage')?.value || '',
+        crewCapacity: document.getElementById('vessel-crewcap')?.value || ''
+    };
+    await fetch('/api/data/vessel', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(v)});
+    alert('Vessel information saved.');
 }

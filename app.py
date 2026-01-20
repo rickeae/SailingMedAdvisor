@@ -57,7 +57,15 @@ def db_op(cat, data=None):
         if cat == 'settings':
             content = get_defaults()
         elif cat == 'vessel':
-            content = {"vesselName": "", "registrationNumber": "", "flagCountry": "", "homePort": ""}
+            content = {
+                "vesselName": "",
+                "registrationNumber": "",
+                "flagCountry": "",
+                "homePort": "",
+                "callSign": "",
+                "tonnage": "",
+                "crewCapacity": ""
+            }
         else:
             content = []
         with open(path, 'w') as f:

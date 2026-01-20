@@ -3,17 +3,18 @@
 let isPrivate = false;
 let lastPrompt = '';
 let isProcessing = false;
+let currentMode = 'triage';
+const LAST_PROMPT_KEY = 'sailingmed:lastPrompt';
 
 function updateUI() {
-    const mode = document.getElementById('mode-select').value;
     const banner = document.getElementById('banner');
-    const bText = document.getElementById('banner-mode');
+    const modeBtn = document.getElementById('mode-toggle');
     
     // Remove both classes first
     banner.classList.remove('inquiry-mode', 'private-mode');
     
     // Add appropriate mode class
-    if (mode === 'inquiry') {
+    if (currentMode === 'inquiry') {
         banner.classList.add('inquiry-mode');
     }
     
@@ -22,8 +23,11 @@ function updateUI() {
         banner.classList.add('private-mode');
     }
     
-    bText.innerText = mode === 'triage' ? "TRIAGE MODE: ACTIVE" : "INQUIRY MODE: ACTIVE";
-    document.getElementById('p-select').style.visibility = mode === 'triage' ? 'visible' : 'hidden';
+    if (modeBtn) {
+        modeBtn.innerText = currentMode === 'triage' ? '🚨 TRIAGE CHAT' : '📘 INQUIRY CHAT';
+        modeBtn.style.background = 'white';
+        modeBtn.style.color = 'var(--dark)';
+    }
 }
 
 function togglePriv() {
@@ -31,7 +35,6 @@ function togglePriv() {
     const btn = document.getElementById('priv-btn');
     btn.style.background = isPrivate ? 'var(--red)' : '#555';
     btn.innerText = isPrivate ? 'PRIVACY: ON' : 'PRIVACY: OFF';
-    document.getElementById('banner-priv').innerText = isPrivate ? 'PRIVACY MODE: ON' : 'LOGGING: ENABLED';
     updateUI();
 }
 
@@ -59,7 +62,7 @@ async function runChat(promptText = null) {
         const fd = new FormData();
         fd.append('message', txt);
         fd.append('patient', document.getElementById('p-select').value);
-        fd.append('mode', document.getElementById('mode-select').value);
+        fd.append('mode', currentMode);
         fd.append('private', isPrivate);
         fd.append('model_choice', document.getElementById('model-select').value);
         
@@ -77,6 +80,7 @@ async function runChat(promptText = null) {
         if (!promptText) {
             document.getElementById('msg').value = '';
         }
+        try { localStorage.setItem(LAST_PROMPT_KEY, lastPrompt); } catch (err) { /* ignore storage issues */ }
         display.lastElementChild.scrollIntoView();
     } catch (error) {
         loadingDiv.remove();
@@ -107,4 +111,11 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     }
+    const savedPrompt = localStorage.getItem(LAST_PROMPT_KEY);
+    if (savedPrompt) lastPrompt = savedPrompt;
 });
+
+function toggleMode() {
+    currentMode = currentMode === 'triage' ? 'inquiry' : 'triage';
+    updateUI();
+}

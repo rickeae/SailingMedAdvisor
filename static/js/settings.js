@@ -57,7 +57,7 @@ async function loadCrewCredentials() {
                         <div style="min-width:180px; font-weight:bold;">${p.firstName || ''} ${p.lastName || p.name || ''}</div>
                         <input type="text" id="cred-user-${p.id}" value="${p.username || ''}" placeholder="Username" style="padding:8px; flex:1; min-width:140px;">
                         <input type="text" id="cred-pass-${p.id}" value="${p.password || ''}" placeholder="Password" style="padding:8px; flex:1; min-width:140px;">
-                        <button class="btn btn-sm" style="background:var(--blue);" onclick="saveCrewCredential('${p.id}')">Save</button>
+                        <button class="btn btn-sm" style="background:var(--inquiry);" onclick="saveCrewCredential('${p.id}')">Save</button>
                     </div>
                 `).join('');
             return;
@@ -67,7 +67,7 @@ async function loadCrewCredentials() {
                 <div style="min-width:180px; font-weight:bold;">${p.firstName || ''} ${p.lastName || p.name || ''}</div>
                 <input type="text" id="cred-user-${p.id}" value="${p.username || ''}" placeholder="Username" style="padding:8px; flex:1; min-width:140px;">
                 <input type="text" id="cred-pass-${p.id}" value="${p.password || ''}" placeholder="Password" style="padding:8px; flex:1; min-width:140px;">
-                <button class="btn btn-sm" style="background:var(--blue);" onclick="saveCrewCredential('${p.id}')">Save</button>
+                <button class="btn btn-sm" style="background:var(--inquiry);" onclick="saveCrewCredential('${p.id}')">Save</button>
             </div>
         `).join('');
     } catch (err) {

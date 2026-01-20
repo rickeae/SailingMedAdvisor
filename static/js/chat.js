@@ -10,18 +10,22 @@ const LAST_PATIENT_KEY = 'sailingmed:lastPatient';
 function updateUI() {
     const banner = document.getElementById('banner');
     const modeBtn = document.getElementById('mode-toggle');
+    const privBtn = document.getElementById('priv-btn');
+    const msg = document.getElementById('msg');
     
     // Remove both classes first
-    banner.classList.remove('inquiry-mode', 'private-mode');
+    banner.classList.remove('inquiry-mode', 'private-mode', 'no-privacy');
     
     // Add appropriate mode class
     if (currentMode === 'inquiry') {
         banner.classList.add('inquiry-mode');
     }
     
-    // Add private-mode class if privacy is enabled
+    // Privacy visuals
     if (isPrivate) {
         banner.classList.add('private-mode');
+    } else {
+        banner.classList.add('no-privacy');
     }
     
     if (modeBtn) {
@@ -29,13 +33,25 @@ function updateUI() {
         modeBtn.style.background = 'white';
         modeBtn.style.color = 'var(--dark)';
     }
+
+    if (privBtn) {
+        privBtn.classList.toggle('is-private', isPrivate);
+        privBtn.innerText = isPrivate ? 'LOGGING: OFF' : 'LOGGING: ON';
+        privBtn.style.background = isPrivate ? 'var(--triage)' : '#333';
+        privBtn.style.border = isPrivate ? '2px solid #fff' : '1px solid #222';
+    }
+
+    if (msg) {
+        msg.placeholder = currentMode === 'triage' ? "Describe what's happening" : "Ask your question";
+    }
 }
 
 function togglePriv() {
     isPrivate = !isPrivate;
     const btn = document.getElementById('priv-btn');
-    btn.style.background = isPrivate ? 'var(--red)' : '#555';
-    btn.innerText = isPrivate ? 'PRIVACY: ON' : 'PRIVACY: OFF';
+    btn.style.background = isPrivate ? 'var(--triage)' : '#333';
+    btn.style.border = isPrivate ? '2px solid #fff' : '1px solid #222';
+    btn.innerText = isPrivate ? 'LOGGING: OFF' : 'LOGGING: ON';
     updateUI();
 }
 
@@ -77,14 +93,17 @@ async function runChat(promptText = null) {
         if (res.error) {
             display.innerHTML += `<div class="response-block" style="border-left-color:var(--red);"><b>ERROR:</b> ${res.error}</div>`;
         } else {
-            display.innerHTML += `<div class="response-block"><b>[${res.model}]</b><br>${marked.parse(res.response)}</div>`;
+            const parsed = (window.marked && typeof window.marked.parse === 'function')
+                ? window.marked.parse(res.response || '')
+                : (res.response || '').replace(/\n/g, '<br>');
+            display.innerHTML += `<div class="response-block"><b>[${res.model}]</b><br>${parsed}</div>`;
         }
         
         if (!promptText) {
             document.getElementById('msg').value = '';
         }
         try { localStorage.setItem(LAST_PROMPT_KEY, lastPrompt); } catch (err) { /* ignore storage issues */ }
-        display.lastElementChild.scrollIntoView();
+        if (display.lastElementChild) display.lastElementChild.scrollIntoView({behavior:'smooth'});
     } catch (error) {
         loadingDiv.remove();
         display.innerHTML += `<div class="response-block" style="border-left-color:var(--red);"><b>ERROR:</b> ${error.message}</div>`;

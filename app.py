@@ -93,6 +93,14 @@ def get_credentials():
     return [p for p in db_op("patients") if p.get("username") and p.get("password")]
 
 
+def load_context():
+    """Load context/sidebar content from data/context.json, ensure file exists."""
+    path = DATA_DIR / "context.json"
+    if not path.exists():
+        path.write_text(json.dumps({}, indent=4))
+    return json.loads(path.read_text() or "{}")
+
+
 def require_auth(request: Request):
     if not request.session.get("authenticated"):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
@@ -167,6 +175,14 @@ async def manage(cat: str, request: Request, _=Depends(require_auth)):
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_400_BAD_REQUEST)
     except Exception:
         return JSONResponse({"error": "Server error"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.get("/api/context")
+async def get_context(_=Depends(require_auth)):
+    try:
+        return JSONResponse(load_context())
+    except Exception:
+        return JSONResponse({"error": "Unable to load context"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @app.post("/api/chat")

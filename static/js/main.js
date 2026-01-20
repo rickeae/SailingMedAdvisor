@@ -7,6 +7,9 @@ function toggleSection(el) {
     const isExpanded = body.style.display === "block";
     body.style.display = isExpanded ? "none" : "block";
     if (icon) icon.textContent = isExpanded ? "▸" : "▾";
+    if (el.dataset && el.dataset.sidebarId) {
+        syncSidebarSections(el.dataset.sidebarId, !isExpanded);
+    }
 }
 
 // Toggle detail section with icon change
@@ -29,6 +32,50 @@ function toggleCrewSection(el) {
     body.style.display = isExpanded ? "none" : "block";
     icon.textContent = isExpanded ? "▸" : "▾";
     actionBtns.forEach(btn => { btn.style.visibility = isExpanded ? "hidden" : "visible"; });
+    if (el.dataset && el.dataset.sidebarId) {
+        syncSidebarSections(el.dataset.sidebarId, !isExpanded);
+    }
+}
+
+// Sidebar expand/collapse
+function toggleSidebar(btn) {
+    const sidebar = btn.closest ? btn.closest('.page-sidebar') : btn;
+    if (!sidebar) return;
+    const button = sidebar.querySelector('.sidebar-toggle') || btn;
+    const collapsed = sidebar.classList.toggle('collapsed');
+    if (button) button.textContent = collapsed ? 'Context ←' : 'Context →';
+    const body = sidebar.closest('.page-body');
+    if (body) {
+        body.classList.toggle('sidebar-open', !collapsed);
+        body.classList.toggle('sidebar-collapsed', collapsed);
+    }
+}
+
+// Show/hide matching sidebar sections
+function syncSidebarSections(sectionId, isOpen) {
+    if (!sectionId) return;
+    document.querySelectorAll(`[data-sidebar-section="${sectionId}"]`).forEach(sec => {
+        if (isOpen) {
+            sec.classList.remove('hidden');
+        } else {
+            sec.classList.add('hidden');
+        }
+    });
+}
+
+// Initialize sidebar visibility based on current collapsible state
+function initSidebarSync() {
+    document.querySelectorAll('.page-body').forEach(body => {
+        const sb = body.querySelector('.page-sidebar');
+        const isCollapsed = sb ? sb.classList.contains('collapsed') : true;
+        body.classList.toggle('sidebar-open', sb && !isCollapsed);
+        body.classList.toggle('sidebar-collapsed', sb && isCollapsed);
+    });
+    document.querySelectorAll('[data-sidebar-id]').forEach(header => {
+        const body = header.nextElementSibling;
+        const isOpen = body && body.style.display === 'block';
+        syncSidebarSections(header.dataset.sidebarId, isOpen);
+    });
 }
 
 // Tab navigation
@@ -49,13 +96,18 @@ async function showTab(e, n) {
         if (typeof loadCrewCredentials === 'function') {
             loadCrewCredentials();
         }
+        loadContext('Settings');
     } else if(n === 'CrewMedical' || n === 'VesselCrewInfo') { 
         loadData(); 
         if (typeof loadVesselInfo === 'function') {
             loadVesselInfo();
         }
-    } else if(n === 'ChatHistory') {
-        loadHistory();
+        loadContext(n);
+    } else if (n === 'OnboardPharmacy' || n === 'OnboardEquipment') {
+        loadContext(n);
+    }
+    if (n === 'Chat') {
+        loadContext('Chat');
     }
 }
 
@@ -63,14 +115,18 @@ async function showTab(e, n) {
 async function loadData() {
     console.log('[DEBUG] loadData: start');
     try {
-        const res = await fetch('/api/data/patients', { credentials: 'same-origin' });
-        console.log('[DEBUG] loadData: status', res.status);
-        if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+        const [res, historyRes] = await Promise.all([
+            fetch('/api/data/patients', { credentials: 'same-origin' }),
+            fetch('/api/data/history', { credentials: 'same-origin' }),
+        ]);
+        console.log('[DEBUG] loadData: status patients', res.status, 'history', historyRes.status);
+        if (!res.ok) throw new Error(`Patients request failed: ${res.status}`);
+        if (!historyRes.ok) throw new Error(`History request failed: ${historyRes.status}`);
         const data = await res.json();
-        console.log('[DEBUG] loadData: raw data', data);
-        if (!Array.isArray(data)) throw new Error('Unexpected data format');
-        console.log('[DEBUG] loadData: length', data.length);
-        loadCrewData(data);
+        const history = await historyRes.json();
+        console.log('[DEBUG] loadData: patients length', Array.isArray(data) ? data.length : 'n/a');
+        if (!Array.isArray(data)) throw new Error('Unexpected patients data format');
+        loadCrewData(data, Array.isArray(history) ? history : []);
     } catch (err) {
         console.error('[DEBUG] Failed to load crew data', err);
         // Gracefully clear UI to avoid JS errors
@@ -86,160 +142,12 @@ async function loadData() {
 function toggleBannerControls(activeTab) {
     const triageControls = document.getElementById('banner-controls-triage');
     const crewControls = document.getElementById('banner-controls-crew');
-    const historyControls = document.getElementById('banner-controls-history');
     const medExportAll = document.getElementById('crew-med-export-all-btn');
     const crewCsvBtn = document.getElementById('crew-csv-btn');
     if (triageControls) triageControls.style.display = activeTab === 'Chat' ? 'flex' : 'none';
     if (crewControls) crewControls.style.display = (activeTab === 'CrewMedical' || activeTab === 'VesselCrewInfo') ? 'flex' : 'none';
-    if (historyControls) historyControls.style.display = activeTab === 'ChatHistory' ? 'flex' : 'none';
     if (medExportAll) medExportAll.style.display = activeTab === 'CrewMedical' ? 'inline-flex' : 'none';
     if (crewCsvBtn) crewCsvBtn.style.display = activeTab === 'VesselCrewInfo' ? 'inline-flex' : 'none';
-}
-
-// Load and render chat history
-async function loadHistory() {
-    const container = document.getElementById('history-list');
-    if (!container) return;
-    container.innerHTML = '<div style="color:#666;">Loading history...</div>';
-    try {
-        let data = await (await fetch('/api/data/history', {credentials:'same-origin'})).json();
-        if (!data || data.length === 0) {
-            container.innerHTML = '<div style="color:#666;">No history yet.</div>';
-            return;
-        }
-        // Search filter
-        const q = document.getElementById('history-search')?.value?.toLowerCase() || '';
-        if (q) {
-            data = data.filter(item => {
-                const fields = [item.patient, item.query, item.response, item.title, item.date].join(' ').toLowerCase();
-                return fields.includes(q);
-            });
-        }
-        // Sorting
-        const sortVal = document.getElementById('history-sort')?.value || 'date';
-        data.sort((a,b) => {
-            if (sortVal === 'first') {
-                return (a.patient || '').localeCompare(b.patient || '');
-            } else if (sortVal === 'last') {
-                const al = (a.patient || '').split(' ').slice(-1)[0] || '';
-                const bl = (b.patient || '').split(' ').slice(-1)[0] || '';
-                return al.localeCompare(bl);
-            } else if (sortVal === 'query') {
-                return (a.query || '').localeCompare(b.query || '');
-            } else { // date default
-                return (a.date || '').localeCompare(b.date || '');
-            }
-        }).reverse(); // latest first
-        container.innerHTML = '';
-        const parse = (s) => (window.marked ? window.marked.parse(s || '') : (s || '').replace(/\\n/g, '<br>'));
-        const escInline = (s) => (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-        data.forEach(item => {
-            const wrap = document.createElement('div');
-            wrap.className = 'history-item';
-
-            const header = document.createElement('div');
-            header.className = 'history-header';
-            const firstLine = (item.query || '').split('\\n')[0];
-            let preview = escInline(firstLine);
-            if (preview.length > 120) preview = preview.slice(0, 120) + '...';
-            const deleteBtn = document.createElement('button');
-            deleteBtn.className = 'btn btn-sm history-action-btn';
-            deleteBtn.style.background = 'var(--red)';
-            deleteBtn.textContent = 'Delete';
-            deleteBtn.style.visibility = 'hidden';
-            deleteBtn.onclick = (e) => { e.stopPropagation(); deleteHistory(item.id); };
-            const exportBtn = document.createElement('button');
-            exportBtn.className = 'btn btn-sm history-action-btn';
-            exportBtn.style.background = 'var(--blue)';
-            exportBtn.textContent = 'Export';
-            exportBtn.style.visibility = 'hidden';
-            exportBtn.onclick = (e) => { e.stopPropagation(); exportHistoryItem(item); };
-            const rightSpan = document.createElement('span');
-            rightSpan.className = 'history-arrow';
-            rightSpan.textContent = '▸';
-            const titleSpan = document.createElement('span');
-            titleSpan.className = 'history-title';
-            titleSpan.innerHTML = `${item.patient || 'Unknown'} — ${item.date || ''}${item.title ? ' — ' + escInline(item.title) : ''}${preview ? ' — ' + preview : ''}`;
-            header.appendChild(rightSpan);
-            header.appendChild(titleSpan);
-            header.appendChild(deleteBtn);
-            header.appendChild(exportBtn);
-
-            const body = document.createElement('div');
-            body.className = 'history-body';
-            const queryHtml = parse(item.query);
-            const respHtml = parse(item.response);
-            const block = document.createElement('div');
-            block.className = 'response-block history-response';
-            block.innerHTML = `<div style="margin-bottom:8px;"><strong>Query:</strong><br>${queryHtml}</div><div><strong>Response:</strong><br>${respHtml}</div>`;
-            body.appendChild(block);
-
-            header.addEventListener('click', () => {
-                const isOpen = body.style.display === 'block';
-                const nextOpen = !isOpen;
-                body.style.display = nextOpen ? 'block' : 'none';
-                rightSpan.textContent = nextOpen ? '▾' : '▸';
-                exportBtn.style.visibility = nextOpen ? 'visible' : 'hidden';
-                deleteBtn.style.visibility = nextOpen ? 'visible' : 'hidden';
-            });
-
-            wrap.appendChild(header);
-            wrap.appendChild(body);
-            container.appendChild(wrap);
-        });
-    } catch (err) {
-        container.innerHTML = `<div style="color:red;">Error loading history: ${err.message}</div>`;
-    }
-}
-
-async function deleteHistory(id) {
-    if (!id) return;
-    const first = confirm('Delete this chat entry?');
-    if (!first) return;
-    const confirmText = prompt('Type DELETE to confirm deletion:');
-    if (confirmText !== 'DELETE') {
-        alert('Deletion cancelled.');
-        return;
-    }
-    try {
-        const data = await (await fetch('/api/data/history', {credentials:'same-origin'})).json();
-        const filtered = data.filter(item => item.id !== id);
-        await fetch('/api/data/history', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(filtered), credentials:'same-origin'});
-        loadHistory();
-    } catch (err) {
-        alert(`Failed to delete: ${err.message}`);
-    }
-}
-
-function resetHistorySearch() {
-    const search = document.getElementById('history-search');
-    if (search) search.value = '';
-    const sort = document.getElementById('history-sort');
-    if (sort) sort.value = 'date';
-    loadHistory();
-}
-
-function exportHistoryItem(item) {
-    const name = (item.patient || 'Unknown').replace(/[^a-z0-9]/gi, '_');
-    const date = (item.date || '').replace(/[^0-9T:-]/g, '_');
-    const filename = `history_${name}_${date || 'entry'}.txt`;
-    const parts = [];
-    parts.push(`Date: ${item.date || ''}`);
-    parts.push(`Patient: ${item.patient || 'Unknown'}`);
-    if (item.title) parts.push(`Title: ${item.title}`);
-    parts.push('');
-    parts.push('Query:');
-    parts.push(item.query || '');
-    parts.push('');
-    parts.push('Response:');
-    parts.push(item.response || '');
-    const blob = new Blob([parts.join('\n')], {type:'text/plain'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
 }
 
 // Initialize on page load
@@ -248,9 +156,65 @@ window.onload = () => {
     loadData(); 
     updateUI(); 
     toggleBannerControls('Chat');
+    initSidebarSync();
+    restoreLastChatView();
 };
 
 // Ensure loadCrewData exists before any calls (safety for race conditions)
 if (typeof window.loadCrewData !== 'function') {
     console.error('[DEBUG] window.loadCrewData is not defined at main.js load time.');
+}
+
+// Context loader
+async function loadContext(tabName) {
+    try {
+        const res = await fetch('/api/context', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error(`Context load failed: ${res.status}`);
+        const data = await res.json();
+        const tabData = data[tabName];
+        if (!tabData || !tabData.sections) return;
+        tabData.sections.forEach((section) => {
+            const el = document.querySelector(`[data-sidebar-section="${section.id}"] .sidebar-body`);
+            if (el) {
+                el.textContent = section.body || '';
+                const titleEl = el.parentElement.querySelector('.sidebar-title');
+                if (titleEl && section.title) {
+                    titleEl.childNodes.forEach(node => {
+                        if (node.nodeType === Node.TEXT_NODE) {
+                            node.textContent = ` ${section.title}`;
+                        }
+                    });
+                }
+            }
+        });
+    } catch (err) {
+        console.warn('Context load error', err);
+    }
+}
+
+// Restore last chat so the triage page shows the most recent response on load
+async function restoreLastChatView() {
+    try {
+        const display = document.getElementById('display');
+        if (!display || display.children.length > 0) return;
+        const res = await fetch('/api/data/history', { credentials: 'same-origin' });
+        if (!res.ok) return;
+        const history = await res.json();
+        if (!Array.isArray(history) || history.length === 0) return;
+        const last = history[history.length - 1];
+        const parse = (txt) => (window.marked && typeof window.marked.parse === 'function')
+            ? window.marked.parse(txt || '')
+            : (txt || '').replace(/\\n/g, '<br>');
+        const responseHtml = parse(last.response || '');
+        const queryHtml = parse(last.query || '');
+        display.innerHTML = `
+            <div class="response-block">
+                <div style="font-weight:800; margin-bottom:6px;">Last Session — ${last.patient || 'Unknown'} (${last.date || ''})</div>
+                <div style="margin-bottom:8px;"><strong>Query:</strong><br>${queryHtml}</div>
+                <div><strong>Response:</strong><br>${responseHtml}</div>
+            </div>
+        `;
+    } catch (err) {
+        console.warn('Failed to restore last chat view', err);
+    }
 }

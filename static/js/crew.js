@@ -32,13 +32,86 @@ function getCrewFullName(crew) {
     return crew.name || 'Unknown';
 }
 
+function escapeHtml(str) {
+    return (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function groupHistoryByPatient(history) {
+    const map = {};
+    history.forEach((item) => {
+        let key = (item.patient || '').trim();
+        if (!key) key = 'Unnamed Crew';
+        if (key.toLowerCase() === 'inquiry') key = 'Inquiry History';
+        if (!map[key]) map[key] = [];
+        map[key].push(item);
+    });
+    return map;
+}
+
+function renderHistoryEntries(entries) {
+    if (!entries || entries.length === 0) {
+        return '<div style="color:#666;">No chat history recorded.</div>';
+    }
+    const sorted = [...entries].sort((a, b) => (a.date || '').localeCompare(b.date || '')).reverse();
+    return sorted
+        .map((item, idx) => {
+            const q = escapeHtml(item.query || '').replace(/\n/g, '<br>');
+            const r = escapeHtml(item.response || '').replace(/\n/g, '<br>');
+            const date = escapeHtml(item.date || '');
+            const previewRaw = (item.query || '').split('\n')[0] || '';
+            let preview = escapeHtml(previewRaw);
+            if (preview.length > 80) preview = preview.slice(0, 80) + '...';
+            return `
+                <div class="collapsible" style="margin-bottom:6px;">
+                    <div class="col-header crew-med-header" onclick="toggleCrewSection(this)" style="justify-content:flex-start;">
+                        <span class="toggle-label history-arrow" style="font-size:16px; margin-right:8px;">▸</span>
+                        <span style="flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:600; font-size:13px;">${date || 'Entry'}${preview ? ' — ' + preview : ''}</span>
+                    </div>
+                    <div class="col-body" style="padding:8px; font-size:13px;">
+                        <div style="margin-bottom:6px;"><strong>Query:</strong><br>${q}</div>
+                        <div><strong>Response:</strong><br>${r}</div>
+                    </div>
+                </div>`;
+        })
+        .join('');
+}
+
+function renderHistorySection(label, entries, defaultOpen = true) {
+    const bodyStyle = defaultOpen ? 'display:block;' : '';
+    const arrow = defaultOpen ? '▾' : '▸';
+    const count = Array.isArray(entries) ? entries.length : 0;
+    return `
+        <div class="collapsible history-item" style="margin-top:10px;">
+            <div class="col-header crew-med-header" onclick="toggleCrewSection(this)" style="justify-content:flex-start;">
+                <span class="toggle-label history-arrow" style="font-size:18px; margin-right:8px;">${arrow}</span>
+                <span style="flex:1; font-weight:600; font-size:14px;">${escapeHtml(label)}${count ? ` (${count} entries)` : ''}</span>
+            </div>
+            <div class="col-body" style="padding:10px; ${bodyStyle}">
+                ${renderHistoryEntries(entries)}
+            </div>
+        </div>`;
+}
+
+function getHistoryForCrew(p, historyMap) {
+    const keys = [];
+    const fullName = getCrewFullName(p);
+    if (fullName) keys.push(fullName);
+    if (p.name) keys.push(p.name);
+    if (p.firstName || p.lastName) keys.push(`${p.firstName || ''} ${p.lastName || ''}`.trim());
+    for (const k of keys) {
+        if (historyMap[k]) return historyMap[k];
+    }
+    return [];
+}
+
 // Load crew data for both medical and vessel/crew info
-function loadCrewData(data) {
+function loadCrewData(data, history = []) {
     if (!Array.isArray(data)) {
         console.warn('loadCrewData expected array, got', data);
         return;
     }
     console.log('[DEBUG] loadCrewData called with', data.length, 'entries');
+    const historyMap = groupHistoryByPatient(history || []);
     // Sort crew data
     const sortBy = document.getElementById('crew-sort')?.value || 'last';
     data.sort((a, b) => {
@@ -81,20 +154,33 @@ function loadCrewData(data) {
     // Medical histories list
     const medicalContainer = document.getElementById('crew-medical-list');
     if (medicalContainer) {
-        medicalContainer.innerHTML = data.map(p => {
+        const medicalBlocks = data.map(p => {
             const displayName = getCrewDisplayName(p);
+            const crewHistory = getHistoryForCrew(p, historyMap);
+            const historySection = renderHistorySection(`${displayName} Log`, crewHistory, true);
             return `
             <div class="collapsible history-item">
                 <div class="col-header crew-med-header" onclick="toggleCrewSection(this)" style="justify-content:flex-start;">
                     <span class="toggle-label history-arrow" style="font-size:18px; margin-right:8px;">▸</span>
                     <span style="flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:700;">${displayName}</span>
-                    <button onclick="event.stopPropagation(); exportCrew('${p.id}', '${getCrewFullName(p).replace(/'/g, "\\'")}')" class="btn btn-sm history-action-btn" style="background:var(--blue); visibility:hidden;">📤 Export</button>
+                    <button onclick="event.stopPropagation(); exportCrew('${p.id}', '${getCrewFullName(p).replace(/'/g, "\\'")}')" class="btn btn-sm history-action-btn" style="background:var(--inquiry); visibility:hidden;">📤 Export</button>
                 </div>
-                <div class="col-body" style="padding:12px;">
+                <div class="col-body" style="padding:12px; background:#f8f9fc; border:1px solid #e0e0e0; border-radius:6px;">
                     <textarea id="h-${p.id}" class="compact-textarea" placeholder="Medical history, conditions, allergies, medications, etc." onchange="autoSaveProfile('${p.id}')">${p.history || ''}</textarea>
+                    ${historySection}
                 </div>
             </div>`;
-        }).join('');
+        });
+
+        // Add pseudo entries for unnamed and inquiry history
+        if (historyMap['Unnamed Crew']) {
+            medicalBlocks.push(renderHistorySection('Unnamed Crew Log', historyMap['Unnamed Crew'], true));
+        }
+        if (historyMap['Inquiry History']) {
+            medicalBlocks.push(renderHistorySection('Inquiry History', historyMap['Inquiry History'], true));
+        }
+
+        medicalContainer.innerHTML = medicalBlocks.join('');
     }
     
     // Vessel & crew info list
@@ -114,8 +200,8 @@ function loadCrewData(data) {
             <div class="col-header crew-med-header" onclick="toggleCrewSection(this)" style="justify-content:flex-start;">
                 <span class="toggle-label history-arrow" style="font-size:18px; margin-right:8px;">▸</span>
                 <span style="flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:700;">${info}</span>
-                <button onclick="event.stopPropagation(); importCrewData('${p.id}')" class="btn btn-sm history-action-btn" style="background:var(--blue); visibility:hidden;">📁 Import</button>
-                <button onclick="event.stopPropagation(); exportCrew('${p.id}', '${getCrewFullName(p).replace(/'/g, "\\'")}')" class="btn btn-sm history-action-btn" style="background:var(--blue); visibility:hidden;">📤 Export</button>
+                <button onclick="event.stopPropagation(); importCrewData('${p.id}')" class="btn btn-sm history-action-btn" style="background:var(--inquiry); visibility:hidden;">📁 Import</button>
+                <button onclick="event.stopPropagation(); exportCrew('${p.id}', '${getCrewFullName(p).replace(/'/g, "\\'")}')" class="btn btn-sm history-action-btn" style="background:var(--inquiry); visibility:hidden;">📤 Export</button>
                 <button onclick="event.stopPropagation(); deleteCrewMember('patients','${p.id}', '${getCrewFullName(p).replace(/'/g, "\\'")}')" class="btn btn-sm history-action-btn" style="background:var(--red); visibility:hidden;">🗑 Delete</button>
             </div>
             <div class="col-body" style="padding:10px;">
@@ -172,12 +258,12 @@ function loadCrewData(data) {
                 <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-bottom:8px;">
                     <div style="border:1px solid #ddd; padding:8px; border-radius:4px; background:#f9f9f9;">
                         <label style="margin-bottom:4px; display:block; font-weight:bold; font-size:11px;">Passport Photo:</label>
-                        ${p.passportPhoto ? (p.passportPhoto.startsWith('data:image/') ? `<div style="margin-bottom:4px;"><img src="${p.passportPhoto}" style="max-width:100%; max-height:120px; border:1px solid #ccc; border-radius:4px; cursor:pointer;" onclick="window.open('${p.passportPhoto}', '_blank')"><div style="margin-top:4px;"><button onclick="deleteDocument('${p.id}', 'passportPhoto')" style="background:var(--red); color:white; border:none; padding:2px 8px; border-radius:3px; cursor:pointer; font-size:10px;">🗑 Delete</button></div></div>` : `<div style="margin-bottom:4px;"><a href="${p.passportPhoto}" target="_blank" style="color:var(--blue); font-size:11px;">📎 View PDF</a> | <button onclick="deleteDocument('${p.id}', 'passportPhoto')" style="background:none; border:none; color:var(--red); cursor:pointer; font-size:10px;">🗑</button></div>`) : ''}
+                        ${p.passportPhoto ? (p.passportPhoto.startsWith('data:image/') ? `<div style="margin-bottom:4px;"><img src="${p.passportPhoto}" style="max-width:100%; max-height:120px; border:1px solid #ccc; border-radius:4px; cursor:pointer;" onclick="window.open('${p.passportPhoto}', '_blank')"><div style="margin-top:4px;"><button onclick="deleteDocument('${p.id}', 'passportPhoto')" style="background:var(--red); color:white; border:none; padding:2px 8px; border-radius:3px; cursor:pointer; font-size:10px;">🗑 Delete</button></div></div>` : `<div style="margin-bottom:4px;"><a href="${p.passportPhoto}" target="_blank" style="color:var(--inquiry); font-size:11px;">📎 View PDF</a> | <button onclick="deleteDocument('${p.id}', 'passportPhoto')" style="background:none; border:none; color:var(--red); cursor:pointer; font-size:10px;">🗑</button></div>`) : ''}
                         <input type="file" id="pp-${p.id}" accept="image/*,.pdf" onchange="uploadDocument('${p.id}', 'passportPhoto', this)" style="font-size:10px; width:100%;">
                     </div>
                     <div style="border:1px solid #ddd; padding:8px; border-radius:4px; background:#f9f9f9;">
                         <label style="margin-bottom:4px; display:block; font-weight:bold; font-size:11px;">Passport Page Photo:</label>
-                        ${p.passportPage ? (p.passportPage.startsWith('data:image/') ? `<div style="margin-bottom:4px;"><img src="${p.passportPage}" style="max-width:100%; max-height:120px; border:1px solid #ccc; border-radius:4px; cursor:pointer;" onclick="window.open('${p.passportPage}', '_blank')"><div style="margin-top:4px;"><button onclick="deleteDocument('${p.id}', 'passportPage')" style="background:var(--red); color:white; border:none; padding:2px 8px; border-radius:3px; cursor:pointer; font-size:10px;">🗑 Delete</button></div></div>` : `<div style="margin-bottom:4px;"><a href="${p.passportPage}" target="_blank" style="color:var(--blue); font-size:11px;">📎 View PDF</a> | <button onclick="deleteDocument('${p.id}', 'passportPage')" style="background:none; border:none; color:var(--red); cursor:pointer; font-size:10px;">🗑</button></div>`) : ''}
+                        ${p.passportPage ? (p.passportPage.startsWith('data:image/') ? `<div style="margin-bottom:4px;"><img src="${p.passportPage}" style="max-width:100%; max-height:120px; border:1px solid #ccc; border-radius:4px; cursor:pointer;" onclick="window.open('${p.passportPage}', '_blank')"><div style="margin-top:4px;"><button onclick="deleteDocument('${p.id}', 'passportPage')" style="background:var(--red); color:white; border:none; padding:2px 8px; border-radius:3px; cursor:pointer; font-size:10px;">🗑 Delete</button></div></div>` : `<div style="margin-bottom:4px;"><a href="${p.passportPage}" target="_blank" style="color:var(--inquiry); font-size:11px;">📎 View PDF</a> | <button onclick="deleteDocument('${p.id}', 'passportPage')" style="background:none; border:none; color:var(--red); cursor:pointer; font-size:10px;">🗑</button></div>`) : ''}
                         <input type="file" id="ppg-${p.id}" accept="image/*,.pdf" onchange="uploadDocument('${p.id}', 'passportPage', this)" style="font-size:10px; width:100%;">
                     </div>
                 </div>

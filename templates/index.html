@@ -42,6 +42,7 @@
         .history-title { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .history-arrow { font-size: 18px; width: 18px; text-align: center; }
         .crew-med-header { padding: 6px 10px !important; min-height: 38px; display: flex; align-items: center; gap: 10px; }
+        #CrewMedical .crew-med-header { background: #fff; font-size: 16px; }
 
         .collapsible { background: white; border: 1px solid #ddd; margin-bottom: 4px; border-radius: 4px; }
         .col-header { padding: 8px 12px; cursor: pointer; background: #f8f9fa; display: flex; justify-content: space-between; font-weight: bold; font-size: 14px; }
@@ -296,9 +297,9 @@
                 </div>
             </div>
             <div class="collapsible">
-                <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                    <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Crew Credentials</span>
-                </div>
+            <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Crew Login Credentials</span>
+            </div>
                 <div class="col-body" style="padding:12px; background:#f8f9fa;">
                     <div id="crew-credentials"></div>
                 </div>

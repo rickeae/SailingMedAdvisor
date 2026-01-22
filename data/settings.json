@@ -1,5 +1,5 @@
 {
-    "triage_instruction": "Act as Lead Clinician. Priority: Life-saving protocols. Format: ## ASSESSMENT, ## PROTOCOL.",
+    "triage_instruction": "Act as Lead Clinician. Priority: Life-saving protocols. Format: ## ASSESSMENT, ## PROTOCOL.bbbccc",
     "inquiry_instruction": "Act as Medical Librarian. Focus: Academic research and pharmacology.",
     "tr_temp": 0.1,
     "tr_tok": 1024,
@@ -8,5 +8,5 @@
     "in_tok": 2048,
     "in_p": 0.95,
     "rep_penalty": 1.1,
-    "mission_context": "Isolated Medical Station offshore."
+    "mission_context": "Isolated Medical Station offshore.xxx"
 }

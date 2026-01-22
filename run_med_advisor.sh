@@ -25,7 +25,18 @@ python3 -c "import fastapi, uvicorn" 2>/dev/null || {
 # export ADMIN_PASSWORD='your_secure_password'
 # export SECRET_KEY='your_secret_key'
 
+# Detect a LAN IP to share in the startup banner (best effort)
+LAN_IP=$(hostname -I 2>/dev/null | awk 'NF{print $1; exit}')
+if [ -z "$LAN_IP" ] && command -v ip >/dev/null 2>&1; then
+    LAN_IP=$(ip route get 8.8.8.8 2>/dev/null | awk 'NR==1 {print $7}')
+fi
+
 # Run the application
 echo "🚀 Starting server on http://127.0.0.1:5000"
+if [ -n "$LAN_IP" ]; then
+    echo "🌐 LAN access: http://${LAN_IP}:5000"
+else
+    echo "🌐 LAN access: http://<this-machine-ip>:5000"
+fi
 echo "=================================================="
 uvicorn app:app --host 0.0.0.0 --port 5000

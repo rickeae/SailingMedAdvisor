@@ -16,7 +16,7 @@
         .tab-triage { flex: 1.2; font-weight: 900; }
         .tab-nowrap { white-space: nowrap; }
         .tab-config { color: white; }
-        .content { flex-grow: 1; padding: 15px; overflow-y: auto; display: none; flex-direction: column; background: var(--bg); }
+        .content { flex-grow: 1; padding: 15px; overflow-y: auto; display: none; flex-direction: column; background: var(--bg); min-height: calc(100vh - var(--banner-height) - 20px); }
         .page-shell { max-width: var(--page-width); margin: 0 auto; width: 100%; box-sizing: border-box; }
         .page-body { display: flex; gap: 16px; align-items: stretch; width: 100%; position: relative; }
         .page-body.sidebar-open .page-main { margin-right: 340px; padding-right: 24px; }
@@ -67,6 +67,9 @@
         .history-title { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .history-arrow { font-size: 18px; width: 18px; text-align: center; }
         .crew-med-header { padding: 6px 10px !important; min-height: 38px; display: flex; align-items: center; gap: 10px; }
+        .dev-tag { display: none; background: #fff5d7; color: #8a5a00; border: 1px dashed #e0b15c; border-radius: 4px; padding: 2px 6px; font-size: 11px; font-weight: 800; letter-spacing: 0.2px; text-transform: uppercase; }
+        .mode-developer .dev-tag { display: inline-block; }
+        .mode-user .user-adv-only { display: none !important; }
         #CrewMedical .crew-med-header { background: #fff; font-size: 16px; }
         #VesselCrewInfo .panel-wrapper { font-size: 15px; }
         #VesselCrewInfo .col-body { font-size: 15px; }
@@ -98,10 +101,9 @@
 <body>
 
 <div class="nav">
-    <button class="tab tab-triage active" onclick="showTab(event, 'Chat')">TRIAGE CHAT</button>
+    <button class="tab tab-triage active" onclick="showTab(event, 'Chat')">MEDGEMMA CHAT</button>
     <button class="tab tab-nowrap" onclick="showTab(event, 'CrewMedical')">CREW HEALTH & LOG</button>
-    <button class="tab" onclick="showTab(event, 'OnboardPharmacy')">PHARMACY</button>
-    <button class="tab" onclick="showTab(event, 'OnboardEquipment')">EQUIPMENT</button>
+    <button class="tab" onclick="showTab(event, 'OnboardEquipment')">MEDICAL CHEST</button>
     <button class="tab" onclick="showTab(event, 'VesselCrewInfo')">VESSEL & CREW</button>
     <button class="tab tab-config" onclick="showTab(event, 'Settings')">SETTINGS</button>
 </div>
@@ -110,8 +112,10 @@
         <div id="banner" class="banner">
         <div id="banner-controls-triage" class="banner-controls" style="display:flex;">
             <button id="mode-toggle" class="mode-toggle" onclick="toggleMode()">TRIAGE CHAT</button>
-            <select id="model-select" style="min-width:200px;"><option value="google/medgemma-1.5-4b-it">medgemma-1.5-4b-it</option><option value="google/medgemma-1.5-28b-it">medgemma-1.5-28b-it</option></select>
-            <button onclick="togglePriv()" id="priv-btn" class="btn" style="background:#555;">LOGGING: ON</button>
+            <select id="model-select" style="min-width:200px;">
+                <option value="google/medgemma-1.5-4b-it">medgemma-1.5-4b-it (local)</option>
+                <option value="google/medgemma-27b-text-it">medgemma-27b-text-it (local)</option>
+            </select>
         </div>
         <div id="banner-controls-crew" class="banner-controls" style="justify-content:space-between; gap:12px;">
             <div style="display:flex; gap:12px; align-items:center; flex:1;">
@@ -134,18 +138,39 @@
                     <div class="page-main">
                         <div class="triage-wrapper">
                             <div class="chat-area">
+                    <div class="collapsible" style="margin-bottom:12px;">
+                        <div id="query-form-header" class="col-header crew-med-header" data-pref-key="query-form-open" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start; align-items:center;">
+                            <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▾</span><span id="query-form-title" style="font-weight:700;">New Triage Chat</span>
+                        </div>
+                        <div id="query-form-body" class="col-body" style="padding:16px; background:#f4f4f4; display:block;">
+                            <div style="margin-bottom:12px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                                <span style="font-weight:800; color:var(--dark); min-width:160px;">Crew Member Receiving Care</span>
+                                <select id="p-select" style="flex:1; max-width:320px; padding:10px; font-weight:700; min-width:220px;"></select>
+                                <button onclick="togglePriv()" id="priv-btn" class="btn" style="background:#555; min-width:140px;">LOGGING: ON</button>
+                            </div>
+                            <textarea id="msg" style="height:105px;" placeholder="Describe what's happening"></textarea>
+                            <div class="collapsible" style="margin-top:12px;">
+                                <div id="prompt-preview-header" class="col-header crew-med-header user-adv-only" style="background:#fff; justify-content:flex-start; align-items:center;" role="button" aria-expanded="false" tabindex="0">
+                                    <span class="detail-icon history-arrow" style="font-size:16px; margin-right:8px;">▸</span><span style="font-weight:700;">Prompt Injection</span>
+                                </div>
+                                <div id="prompt-preview-container" class="col-body user-adv-only" style="padding:10px; background:#fff; display:none;">
+                                    <textarea id="prompt-preview" style="width:100%; min-height:140px; padding:10px; border:1px solid #ccc; border-radius:4px;"></textarea>
+                                    <div id="prompt-refresh-row" style="display:flex; justify-content:space-between; align-items:center; margin-top:6px; flex-wrap:wrap; gap:8px;">
+                                        <div style="color:#555; font-size:12px;">Edits here apply only to this submission. Use Settings to change defaults.</div>
+                                        <button onclick="refreshPromptPreview(true)" class="btn btn-sm" style="background:var(--inquiry);">Refresh from Settings</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div style="display:flex; gap:10px; margin-top:10px; align-items:center; flex-wrap:wrap;">
+                                <button onclick="runChat()" id="run-btn" class="btn" style="flex-grow:1; background:var(--triage); min-width:160px;">SUBMIT FOR TRIAGE</button>
+                                <button onclick="repeatLast()" id="repeat-btn" class="btn user-adv-only" style="background:#555; min-width:120px;">REPEAT LAST</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div style="display:flex; justify-content:flex-end; margin-bottom:6px;">
+                        <button onclick="clearDisplay()" class="btn btn-sm" style="background:#c62828;">Clear</button>
+                    </div>
                     <div id="display" class="display"></div>
-                    <div style="padding:20px; background:#f4f4f4;">
-                        <div style="margin-bottom:12px; display:flex; align-items:center; gap:10px;">
-                            <span style="font-weight:800; color:var(--dark); min-width:160px;">Affected Crew Member</span>
-                            <select id="p-select" style="flex:1; max-width:420px; padding:10px; font-weight:700;"></select>
-                        </div>
-                        <textarea id="msg" style="height:70px;" placeholder="Describe what's happening"></textarea>
-                        <div style="display:flex; gap:10px; margin-top:10px;">
-                            <button onclick="runChat()" id="run-btn" class="btn" style="flex-grow:1; background:var(--triage);">RUN ANALYSIS</button>
-                            <button onclick="repeatLast()" id="repeat-btn" class="btn" style="background:#555;">REPEAT LAST</button>
-                        </div>
-                        </div>
                     </div>
                 </div>
             </div>
@@ -197,42 +222,320 @@
     </div>
 </div>
 
-<div id="OnboardPharmacy" class="content">
-    <div class="page-shell">
-        <div class="page-body sidebar-open">
-            <div class="page-main">
-                <div class="page-shell">
-                    <div class="panel-wrapper" data-sidebar-id="pharmacy-section" style="min-height:120px; display:flex; align-items:center; justify-content:center; color:#666;">Pharmacy view coming soon.</div>
-                </div>
-            </div>
-            <div class="page-sidebar" data-tab="OnboardPharmacy" onclick="toggleSidebar(this)">
-                <button class="sidebar-toggle">Context →</button>
-                <div class="sidebar-content">
-                    <div class="sidebar-section" data-sidebar-section="pharmacy-section">
-                        <div class="sidebar-title"><span class="sidebar-pill">Pharmacy</span> Medicines & Stock</div>
-                        <div class="sidebar-body">Lorem ipsum dolor sit amet, consectetur adipiscing elit. Aliquam dapibus, neque non tempor bibendum, arcu felis faucibus elit, a efficitur erat purus sit amet lacus.</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-
 <div id="OnboardEquipment" class="content">
     <div class="page-shell">
         <div class="page-body sidebar-open">
             <div class="page-main">
                 <div class="page-shell">
-                    <div class="panel-wrapper" data-sidebar-id="equipment-section" style="min-height:120px; display:flex; align-items:center; justify-content:center; color:#666;">Equipment view coming soon.</div>
+                    <div class="panel-wrapper" data-sidebar-id="equipment-section">
+                        <div class="collapsible">
+                            <div class="col-header crew-med-header" data-sidebar-id="equipment-medication-section" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                                <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Medicines (Pharmaceuticals)</span><span class="dev-tag">dev:medicines-shell</span>
+                            </div>
+                            <div class="col-body" style="padding:12px; display:none;">
+                                <div class="collapsible" style="margin-bottom:12px;">
+                                    <div class="col-header crew-med-header" data-sidebar-id="equipment-medication-intake" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                                        <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▾</span><span style="font-weight:700;">Import Medicines from Photo (Qwen2.5-VL-7B)</span><span class="dev-tag">dev:med-photo-import</span>
+                                    </div>
+                                    <div class="col-body" style="padding:12px; background:#f8f9fa; display:block;">
+                                        <div class="dev-tag" style="margin-bottom:8px;">dev:med-photo-controls</div>
+                                        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
+                                            <input id="med-photo-input" type="file" accept="image/*" multiple style="padding:6px; font-size:13px;">
+                                            <button class="btn btn-sm" style="background:var(--dark);" onclick="queueMedicinePhotos()">+ Queue Photos</button>
+                                            <button class="btn btn-sm" style="background:var(--inquiry);" onclick="processQueuedMedicinePhotos()">Run Import Queue</button>
+                                            <div style="font-size:12px; color:#555; display:flex; gap:6px; align-items:center;">
+                                                <span class="sidebar-pill" style="background:#e8f4ff; color:#1a4b8f;">Qwen2.5-VL-7B</span>
+                                                <span>Reads packaging, creates inventory item, stores photo in record.</span>
+                                            </div>
+                                        </div>
+                                        <div class="dev-tag" style="margin-bottom:6px;">dev:med-photo-queue</div>
+                                        <div id="med-photo-queue" style="display:flex; flex-direction:column; gap:10px;"></div>
+                                    </div>
+                                </div>
+                                <div class="collapsible" style="margin-bottom:12px;">
+                                    <div class="col-header crew-med-header" data-sidebar-id="equipment-medication-inventory" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                                        <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Pharmacy Inventory (AI + manual)</span><span class="dev-tag">dev:pharmacy-inventory</span>
+                                    </div>
+                                    <div class="col-body" style="padding:12px; background:#f8f9fa; display:none;">
+                                        <div class="dev-tag" style="margin-bottom:6px;">dev:pharmacy-controls</div>
+                                        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; align-items:center;">
+                                            <div style="font-size:12px; color:#444;">Photo imports are written here automatically when processing finishes.</div>
+                                        </div>
+                                        <div class="dev-tag" style="margin-bottom:6px;">dev:pharmacy-list</div>
+                                        <div id="pharmacy-list"></div>
+                                    </div>
+                                </div>
+                                <div id="medication-add-container" class="collapsible" style="margin-bottom:12px;">
+                                    <div id="medication-add-header" class="col-header crew-med-header" data-sidebar-id="equipment-medication-add" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                                        <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Add Medication</span><span class="dev-tag">dev:medication-add</span>
+                                    </div>
+                                    <div id="medication-add-body" class="col-body" style="padding:12px; background:#f8f9fa; display:none;">
+                                        <div class="dev-tag" style="margin-bottom:8px;">dev:medication-add-form</div>
+                                        <div style="display:grid; grid-template-columns: repeat(2, minmax(240px, 1fr)); gap:10px; margin-bottom:10px;">
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Medication Name *</label>
+                                                <input id="med-new-name" type="text" style="width:100%; padding:8px;" placeholder="e.g., Amoxicillin">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Category *</label>
+                                                <input id="med-new-cat" type="text" style="width:100%; padding:8px;" placeholder="Medication">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Type</label>
+                                                <select id="med-new-type" style="width:100%; padding:8px;">
+                                                    <option value="medication">Medication</option>
+                                                    <option value="consumable">Consumable (one-time)</option>
+                                                    <option value="durable">Durable (reusable)</option>
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Storage Location</label>
+                                                <input id="med-new-loc" type="text" style="width:100%; padding:8px;" placeholder="Pharmacy Locker">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Sub-Location / Kit</label>
+                                                <input id="med-new-subloc" type="text" style="width:100%; padding:8px;" placeholder="Top shelf, bin A">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Parent Kit ID</label>
+                                                <input id="med-new-parent" type="text" style="width:100%; padding:8px;" placeholder="Pharmacy">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Current Status</label>
+                                                <select id="med-new-status" style="width:100%; padding:8px;">
+                                                    <option value="In Stock">In Stock</option>
+                                                    <option value="In Use">In Use</option>
+                                                    <option value="Sterilizing">Sterilizing</option>
+                                                    <option value="Damaged/Out of Service">Damaged/Out of Service</option>
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Expiry Date</label>
+                                                <input id="med-new-exp" type="date" style="width:100%; padding:8px;">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Last Inspection Date</label>
+                                                <input id="med-new-inspect" type="date" style="width:100%; padding:8px;">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Battery Type & Status</label>
+                                                <input id="med-new-batt" type="text" style="width:100%; padding:8px;" placeholder="n/a or pack info">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Calibration Due Date</label>
+                                                <input id="med-new-cal" type="date" style="width:100%; padding:8px;">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Total Quantity</label>
+                                                <input id="med-new-qty" type="number" style="width:100%; padding:8px;">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Minimum Par Level</label>
+                                                <input id="med-new-par" type="number" style="width:100%; padding:8px;">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Supplier / Manufacturer</label>
+                                                <input id="med-new-sup" type="text" style="width:100%; padding:8px;" placeholder="Vendor">
+                                            </div>
+                                            <div style="grid-column: span 2;">
+                                                <label style="font-weight:700; font-size:12px;">Notes</label>
+                                                <textarea id="med-new-notes" style="width:100%; padding:8px; min-height:60px;"></textarea>
+                                            </div>
+                                        </div>
+                                        <button onclick="addMedicationItem()" class="btn btn-sm" style="background:var(--dark); width:100%;">+ Add Medication</button>
+                                    </div>
+                                </div>
+                                <div id="medication-list"></div>
+                            </div>
+                        </div>
+                        <div class="collapsible">
+                            <div id="equipment-section-header" class="col-header crew-med-header" data-sidebar-id="equipment-section" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                                <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Medical Equipment (Durable tools)</span><span class="dev-tag">dev:equipment-shell</span>
+                            </div>
+                            <div class="col-body" style="padding:12px; display:none;">
+                                <div id="equipment-add-container" class="collapsible" style="margin-bottom:12px;">
+                                    <div id="equipment-add-header" class="col-header crew-med-header" data-sidebar-id="equipment-add" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                                    <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Add Medical Equipment Item</span><span class="dev-tag">dev:equipment-add</span>
+                                    </div>
+                                    <div id="equipment-add-body" class="col-body" style="padding:12px; background:#f8f9fa; display:none;">
+                                        <div class="dev-tag" style="margin-bottom:8px;">dev:equipment-add-form</div>
+                                        <div style="display:grid; grid-template-columns: repeat(2, minmax(240px, 1fr)); gap:10px; margin-bottom:10px;">
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Medical Equipment Name *</label>
+                                                <input id="eq-new-name" type="text" style="width:100%; padding:8px;" placeholder="e.g., Oxygen Concentrator">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Category *</label>
+                                                <input id="eq-new-cat" type="text" style="width:100%; padding:8px;" placeholder="Diagnostic, Surgical, etc.">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Type</label>
+                                                <select id="eq-new-type" style="width:100%; padding:8px;">
+                                                    <option value="durable">Durable (reusable)</option>
+                                                    <option value="consumable">Consumable (one-time)</option>
+                                                    <option value="medication">Medication</option>
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Storage Location</label>
+                                                <input id="eq-new-loc" type="text" style="width:100%; padding:8px;" placeholder="Medical Bag 1, Locker B">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Sub-Location / Kit</label>
+                                                <input id="eq-new-subloc" type="text" style="width:100%; padding:8px;" placeholder="Inside Airway pouch">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Parent Kit ID</label>
+                                                <input id="eq-new-parent" type="text" style="width:100%; padding:8px;" placeholder="Medical Bag 1">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Current Status</label>
+                                                <select id="eq-new-status" style="width:100%; padding:8px;">
+                                                    <option value="In Stock">In Stock</option>
+                                                    <option value="In Use">In Use</option>
+                                                    <option value="Sterilizing">Sterilizing</option>
+                                                    <option value="Damaged/Out of Service">Damaged/Out of Service</option>
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Sterilization / Expiry Date</label>
+                                                <input id="eq-new-exp" type="date" style="width:100%; padding:8px;">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Last Inspection Date</label>
+                                                <input id="eq-new-inspect" type="date" style="width:100%; padding:8px;">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Battery Type & Status</label>
+                                                <input id="eq-new-batt" type="text" style="width:100%; padding:8px;" placeholder="2x AAA; changed Jan 2026">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Calibration Due Date</label>
+                                                <input id="eq-new-cal" type="date" style="width:100%; padding:8px;">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Total Quantity</label>
+                                                <input id="eq-new-qty" type="number" style="width:100%; padding:8px;">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Minimum Par Level</label>
+                                                <input id="eq-new-par" type="number" style="width:100%; padding:8px;">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Supplier / Manufacturer</label>
+                                                <input id="eq-new-sup" type="text" style="width:100%; padding:8px;" placeholder="Who to contact">
+                                            </div>
+                                            <div style="grid-column: span 2;">
+                                                <label style="font-weight:700; font-size:12px;">Notes</label>
+                                                <textarea id="eq-new-notes" style="width:100%; padding:8px; min-height:60px;"></textarea>
+                                            </div>
+                                        </div>
+                                        <button onclick="addMedicalStore()" class="btn btn-sm" style="background:var(--dark); width:100%;">+ Add Medical Equipment Item</button>
+                                    </div>
+                                </div>
+                                <div class="dev-tag" style="margin-bottom:6px;">dev:equipment-list</div>
+                                <div id="equipment-list"></div>
+                            </div>
+                        </div>
+                        <div class="collapsible">
+                            <div class="col-header crew-med-header" data-sidebar-id="equipment-consumables-section" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                                <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Medical Supplies (Consumables/sundries)</span><span class="dev-tag">dev:consumables-shell</span>
+                            </div>
+                            <div class="col-body" style="padding:12px; display:none;">
+                                <div id="consumables-add-container" class="collapsible" style="margin-bottom:12px;">
+                                    <div id="consumables-add-header" class="col-header crew-med-header" data-sidebar-id="equipment-consumables-add" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                                        <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Add Medical Supply</span><span class="dev-tag">dev:consumables-add</span>
+                                    </div>
+                                    <div id="consumables-add-body" class="col-body" style="padding:12px; background:#f8f9fa; display:none;">
+                                        <div class="dev-tag" style="margin-bottom:8px;">dev:consumables-add-form</div>
+                                        <div style="display:grid; grid-template-columns: repeat(2, minmax(240px, 1fr)); gap:10px; margin-bottom:10px;">
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Medical Supply Name *</label>
+                                                <input id="cons-new-name" type="text" style="width:100%; padding:8px;" placeholder="e.g., Gauze Pads">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Category *</label>
+                                                <input id="cons-new-cat" type="text" style="width:100%; padding:8px;" placeholder="Consumable">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Type</label>
+                                                <select id="cons-new-type" style="width:100%; padding:8px;">
+                                                    <option value="consumable">Consumable (one-time)</option>
+                                                    <option value="durable">Durable (reusable)</option>
+                                                    <option value="medication">Medication</option>
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Storage Location</label>
+                                                <input id="cons-new-loc" type="text" style="width:100%; padding:8px;" placeholder="Locker C">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Sub-Location / Kit</label>
+                                                <input id="cons-new-subloc" type="text" style="width:100%; padding:8px;" placeholder="Drawer 2">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Parent Kit ID</label>
+                                                <input id="cons-new-parent" type="text" style="width:100%; padding:8px;" placeholder="First Aid Kit">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Current Status</label>
+                                                <select id="cons-new-status" style="width:100%; padding:8px;">
+                                                    <option value="In Stock">In Stock</option>
+                                                    <option value="In Use">In Use</option>
+                                                    <option value="Sterilizing">Sterilizing</option>
+                                                    <option value="Damaged/Out of Service">Damaged/Out of Service</option>
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Expiry Date</label>
+                                                <input id="cons-new-exp" type="date" style="width:100%; padding:8px;">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Last Inspection Date</label>
+                                                <input id="cons-new-inspect" type="date" style="width:100%; padding:8px;">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Battery Type & Status</label>
+                                                <input id="cons-new-batt" type="text" style="width:100%; padding:8px;" placeholder="n/a">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Calibration Due Date</label>
+                                                <input id="cons-new-cal" type="date" style="width:100%; padding:8px;">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Total Quantity</label>
+                                                <input id="cons-new-qty" type="number" style="width:100%; padding:8px;">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Minimum Par Level</label>
+                                                <input id="cons-new-par" type="number" style="width:100%; padding:8px;">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Supplier / Manufacturer</label>
+                                                <input id="cons-new-sup" type="text" style="width:100%; padding:8px;" placeholder="Vendor">
+                                            </div>
+                                            <div style="grid-column: span 2;">
+                                                <label style="font-weight:700; font-size:12px;">Notes</label>
+                                                <textarea id="cons-new-notes" style="width:100%; padding:8px; min-height:60px;"></textarea>
+                                            </div>
+                                        </div>
+                                        <button onclick="addConsumableItem()" class="btn btn-sm" style="background:var(--dark); width:100%;">+ Add Consumable</button>
+                                    </div>
+                                </div>
+                                <div class="dev-tag" style="margin-bottom:6px;">dev:consumables-list</div>
+                                <div id="consumables-list"></div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
             <div class="page-sidebar" data-tab="OnboardEquipment" onclick="toggleSidebar(this)">
                 <button class="sidebar-toggle">Context →</button>
-                <div class="sidebar-content">
-                    <div class="sidebar-section" data-sidebar-section="equipment-section">
-                        <div class="sidebar-title"><span class="sidebar-pill">Equipment</span> Gear & Checks</div>
-                        <div class="sidebar-body">Lorem ipsum dolor sit amet, consectetur adipiscing elit. Praesent sed nisl magna. Integer sodales mauris vitae leo luctus feugiat.</div>
-                    </div>
+                        <div class="sidebar-content">
+                            <div class="sidebar-section" data-sidebar-section="equipment-section">
+                                <div class="sidebar-title"><span class="sidebar-pill">Medical Equipment</span> Gear & Checks</div>
+                                <div class="sidebar-body">Lorem ipsum dolor sit amet, consectetur adipiscing elit. Praesent sed nisl magna. Integer sodales mauris vitae leo luctus feugiat.</div>
+                            </div>
                 </div>
             </div>
         </div>
@@ -434,13 +737,29 @@
                             </div>
                             <div class="collapsible" style="margin-bottom:12px;">
                                 <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                                    <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Global Mission Context</span>
+                                    <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Mission Context (Informs Both Triage and Inquiry Modes)</span>
                                 </div>
                                 <div class="col-body" style="padding:12px; background:#f8f9fa;">
                                     <textarea id="mission_context" style="height:60px;"></textarea>
                                     <div style="margin-top:12px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:10px;">
                                         <button class="btn btn-sm" style="background:var(--inquiry);" onclick="resetSection('mission')">Reset to Default</button>
-                                        <button onclick="saveSettings()" class="btn" style="background:var(--dark);">SYNC SYSTEM PARAMETERS</button>
+                                        <div id="settings-save-status" style="font-size:12px; color:#2c3e50; min-height:18px;"></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="collapsible" style="margin-bottom:12px;">
+                                <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                                    <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">User Mode</span>
+                                </div>
+                                <div class="col-body" style="padding:12px; background:#f8f9fa;">
+                                    <label for="user_mode">User Mode</label>
+                                    <select id="user_mode" style="padding:10px; min-width:200px;">
+                                        <option value="user">User</option>
+                                        <option value="advanced">Advanced</option>
+                                        <option value="developer">Developer</option>
+                                    </select>
+                                    <div style="margin-top:8px; font-size:12px; color:#555;">
+                                        User: hides advanced controls. Advanced: shows prompt tools. Developer: also shows dev tags.
                                     </div>
                                 </div>
                             </div>
@@ -469,9 +788,11 @@
     </div>
 </div>
 
-<script src="/static/js/chat.js?v=2007"></script>
-<script src="/static/js/crew.js?v=2007"></script>
-<script src="/static/js/settings.js?v=2007"></script>
-<script src="/static/js/main.js?v=2007"></script>
+<script src="/static/js/chat.js?v=2017"></script>
+<script src="/static/js/crew.js?v=2018"></script>
+<script src="/static/js/pharmacy.js?v=2023"></script>
+<script src="/static/js/equipment.js?v=2021"></script>
+<script src="/static/js/settings.js?v=2022"></script>
+<script src="/static/js/main.js?v=2019"></script>
 </body>
 </html>

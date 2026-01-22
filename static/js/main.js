@@ -1,5 +1,23 @@
 // Main utilities and navigation - Cleaned up
 
+const SIDEBAR_STATE_KEY = 'sailingmed:sidebarCollapsed';
+let globalSidebarCollapsed = false;
+
+function setSidebarState(collapsed) {
+    globalSidebarCollapsed = !!collapsed;
+    try { localStorage.setItem(SIDEBAR_STATE_KEY, globalSidebarCollapsed ? '1' : '0'); } catch (err) { /* ignore */ }
+    document.querySelectorAll('.page-sidebar').forEach((sidebar) => {
+        sidebar.classList.toggle('collapsed', globalSidebarCollapsed);
+        const button = sidebar.querySelector('.sidebar-toggle');
+        if (button) button.textContent = globalSidebarCollapsed ? 'Context ←' : 'Context →';
+        const body = sidebar.closest('.page-body');
+        if (body) {
+            body.classList.toggle('sidebar-open', !globalSidebarCollapsed);
+            body.classList.toggle('sidebar-collapsed', globalSidebarCollapsed);
+        }
+    });
+}
+
 // Toggle collapsible sections
 function toggleSection(el) {
     const body = el.nextElementSibling;
@@ -9,6 +27,9 @@ function toggleSection(el) {
     if (icon) icon.textContent = isExpanded ? "▸" : "▾";
     if (el.dataset && el.dataset.sidebarId) {
         syncSidebarSections(el.dataset.sidebarId, !isExpanded);
+    }
+    if (el.dataset && el.dataset.prefKey) {
+        try { localStorage.setItem(el.dataset.prefKey, (!isExpanded).toString()); } catch (err) { /* ignore */ }
     }
 }
 
@@ -41,14 +62,9 @@ function toggleCrewSection(el) {
 function toggleSidebar(btn) {
     const sidebar = btn.closest ? btn.closest('.page-sidebar') : btn;
     if (!sidebar) return;
-    const button = sidebar.querySelector('.sidebar-toggle') || btn;
-    const collapsed = sidebar.classList.toggle('collapsed');
-    if (button) button.textContent = collapsed ? 'Context ←' : 'Context →';
-    const body = sidebar.closest('.page-body');
-    if (body) {
-        body.classList.toggle('sidebar-open', !collapsed);
-        body.classList.toggle('sidebar-collapsed', collapsed);
-    }
+    // Toggle global state and apply to all sidebars
+    const nextCollapsed = !globalSidebarCollapsed;
+    setSidebarState(nextCollapsed);
 }
 
 // Show/hide matching sidebar sections
@@ -65,12 +81,11 @@ function syncSidebarSections(sectionId, isOpen) {
 
 // Initialize sidebar visibility based on current collapsible state
 function initSidebarSync() {
-    document.querySelectorAll('.page-body').forEach(body => {
-        const sb = body.querySelector('.page-sidebar');
-        const isCollapsed = sb ? sb.classList.contains('collapsed') : true;
-        body.classList.toggle('sidebar-open', sb && !isCollapsed);
-        body.classList.toggle('sidebar-collapsed', sb && isCollapsed);
-    });
+    try {
+        const saved = localStorage.getItem(SIDEBAR_STATE_KEY);
+        globalSidebarCollapsed = saved === '1';
+    } catch (err) { /* ignore */ }
+    setSidebarState(globalSidebarCollapsed);
     document.querySelectorAll('[data-sidebar-id]').forEach(header => {
         const body = header.nextElementSibling;
         const isOpen = body && body.style.display === 'block';
@@ -89,10 +104,9 @@ async function showTab(e, n) {
     if (n === 'Chat') updateUI();
     
     if(n === 'Settings') {
-        const s = await (await fetch('/api/data/settings', {credentials:'same-origin'})).json();
-        Object.keys(s).forEach(k => { 
-            if(document.getElementById(k)) document.getElementById(k).value = s[k]; 
-        });
+        if (typeof loadSettingsUI === 'function') {
+            await loadSettingsUI();
+        }
         if (typeof loadCrewCredentials === 'function') {
             loadCrewCredentials();
         }
@@ -103,11 +117,25 @@ async function showTab(e, n) {
             loadVesselInfo();
         }
         loadContext(n);
-    } else if (n === 'OnboardPharmacy' || n === 'OnboardEquipment') {
+    } else if (n === 'OnboardEquipment') {
+        if (typeof loadEquipment === 'function') {
+            loadEquipment();
+        }
+        if (typeof loadMedPhotoQueue === 'function') {
+            loadMedPhotoQueue();
+        }
+        if (typeof loadPharmacy === 'function') {
+            loadPharmacy();
+        }
         loadContext(n);
     }
     if (n === 'Chat') {
         loadContext('Chat');
+        restoreCollapsibleState('query-form-header', true);
+        // Prefetch prompt preview so it is ready when expanded
+        if (typeof refreshPromptPreview === 'function') {
+            refreshPromptPreview();
+        }
     }
 }
 
@@ -157,12 +185,31 @@ window.onload = () => {
     updateUI(); 
     toggleBannerControls('Chat');
     initSidebarSync();
+    restoreCollapsibleState('query-form-header', true);
     restoreLastChatView();
 };
 
 // Ensure loadCrewData exists before any calls (safety for race conditions)
 if (typeof window.loadCrewData !== 'function') {
     console.error('[DEBUG] window.loadCrewData is not defined at main.js load time.');
+}
+
+function restoreCollapsibleState(headerId, defaultOpen = true) {
+    const header = document.getElementById(headerId);
+    if (!header) return;
+    const body = header.nextElementSibling;
+    if (!body) return;
+    let isOpen = defaultOpen;
+    const key = header.dataset?.prefKey || headerId;
+    try {
+        const stored = localStorage.getItem(key);
+        if (stored !== null) {
+            isOpen = stored === 'true';
+        }
+    } catch (err) { /* ignore */ }
+    body.style.display = isOpen ? 'block' : 'none';
+    const icon = header.querySelector('.detail-icon');
+    if (icon) icon.textContent = isOpen ? '▾' : '▸';
 }
 
 // Context loader

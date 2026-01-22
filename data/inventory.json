@@ -1,1 +1,210 @@
-[]
+[
+    {
+        "id": "med-1769072077150",
+        "genericName": "Medication (photo import)",
+        "brandName": "",
+        "form": "",
+        "strength": "",
+        "currentQuantity": "",
+        "minThreshold": "",
+        "unit": "",
+        "storageLocation": "",
+        "expiryDate": "",
+        "batchLot": "",
+        "controlled": false,
+        "manufacturer": "",
+        "primaryIndication": "",
+        "allergyWarnings": "",
+        "standardDosage": "```json\n{\n  \"generic_name\": \"Sodium Hyaluronate\",\n  \"brand_name\": \"Hialid 0.1\",\n  \"form\": \"ophthalmic solution\",\n  \"strength\": \"0.05325mg/mL\",\n  \"expiry_date\": \"Not visible in the image\",\n  \"batch_lot\": \"Not visible in the image\",\n  \"storage_location\": \"Below 30\u00b0C in a tight container\",\n  \"manufacturer\": \"Not visible in the image\",\n  \"indication\": \"Ophthalmic use only\",\n  \"allergy_warnings\": \"Contains chlorhexidine gluconate\",\n  \"dosage\": \"Not specified in the image\",\n  \"notes\": \"Purified Sodium Hyaluronate",
+        "photos": [
+            "/uploads/medicines/medimg-88fba47ca5404ba0986eb05c854a01dc.jpg"
+        ],
+        "purchaseHistory": [
+            {
+                "id": "ph-b286e6e581f14088aff93252ee8a670b",
+                "date": "2026-01-22",
+                "quantity": "",
+                "price": "",
+                "notes": "```json\n{\n  \"generic_name\": \"Sodium Hyaluronate\",\n  \"brand_name\": \"Hialid 0.1\",\n  \"form\": \"ophthalmic solution\",\n  \"strength\": \"0.05325mg/mL\",\n  \"expiry_date\": \"Not visible in the image\",\n  \"batch_lot\": \"Not visible in the image\",\n  \"storage_location\": \"Below 30\u00b0C in a tight container\",\n  \"manufacturer\": \"Not visible in the image\",\n  \"indication\": \"Ophthalmic use only\",\n  \"allergy_warnings\": \"Contains chlorhexidine gluconate\",\n  \"dosage\": \"Not specified in the image\",\n  \"notes\": \"Purified Sodium Hyaluronate",
+                "photos": [
+                    "/uploads/medicines/medimg-88fba47ca5404ba0986eb05c854a01dc.jpg"
+                ]
+            }
+        ]
+    },
+    {
+        "id": "med-1769074454601",
+        "genericName": "Medication",
+        "brandName": "",
+        "form": "",
+        "strength": "",
+        "currentQuantity": "",
+        "minThreshold": "",
+        "unit": "",
+        "storageLocation": "",
+        "expiryDate": "",
+        "batchLot": "",
+        "controlled": false,
+        "manufacturer": "",
+        "primaryIndication": "",
+        "allergyWarnings": "",
+        "standardDosage": "```json\n{\n  \"generic_name\": \"Sodium Hyaluronate\",\n  \"brand_name\": \"Hialid 0.1\",\n  \"form\": \"ophthalmic solution\",\n  \"strength\": \"0.05325mg/mL\",\n  \"expiry_date\": \"Not visible in the image\",\n  \"batch_lot\": \"Not visible in the image\",\n  \"storage_location\": \"Below 30\u00b0C in a tight container\",\n  \"manufacturer\": \"Not visible in the image\",\n  \"indication\": \"Ophthalmic use only\",\n  \"allergy_warnings\": \"Contains chlorhexidine gluconate\",\n  \"dosage\": \"Not specified in the image\",\n  \"notes\": \"Purified Sodium Hyaluronate",
+        "photos": [
+            "/uploads/medicines/medimg-991c77eefc60406d9e4ffda246c69f0e.jpg"
+        ],
+        "purchaseHistory": [
+            {
+                "id": "ph-0796997dbccd4da595f352a6e8de6006",
+                "date": "2026-01-22",
+                "quantity": "",
+                "price": "",
+                "notes": "```json\n{\n  \"generic_name\": \"Sodium Hyaluronate\",\n  \"brand_name\": \"Hialid 0.1\",\n  \"form\": \"ophthalmic solution\",\n  \"strength\": \"0.05325mg/mL\",\n  \"expiry_date\": \"Not visible in the image\",\n  \"batch_lot\": \"Not visible in the image\",\n  \"storage_location\": \"Below 30\u00b0C in a tight container\",\n  \"manufacturer\": \"Not visible in the image\",\n  \"indication\": \"Ophthalmic use only\",\n  \"allergy_warnings\": \"Contains chlorhexidine gluconate\",\n  \"dosage\": \"Not specified in the image\",\n  \"notes\": \"Purified Sodium Hyaluronate",
+                "photos": [
+                    "/uploads/medicines/medimg-991c77eefc60406d9e4ffda246c69f0e.jpg"
+                ]
+            }
+        ],
+        "source": "photo_import",
+        "photoImported": true
+    },
+    {
+        "id": "med-1769074523488",
+        "genericName": "Medication",
+        "brandName": "",
+        "form": "",
+        "strength": "",
+        "currentQuantity": "",
+        "minThreshold": "",
+        "unit": "",
+        "storageLocation": "",
+        "expiryDate": "",
+        "batchLot": "",
+        "controlled": false,
+        "manufacturer": "",
+        "primaryIndication": "",
+        "allergyWarnings": "",
+        "standardDosage": "```json\n{\n  \"generic_name\": null,\n  \"brand_name\": null,\n  \"form\": null,\n  \"strength\": null,\n  \"expiry_date\": null,\n  \"batch_lot\": null,\n  \"storage_location\": null,\n  \"manufacturer\": null,\n  \"indication\": null,\n  \"allergy_warnings\": null,\n  \"dosage\": null,\n  \"notes\": null\n}\n```",
+        "photos": [
+            "/uploads/medicines/medimg-4dbf448b7ef04951a3f6d011745a0f4d.jpg"
+        ],
+        "purchaseHistory": [
+            {
+                "id": "ph-8d37cda45554430b8fa5007099e99f99",
+                "date": "2026-01-22",
+                "quantity": "",
+                "price": "",
+                "notes": "```json\n{\n  \"generic_name\": null,\n  \"brand_name\": null,\n  \"form\": null,\n  \"strength\": null,\n  \"expiry_date\": null,\n  \"batch_lot\": null,\n  \"storage_location\": null,\n  \"manufacturer\": null,\n  \"indication\": null,\n  \"allergy_warnings\": null,\n  \"dosage\": null,\n  \"notes\": null\n}\n```",
+                "photos": [
+                    "/uploads/medicines/medimg-4dbf448b7ef04951a3f6d011745a0f4d.jpg"
+                ]
+            }
+        ],
+        "source": "photo_import",
+        "photoImported": true
+    },
+    {
+        "id": "med-1769074669376",
+        "genericName": "Medication",
+        "brandName": "",
+        "form": "",
+        "strength": "",
+        "currentQuantity": "",
+        "minThreshold": "",
+        "unit": "",
+        "storageLocation": "",
+        "expiryDate": "",
+        "batchLot": "",
+        "controlled": false,
+        "manufacturer": "",
+        "primaryIndication": "",
+        "allergyWarnings": "",
+        "standardDosage": "```json\n{\n  \"generic_name\": \"Ibuprofen\",\n  \"brand_name\": \"Aetos Ibuprofen\",\n  \"form\": \"Film Coated Tablet\",\n  \"strength\": \"400 mg\",\n  \"expiry_date\": \"Not visible in the image\",\n  \"batch_lot\": \"Not visible in the image\",\n  \"storage_location\": \"Not visible in the image\",\n  \"manufacturer\": \"Not visible in the image\",\n  \"indication\": \"Not visible in the image\",\n  \"allergy_warnings\": \"Not visible in the image\",\n  \"dosage\": \"Not visible in the image\",\n  \"notes\": \"The image shows a blister pack of Aetos Ibuprofen 400 mg film-coated tablets.\"",
+        "photos": [
+            "/uploads/medicines/medimg-3094c2479ef847ae92b948f10c3f1979.jpg"
+        ],
+        "purchaseHistory": [
+            {
+                "id": "ph-bbb0684ea02f490faba84a827c0a2402",
+                "date": "2026-01-22",
+                "quantity": "",
+                "price": "",
+                "notes": "```json\n{\n  \"generic_name\": \"Ibuprofen\",\n  \"brand_name\": \"Aetos Ibuprofen\",\n  \"form\": \"Film Coated Tablet\",\n  \"strength\": \"400 mg\",\n  \"expiry_date\": \"Not visible in the image\",\n  \"batch_lot\": \"Not visible in the image\",\n  \"storage_location\": \"Not visible in the image\",\n  \"manufacturer\": \"Not visible in the image\",\n  \"indication\": \"Not visible in the image\",\n  \"allergy_warnings\": \"Not visible in the image\",\n  \"dosage\": \"Not visible in the image\",\n  \"notes\": \"The image shows a blister pack of Aetos Ibuprofen 400 mg film-coated tablets.\"",
+                "photos": [
+                    "/uploads/medicines/medimg-3094c2479ef847ae92b948f10c3f1979.jpg"
+                ]
+            }
+        ],
+        "source": "photo_import",
+        "photoImported": true
+    },
+    {
+        "id": "med-1769074798164",
+        "genericName": "Azitromicina Dihidrato",
+        "brandName": "Imbys\u00ae 500",
+        "form": "Comprimidos",
+        "strength": "500 mg",
+        "currentQuantity": "",
+        "minThreshold": "",
+        "unit": "",
+        "storageLocation": "Guatemala",
+        "expiryDate": "2018-1234",
+        "batchLot": "2018-1234",
+        "controlled": false,
+        "manufacturer": "ALTIAN Pharma, S.A.",
+        "primaryIndication": "Venta bajo receta / Via Oral",
+        "allergyWarnings": "",
+        "standardDosage": "```json\n{\n  \"generic_name\": \"Azitromicina Dihidrato\",\n  \"brand_name\": \"Imbys\u00ae 500\",\n  \"form\": \"Comprimidos\",\n  \"strength\": \"500 mg\",\n  \"expiry_date\": \"2018-1234\",\n  \"batch_lot\": \"2018-1234\",\n  \"storage_location\": \"Guatemala\",\n  \"manufacturer\": \"ALTIAN Pharma, S.A.\",\n  \"indication\": \"Venta bajo receta / Via Oral\",\n  \"allergy_warnings\": \"\",\n  \"dosage\": \"\",\n  \"notes\": \"\"\n}\n```",
+        "photos": [
+            "/uploads/medicines/medimg-e3051b1dbfa841699b0dce749679deb4.jpg"
+        ],
+        "purchaseHistory": [
+            {
+                "id": "ph-32a268748205424dbabe53edd5128981",
+                "date": "2026-01-22",
+                "quantity": "",
+                "price": "",
+                "notes": "```json\n{\n  \"generic_name\": \"Azitromicina Dihidrato\",\n  \"brand_name\": \"Imbys\u00ae 500\",\n  \"form\": \"Comprimidos\",\n  \"strength\": \"500 mg\",\n  \"expiry_date\": \"2018-1234\",\n  \"batch_lot\": \"2018-1234\",\n  \"storage_location\": \"Guatemala\",\n  \"manufacturer\": \"ALTIAN Pharma, S.A.\",\n  \"indication\": \"Venta bajo receta / Via Oral\",\n  \"allergy_warnings\": \"\",\n  \"dosage\": \"\",\n  \"notes\": \"\"\n}\n```",
+                "photos": [
+                    "/uploads/medicines/medimg-e3051b1dbfa841699b0dce749679deb4.jpg"
+                ]
+            }
+        ],
+        "source": "photo_import",
+        "photoImported": true
+    },
+    {
+        "id": "med-1769074958403",
+        "genericName": "Medication",
+        "brandName": "",
+        "form": "",
+        "strength": "",
+        "currentQuantity": "",
+        "minThreshold": "",
+        "unit": "",
+        "storageLocation": "",
+        "expiryDate": "",
+        "batchLot": "",
+        "controlled": false,
+        "manufacturer": "",
+        "primaryIndication": "",
+        "allergyWarnings": "",
+        "standardDosage": "```json\n{\n  \"generic_name\": \"Azitromicina Dihidrato\",\n  \"brand_name\": \"Imbys\u00ae 500\",\n  \"form\": \"Comprimidos\",\n  \"strength\": \"500 mg\",\n  \"expiry_date\": \"2018-1234\",\n  \"batch_lot\": \"2018-1234\",\n  \"storage_location\": \"No specific information provided in the image.\",\n  \"manufacturer\": \"ALTIAN Pharma, S.A., Guatemala\",\n  \"indication\": \"Venta bajo receta / V\u00eda Oral\",\n  \"allergy_warnings\": \"No specific information provided in the image.\",\n  \"dosage\": \"No specific information provided in the image.\",\n  \"",
+        "photos": [
+            "/uploads/medicines/medimg-5e8e3462c8b9406582036b35eb5cf190.jpg"
+        ],
+        "purchaseHistory": [
+            {
+                "id": "ph-f5cae32ef68b4968b73a2c00479ac530",
+                "date": "2026-01-22",
+                "quantity": "",
+                "price": "",
+                "notes": "```json\n{\n  \"generic_name\": \"Azitromicina Dihidrato\",\n  \"brand_name\": \"Imbys\u00ae 500\",\n  \"form\": \"Comprimidos\",\n  \"strength\": \"500 mg\",\n  \"expiry_date\": \"2018-1234\",\n  \"batch_lot\": \"2018-1234\",\n  \"storage_location\": \"No specific information provided in the image.\",\n  \"manufacturer\": \"ALTIAN Pharma, S.A., Guatemala\",\n  \"indication\": \"Venta bajo receta / V\u00eda Oral\",\n  \"allergy_warnings\": \"No specific information provided in the image.\",\n  \"dosage\": \"No specific information provided in the image.\",\n  \"",
+                "photos": [
+                    "/uploads/medicines/medimg-5e8e3462c8b9406582036b35eb5cf190.jpg"
+                ]
+            }
+        ],
+        "source": "photo_import",
+        "photoImported": true
+    }
+]

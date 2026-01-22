@@ -2,6 +2,8 @@
 
 // Reuse the chat dropdown storage key without redefining the global constant
 const CREW_LAST_PATIENT_KEY = typeof LAST_PATIENT_KEY !== 'undefined' ? LAST_PATIENT_KEY : 'sailingmed:lastPatient';
+let historyStore = [];
+let historyStoreById = {};
 
 // Calculate age from birthdate
 function calculateAge(birthdate) {
@@ -14,6 +16,78 @@ function calculateAge(birthdate) {
         age--;
     }
     return age >= 0 ? ` (${age} yo)` : '';
+}
+
+// Toggle individual log entries (query/response)
+function toggleLogEntry(el) {
+    const body = el.nextElementSibling;
+    const arrow = el.querySelector('.history-arrow');
+    const buttons = el.querySelectorAll('.history-entry-action');
+    const isExpanded = body.style.display === 'block';
+    body.style.display = isExpanded ? 'none' : 'block';
+    if (arrow) arrow.textContent = isExpanded ? '▸' : '▾';
+    buttons.forEach((btn) => {
+        btn.style.visibility = isExpanded ? 'hidden' : 'visible';
+    });
+}
+
+function exportHistoryItemById(id) {
+    if (!id || !historyStoreById[id]) {
+        alert('Unable to export: entry not found.');
+        return;
+    }
+    const item = historyStoreById[id];
+    const name = (item.patient || 'Unknown').replace(/[^a-z0-9]/gi, '_');
+    const date = (item.date || '').replace(/[^0-9T:-]/g, '_');
+    const filename = `history_${name}_${date || 'entry'}.txt`;
+    const parts = [];
+    parts.push(`Date: ${item.date || ''}`);
+    parts.push(`Patient: ${item.patient || 'Unknown'}`);
+    if (item.title) parts.push(`Title: ${item.title}`);
+    parts.push('');
+    parts.push('Query:');
+    parts.push(item.query || '');
+    parts.push('');
+    parts.push('Response:');
+    parts.push(item.response || '');
+    const blob = new Blob([parts.join('\\n')], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+}
+
+async function deleteHistoryItemById(id) {
+    if (!id) {
+        alert('Unable to delete: entry not found.');
+        return;
+    }
+    const label = historyStoreById[id]?.patient || 'entry';
+    const first = confirm(`Delete this log entry for ${label}?`);
+    if (!first) return;
+    const confirmText = prompt('Type DELETE to confirm deletion:');
+    if (confirmText !== 'DELETE') {
+        alert('Deletion cancelled.');
+        return;
+    }
+    try {
+        const res = await fetch('/api/data/history', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error(res.statusText || 'Failed to load history');
+        const data = await res.json();
+        const filtered = Array.isArray(data) ? data.filter((h) => h.id !== id) : [];
+        const saveRes = await fetch('/api/data/history', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(filtered),
+            credentials: 'same-origin',
+        });
+        if (!saveRes.ok) throw new Error(saveRes.statusText || 'Failed to delete');
+        loadData(); // refresh UI with new history
+    } catch (err) {
+        alert(`Failed to delete: ${err.message}`);
+    }
 }
 
 // Get display name for crew member
@@ -39,6 +113,9 @@ function escapeHtml(str) {
 function groupHistoryByPatient(history) {
     const map = {};
     history.forEach((item) => {
+        if (item && item.id) {
+            historyStoreById[item.id] = item;
+        }
         let key = (item.patient || '').trim();
         if (!key) key = 'Unnamed Crew';
         if (key.toLowerCase() === 'inquiry') key = 'Inquiry History';
@@ -63,11 +140,15 @@ function renderHistoryEntries(entries) {
             if (preview.length > 80) preview = preview.slice(0, 80) + '...';
             return `
                 <div class="collapsible" style="margin-bottom:6px;">
-                    <div class="col-header crew-med-header" onclick="toggleCrewSection(this)" style="justify-content:flex-start;">
+                    <div class="col-header crew-med-header" onclick="toggleLogEntry(this)" style="justify-content:flex-start; align-items:center;">
                         <span class="toggle-label history-arrow" style="font-size:16px; margin-right:8px;">▸</span>
                         <span style="flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:600; font-size:13px;">${date || 'Entry'}${preview ? ' — ' + preview : ''}</span>
+                        <div style="display:flex; gap:6px; align-items:center;">
+                            <button class="btn btn-sm history-entry-action" style="background:var(--inquiry); visibility:hidden;" onclick="event.stopPropagation(); exportHistoryItemById('${item.id || ''}')">Export</button>
+                            <button class="btn btn-sm history-entry-action" style="background:var(--red); visibility:hidden;" onclick="event.stopPropagation(); deleteHistoryItemById('${item.id || ''}')">Delete</button>
+                        </div>
                     </div>
-                    <div class="col-body" style="padding:8px; font-size:13px;">
+                    <div class="col-body" style="padding:8px; font-size:13px; display:none;">
                         <div style="margin-bottom:6px;"><strong>Query:</strong><br>${q}</div>
                         <div><strong>Response:</strong><br>${r}</div>
                     </div>
@@ -82,7 +163,7 @@ function renderHistorySection(label, entries, defaultOpen = true) {
     const count = Array.isArray(entries) ? entries.length : 0;
     return `
         <div class="collapsible history-item" style="margin-top:10px;">
-            <div class="col-header crew-med-header" onclick="toggleCrewSection(this)" style="justify-content:flex-start;">
+            <div class="col-header crew-med-header" onclick="toggleCrewSection(this)" style="justify-content:flex-start; align-items:center;">
                 <span class="toggle-label history-arrow" style="font-size:18px; margin-right:8px;">${arrow}</span>
                 <span style="flex:1; font-weight:600; font-size:14px;">${escapeHtml(label)}${count ? ` (${count} entries)` : ''}</span>
             </div>
@@ -111,7 +192,9 @@ function loadCrewData(data, history = []) {
         return;
     }
     console.log('[DEBUG] loadCrewData called with', data.length, 'entries');
-    const historyMap = groupHistoryByPatient(history || []);
+    historyStore = Array.isArray(history) ? history : [];
+    historyStoreById = {};
+    const historyMap = groupHistoryByPatient(historyStore);
     // Sort crew data
     const sortBy = document.getElementById('crew-sort')?.value || 'last';
     data.sort((a, b) => {
@@ -148,7 +231,13 @@ function loadCrewData(data, history = []) {
         pSelect.onchange = (e) => {
             try { localStorage.setItem(CREW_LAST_PATIENT_KEY, e.target.value); } catch (err) { /* ignore */ }
             console.log('[DEBUG] p-select changed to', e.target.value);
+            if (typeof refreshPromptPreview === 'function') {
+                refreshPromptPreview();
+            }
         };
+        if (typeof refreshPromptPreview === 'function') {
+            refreshPromptPreview();
+        }
     }
     
     // Medical histories list
@@ -165,7 +254,7 @@ function loadCrewData(data, history = []) {
                     <span style="flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:700;">${displayName}</span>
                     <button onclick="event.stopPropagation(); exportCrew('${p.id}', '${getCrewFullName(p).replace(/'/g, "\\'")}')" class="btn btn-sm history-action-btn" style="background:var(--inquiry); visibility:hidden;">📤 Export</button>
                 </div>
-                <div class="col-body" style="padding:12px; background:#f8f9fc; border:1px solid #e0e0e0; border-radius:6px;">
+                <div class="col-body" style="padding:12px; background:#e8f4ff; border:1px solid #c7ddff; border-radius:6px;">
                     <textarea id="h-${p.id}" class="compact-textarea" placeholder="Medical history, conditions, allergies, medications, etc." onchange="autoSaveProfile('${p.id}')">${p.history || ''}</textarea>
                     ${historySection}
                 </div>

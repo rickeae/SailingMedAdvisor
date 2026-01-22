@@ -96,6 +96,46 @@
         
         .loading-indicator { color: #666; font-style: italic; padding: 10px; animation: pulse 1.5s ease-in-out infinite; }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+        /* Mobile-friendly tweaks */
+        @media (max-width: 768px) {
+            body { font-size: 15px; }
+            .page-shell { padding: 0 10px; }
+            .panel-wrapper, .history-wrapper, .triage-wrapper { border-radius: 0; }
+            .btn, .btn-sm { width: 100%; justify-content: center; box-sizing: border-box; }
+            .btn-row { flex-direction: column; }
+            .collapsible .col-body { padding: 10px !important; }
+            .collapsible .col-header { padding: 10px !important; }
+            .triage-wrapper textarea,
+            #msg,
+            #prompt-preview { font-size: 15px; }
+            #medication-add-body .col-body,
+            #medication-add-body .col-header,
+            #equipment-add-body .col-body,
+            #equipment-add-body .col-header,
+            #consumables-add-body .col-body,
+            #consumables-add-body .col-header { padding: 10px !important; }
+            #medication-add-body [style*="grid"] { grid-template-columns: 1fr !important; }
+            #equipment-add-body [style*="grid"] { grid-template-columns: 1fr !important; }
+            #consumables-add-body [style*="grid"] { grid-template-columns: 1fr !important; }
+            #vessel-info [style*="grid-template-columns"] { grid-template-columns: 1fr !important; }
+            #crew-info-list [style*="grid-template-columns"] { grid-template-columns: 1fr !important; }
+            #med-photo-input { width: 100%; }
+            #med-photo-drop { width: 100%; min-height: 100px; }
+            #medication-add-body button,
+            #equipment-add-body button,
+            #consumables-add-body button,
+            #medication-add-body input,
+            #medication-add-body select,
+            #medication-add-body textarea { width: 100%; box-sizing: border-box; }
+            .page-sidebar { position: static; width: 100%; box-shadow: none; margin-top: 10px; }
+            .page-body { flex-direction: column; }
+            .page-body.sidebar-open .page-main,
+            .page-body.sidebar-collapsed .page-main { margin-right: 0; padding-right: 0; }
+            .page-sidebar .sidebar-toggle { width: 100%; justify-content: center; }
+            .nav { flex-wrap: wrap; }
+            .tab { flex: 1 1 50%; }
+        }
     </style>
 </head>
 <body>
@@ -112,10 +152,6 @@
         <div id="banner" class="banner">
         <div id="banner-controls-triage" class="banner-controls" style="display:flex;">
             <button id="mode-toggle" class="mode-toggle" onclick="toggleMode()">TRIAGE CHAT</button>
-            <select id="model-select" style="min-width:200px;">
-                <option value="google/medgemma-1.5-4b-it">medgemma-1.5-4b-it (local)</option>
-                <option value="google/medgemma-27b-text-it">medgemma-27b-text-it (local)</option>
-            </select>
         </div>
         <div id="banner-controls-crew" class="banner-controls" style="justify-content:space-between; gap:12px;">
             <div style="display:flex; gap:12px; align-items:center; flex:1;">
@@ -140,17 +176,29 @@
                             <div class="chat-area">
                     <div class="collapsible" style="margin-bottom:12px;">
                         <div id="query-form-header" class="col-header crew-med-header" data-pref-key="query-form-open" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start; align-items:center;">
+                            <span class="dev-tag">dev:triage-form</span>
                             <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▾</span><span id="query-form-title" style="font-weight:700;">New Triage Chat</span>
                         </div>
                         <div id="query-form-body" class="col-body" style="padding:16px; background:#f4f4f4; display:block;">
                             <div style="margin-bottom:12px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-                                <span style="font-weight:800; color:var(--dark); min-width:160px;">Crew Member Receiving Care</span>
+                                <span style="display:flex; align-items:center; gap:6px; font-weight:800; color:var(--dark); min-width:160px;">
+                                    Crew Member Receiving Care
+                                    <span class="dev-tag">dev:triage-patient</span>
+                                </span>
                                 <select id="p-select" style="flex:1; max-width:320px; padding:10px; font-weight:700; min-width:220px;"></select>
+                                <select id="model-select" style="flex:1; max-width:280px; padding:10px; font-weight:700; min-width:200px;">
+                                    <option value="google/medgemma-1.5-4b-it">medgemma-1.5-4b-it (local)</option>
+                                    <option value="google/medgemma-27b-text-it">medgemma-27b-text-it (local)</option>
+                                </select>
                                 <button onclick="togglePriv()" id="priv-btn" class="btn" style="background:#555; min-width:140px;">LOGGING: ON</button>
+                            </div>
+                            <div style="display:flex; align-items:center; gap:6px; margin-bottom:6px;">
+                                <span class="dev-tag">dev:triage-message</span>
                             </div>
                             <textarea id="msg" style="height:105px;" placeholder="Describe what's happening"></textarea>
                             <div class="collapsible" style="margin-top:12px;">
                                 <div id="prompt-preview-header" class="col-header crew-med-header user-adv-only" style="background:#fff; justify-content:flex-start; align-items:center;" role="button" aria-expanded="false" tabindex="0">
+                                    <span class="dev-tag">dev:triage-prompt</span>
                                     <span class="detail-icon history-arrow" style="font-size:16px; margin-right:8px;">▸</span><span style="font-weight:700;">Prompt Injection</span>
                                 </div>
                                 <div id="prompt-preview-container" class="col-body user-adv-only" style="padding:10px; background:#fff; display:none;">
@@ -170,25 +218,20 @@
                     <div style="display:flex; justify-content:flex-end; margin-bottom:6px;">
                         <button onclick="clearDisplay()" class="btn btn-sm" style="background:#c62828;">Clear</button>
                     </div>
+                    <div style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">
+                        <span class="dev-tag">dev:triage-display</span>
+                    </div>
                     <div id="display" class="display"></div>
                     </div>
                 </div>
             </div>
             <div class="page-sidebar" data-tab="Chat" onclick="toggleSidebar(this)">
-                <button class="sidebar-toggle">Context →</button>
+                <div style="display:flex; align-items:center; gap:6px;">
+                    <button class="sidebar-toggle">Context →</button>
+                    <span class="dev-tag">dev:triage-sidebar</span>
+                </div>
                 <div class="sidebar-content">
-                    <div class="sidebar-section">
-                        <div class="sidebar-title"><span class="sidebar-pill">Chat</span> Rapid Triage</div>
-                        <div class="sidebar-body">Lorem ipsum dolor sit amet, consectetur adipiscing elit. Pellentesque mattis dui vel ante dapibus, sed vestibulum neque aliquam.</div>
-                    </div>
-                    <div class="sidebar-section">
-                        <div class="sidebar-title">Mode & Privacy</div>
-                        <div class="sidebar-body">Curabitur lacinia nunc at velit laoreet, vitae aliquam elit accumsan. In feugiat dui et volutpat finibus.</div>
-                    </div>
-                    <div class="sidebar-section">
-                        <div class="sidebar-title">Patients & Models</div>
-                        <div class="sidebar-body">Suspendisse potenti. Integer convallis tristique lorem, vel consequat lorem ullamcorper id.</div>
-                    </div>
+                    {% include 'sidebars/sidebar_chat.html' %}
                 </div>
             </div>
         </div>
@@ -201,21 +244,20 @@
             <div class="page-main">
                 <div class="page-shell">
                     <div class="history-wrapper" data-sidebar-id="crew-medical-section">
+                        <div style="display:flex; align-items:center; gap:6px; margin-bottom:6px;">
+                            <span class="dev-tag">dev:crew-health-list</span>
+                        </div>
                         <div id="crew-medical-list"></div>
                     </div>
                 </div>
             </div>
             <div class="page-sidebar" data-tab="CrewMedical" onclick="toggleSidebar(this)">
-                <button class="sidebar-toggle">Context →</button>
+                <div style="display:flex; align-items:center; gap:6px;">
+                    <button class="sidebar-toggle">Context →</button>
+                    <span class="dev-tag">dev:crew-sidebar</span>
+                </div>
                 <div class="sidebar-content">
-                    <div class="sidebar-section" data-sidebar-section="crew-medical-section">
-                        <div class="sidebar-title"><span class="sidebar-pill">Health Records</span> Intake Notes</div>
-                        <div class="sidebar-body">Lorem ipsum dolor sit amet, consectetur adipiscing elit. Phasellus at arcu sed urna commodo pulvinar.</div>
-                    </div>
-                    <div class="sidebar-section">
-                        <div class="sidebar-title">Updates & Exports</div>
-                        <div class="sidebar-body">Vivamus aliquam, neque eu feugiat finibus, enim ipsum egestas quam, sit amet dictum neque leo vel orci.</div>
-                    </div>
+                    {% include 'sidebars/sidebar_crew_medical.html' %}
                 </div>
             </div>
         </div>
@@ -234,43 +276,25 @@
                             </div>
                             <div class="col-body" style="padding:12px; display:none;">
                                 <div class="collapsible" style="margin-bottom:12px;">
-                                    <div class="col-header crew-med-header" data-sidebar-id="equipment-medication-intake" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                                        <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▾</span><span style="font-weight:700;">Import Medicines from Photo (Qwen2.5-VL-7B)</span><span class="dev-tag">dev:med-photo-import</span>
-                                    </div>
-                                    <div class="col-body" style="padding:12px; background:#f8f9fa; display:block;">
-                                        <div class="dev-tag" style="margin-bottom:8px;">dev:med-photo-controls</div>
-                                        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
-                                            <input id="med-photo-input" type="file" accept="image/*" multiple style="padding:6px; font-size:13px;">
-                                            <button class="btn btn-sm" style="background:var(--dark);" onclick="queueMedicinePhotos()">+ Queue Photos</button>
-                                            <button class="btn btn-sm" style="background:var(--inquiry);" onclick="processQueuedMedicinePhotos()">Run Import Queue</button>
-                                            <div style="font-size:12px; color:#555; display:flex; gap:6px; align-items:center;">
-                                                <span class="sidebar-pill" style="background:#e8f4ff; color:#1a4b8f;">Qwen2.5-VL-7B</span>
-                                                <span>Reads packaging, creates inventory item, stores photo in record.</span>
-                                            </div>
-                                        </div>
-                                        <div class="dev-tag" style="margin-bottom:6px;">dev:med-photo-queue</div>
-                                        <div id="med-photo-queue" style="display:flex; flex-direction:column; gap:10px;"></div>
-                                    </div>
-                                </div>
-                                <div class="collapsible" style="margin-bottom:12px;">
                                     <div class="col-header crew-med-header" data-sidebar-id="equipment-medication-inventory" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                                        <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Pharmacy Inventory (AI + manual)</span><span class="dev-tag">dev:pharmacy-inventory</span>
+                                        <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Medicines (Pharmaceuticals) Inventory</span><span class="dev-tag">dev:pharmacy-inventory</span>
                                     </div>
                                     <div class="col-body" style="padding:12px; background:#f8f9fa; display:none;">
                                         <div class="dev-tag" style="margin-bottom:6px;">dev:pharmacy-controls</div>
-                                        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; align-items:center;">
-                                            <div style="font-size:12px; color:#444;">Photo imports are written here automatically when processing finishes.</div>
-                                        </div>
                                         <div class="dev-tag" style="margin-bottom:6px;">dev:pharmacy-list</div>
                                         <div id="pharmacy-list"></div>
                                     </div>
                                 </div>
-                                <div id="medication-add-container" class="collapsible" style="margin-bottom:12px;">
+                                <div class="collapsible" style="margin-bottom:12px;">
                                     <div id="medication-add-header" class="col-header crew-med-header" data-sidebar-id="equipment-medication-add" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                                        <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Add Medication</span><span class="dev-tag">dev:medication-add</span>
+                                        <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▾</span><span style="font-weight:700;">Add Medication</span><span class="dev-tag">dev:medication-add</span>
                                     </div>
-                                    <div id="medication-add-body" class="col-body" style="padding:12px; background:#f8f9fa; display:none;">
-                                        <div class="dev-tag" style="margin-bottom:8px;">dev:medication-add-form</div>
+                                    <div id="medication-add-body" class="col-body" style="padding:12px; background:#f8f9fa; display:block;">
+                                        <div class="collapsible" style="margin-bottom:12px;">
+                                            <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                                                <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▾</span><span style="font-weight:700;">Manual Entry</span><span class="dev-tag">dev:medication-add-form</span>
+                                            </div>
+                                            <div class="col-body" style="padding:10px; background:#fff; display:block;">
                                         <div style="display:grid; grid-template-columns: repeat(2, minmax(240px, 1fr)); gap:10px; margin-bottom:10px;">
                                             <div>
                                                 <label style="font-weight:700; font-size:12px;">Medication Name *</label>
@@ -342,7 +366,36 @@
                                                 <textarea id="med-new-notes" style="width:100%; padding:8px; min-height:60px;"></textarea>
                                             </div>
                                         </div>
-                                        <button onclick="addMedicationItem()" class="btn btn-sm" style="background:var(--dark); width:100%;">+ Add Medication</button>
+                                        <button onclick="addMedicationItem()" class="btn btn-sm" style="background:var(--dark); width:100%;">Add Medication</button>
+                                            </div>
+                                        </div>
+                                        <div class="collapsible" style="margin-top:12px;">
+                                            <div class="col-header crew-med-header" data-sidebar-id="equipment-medication-intake" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                                                <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▾</span><span style="font-weight:700;">Import Medicines from Photo (Qwen2.5-VL-7B)</span><span class="dev-tag">dev:med-photo-import</span>
+                                            </div>
+                                            <div class="col-body" style="padding:12px; background:#eef4ff; display:block;">
+                                                <div class="dev-tag" style="margin-bottom:8px;">dev:med-photo-controls</div>
+                                                <div style="display:flex; flex-direction:column; gap:8px; align-items:flex-start; margin-bottom:10px;">
+                                                    <div style="font-size:12px; color:#444;">Step 1: Choose photo files</div>
+                                                    <input id="med-photo-input" type="file" accept="image/*" multiple style="padding:6px; font-size:13px;">
+                                                    <div id="med-photo-drop" class="dev-tag" style="display:flex; align-items:center; justify-content:center; width:100%; min-height:80px; border:2px dashed #ccc; border-radius:8px; background:#fafbff; color:#444; font-size:12px; padding:10px; box-sizing:border-box;">
+                                                        <span>Drag and drop photos here</span>
+                                                    </div>
+                                                    <div style="font-size:12px; color:#444;">Step 2: Add to queue</div>
+                                                    <button class="btn btn-sm" style="background:var(--dark); min-width:180px;" onclick="queueMedicinePhotos()">Queue Photos</button>
+                                                    <div style="font-size:12px; color:#444;">Step 3: Run queue</div>
+                                                    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                                                        <button class="btn btn-sm" style="background:var(--inquiry); min-width:180px;" onclick="processQueuedMedicinePhotos()">Run Import Queue</button>
+                                                        <div style="font-size:12px; color:#555; display:flex; gap:6px; align-items:center; min-width:180px;">
+                                                            <span class="sidebar-pill" style="background:#e8f4ff; color:#1a4b8f;">Qwen2.5-VL-7B</span>
+                                                            <span>Reads packaging, creates inventory item, stores photo in record.</span>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div class="dev-tag" style="margin-bottom:6px;">dev:med-photo-queue</div>
+                                                <div id="med-photo-queue" style="display:flex; flex-direction:column; gap:10px;"></div>
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                                 <div id="medication-list"></div>
@@ -532,10 +585,7 @@
             <div class="page-sidebar" data-tab="OnboardEquipment" onclick="toggleSidebar(this)">
                 <button class="sidebar-toggle">Context →</button>
                         <div class="sidebar-content">
-                            <div class="sidebar-section" data-sidebar-section="equipment-section">
-                                <div class="sidebar-title"><span class="sidebar-pill">Medical Equipment</span> Gear & Checks</div>
-                                <div class="sidebar-body">Lorem ipsum dolor sit amet, consectetur adipiscing elit. Praesent sed nisl magna. Integer sodales mauris vitae leo luctus feugiat.</div>
-                            </div>
+                            {% include 'sidebars/sidebar_equipment.html' %}
                 </div>
             </div>
         </div>
@@ -550,9 +600,10 @@
                     <div class="panel-wrapper">
                 <div class="collapsible" style="margin-bottom:15px;">
                     <div class="col-header crew-med-header" data-sidebar-id="vessel-info" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                        <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Vessel Information</span>
+                        <span class="dev-tag">dev:vessel-info</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Vessel Information</span>
                     </div>
                     <div class="col-body" style="padding:15px; background:#f8f9fa;">
+                        <div class="dev-tag" style="margin-bottom:6px;">dev:vessel-fields</div>
                         <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-bottom:12px; font-size:15px;">
                             <div>
                                 <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">Vessel Name</label>
@@ -588,14 +639,15 @@
                 </div>
                 <div class="collapsible" style="margin-bottom:15px;">
                     <div class="col-header crew-med-header" data-sidebar-id="crew-info" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                        <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Crew Information</span>
+                        <span class="dev-tag">dev:crew-info-shell</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Crew Information</span>
                     </div>
                     <div class="col-body" style="padding:15px; background:#f8f9fa;">
                         <div class="collapsible" style="margin-bottom:15px;">
                             <div class="col-header crew-med-header" data-sidebar-id="crew-add" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                                <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Add New Crew Member</span>
+                                <span class="dev-tag">dev:crew-add</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Add New Crew Member</span>
                             </div>
                             <div class="col-body" style="padding:15px; background:#f8f9fa;">
+                            <div class="dev-tag" style="margin-bottom:6px;">dev:crew-add-fields</div>
                             <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:8px; margin-bottom:8px; font-size:15px;">
                                 <div><label style="font-size:13px; margin-bottom:2px;">First Name *</label><input type="text" id="cn-first" style="padding:6px; width:100%;"></div>
                                 <div><label style="font-size:13px; margin-bottom:2px;">Middle Name(s)</label><input type="text" id="cn-middle" style="padding:6px; width:100%;"></div>
@@ -630,6 +682,7 @@
                                 <div><label style="font-size:13px; margin-bottom:2px;">Passport Page Photo/PDF</label><input type="file" id="cn-passport-page" accept="image/*,.pdf" style="padding:4px; width:100%; font-size:13px;"></div>
                             </div>
                             <div style="margin-bottom:8px;"><label style="font-size:12px; font-weight:bold;">Emergency Contact</label></div>
+                            <div class="dev-tag" style="margin-bottom:6px;">dev:crew-add-emergency</div>
                             <div style="display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap:8px; margin-bottom:8px; font-size:15px;">
                                 <div><label style="font-size:13px; margin-bottom:2px;">Name</label><input type="text" id="cn-emerg-name" style="padding:6px; width:100%;"></div>
                                 <div><label style="font-size:13px; margin-bottom:2px;">Relationship</label><input type="text" id="cn-emerg-rel" style="padding:6px; width:100%;"></div>
@@ -656,18 +709,7 @@
         <div class="page-sidebar" data-tab="VesselCrewInfo" onclick="toggleSidebar(this)">
             <button class="sidebar-toggle">Context →</button>
             <div class="sidebar-content">
-                <div class="sidebar-section" data-sidebar-section="vessel-info">
-                    <div class="sidebar-title"><span class="sidebar-pill">Vessel</span> Registry & Profile</div>
-                    <div class="sidebar-body">Lorem ipsum dolor sit amet, consectetur adipiscing elit. Quisque a diam non lorem rutrum faucibus. Maecenas fermentum nulla eu nulla lobortis condimentum.</div>
-                </div>
-                <div class="sidebar-section" data-sidebar-section="crew-info">
-                    <div class="sidebar-title"><span class="sidebar-pill">Crew</span> Profiles & Docs</div>
-                    <div class="sidebar-body">Pellentesque habitant morbi tristique senectus et netus et malesuada fames ac turpis egestas. Fusce finibus purus justo, non hendrerit ex tincidunt at.</div>
-                </div>
-                <div class="sidebar-section" data-sidebar-section="crew-add">
-                    <div class="sidebar-title">Adding New Crew</div>
-                    <div class="sidebar-body">Curabitur pellentesque risus non arcu consectetur, non vestibulum nisl varius. Suspendisse pharetra dapibus malesuada.</div>
-                </div>
+                {% include 'sidebars/sidebar_vessel.html' %}
             </div>
         </div>
     </div>
@@ -675,17 +717,41 @@
 </div>
 <div id="Settings" class="content">
     <div class="page-shell">
-        <div class="page-body sidebar-open">
+                <div class="page-body sidebar-open">
             <div class="page-main">
                 <div class="panel-wrapper">
                     <div class="collapsible" style="margin-bottom:12px;">
                         <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                            <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">MedGemma Model Parameters</span>
+                            <span class="dev-tag">dev:settings-usermode</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▾</span><span style="font-weight:700;">User Mode</span>
+                        </div>
+                        <div class="col-body" style="padding:12px; background:#f8f9fa;">
+                            <label for="user_mode">User Mode</label>
+                            <select id="user_mode" style="padding:10px; min-width:200px;">
+                                <option value="user">User</option>
+                                <option value="advanced">Advanced</option>
+                                <option value="developer">Developer</option>
+                            </select>
+                            <div style="margin-top:8px; font-size:12px; color:#555;">
+                                User: hides advanced controls. Advanced: shows prompt tools. Developer: also shows dev tags.
+                            </div>
+                        </div>
+                    </div>
+                    <div class="collapsible">
+                    <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                        <span class="dev-tag">dev:settings-crew-creds</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Crew Login Credentials</span>
+                    </div>
+                        <div class="col-body" style="padding:12px; background:#f8f9fa;">
+                            <div id="crew-credentials"></div>
+                        </div>
+                    </div>
+                    <div class="collapsible" style="margin-top:12px;">
+                        <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                            <span class="dev-tag">dev:settings-models</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">MedGemma Model Parameters</span>
                         </div>
                         <div class="col-body" style="padding:12px; background:#f8f9fa;">
                             <div class="collapsible" style="margin-bottom:12px;">
                                 <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                                    <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Triage Mode (Clinical Response)</span>
+                                    <span class="dev-tag">dev:settings-triage</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Triage Mode (Clinical Response)</span>
                                 </div>
                                 <div class="col-body" style="padding:12px; background:#f8f9fa;">
                                     <label>Instruction Text Block</label>
@@ -711,7 +777,7 @@
                             </div>
                             <div class="collapsible" style="margin-bottom:12px;">
                                 <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                                    <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Inquiry Mode (Research/Academic)</span>
+                                    <span class="dev-tag">dev:settings-inquiry</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Inquiry Mode (Research/Academic)</span>
                                 </div>
                                 <div class="col-body" style="padding:12px; background:#f8f9fa;">
                                     <label>Instruction Text Block</label>
@@ -737,7 +803,7 @@
                             </div>
                             <div class="collapsible" style="margin-bottom:12px;">
                                 <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                                    <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Mission Context (Informs Both Triage and Inquiry Modes)</span>
+                                    <span class="dev-tag">dev:settings-mission</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Mission Context (Informs Both Triage and Inquiry Modes)</span>
                                 </div>
                                 <div class="col-body" style="padding:12px; background:#f8f9fa;">
                                     <textarea id="mission_context" style="height:60px;"></textarea>
@@ -747,30 +813,6 @@
                                     </div>
                                 </div>
                             </div>
-                            <div class="collapsible" style="margin-bottom:12px;">
-                                <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                                    <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">User Mode</span>
-                                </div>
-                                <div class="col-body" style="padding:12px; background:#f8f9fa;">
-                                    <label for="user_mode">User Mode</label>
-                                    <select id="user_mode" style="padding:10px; min-width:200px;">
-                                        <option value="user">User</option>
-                                        <option value="advanced">Advanced</option>
-                                        <option value="developer">Developer</option>
-                                    </select>
-                                    <div style="margin-top:8px; font-size:12px; color:#555;">
-                                        User: hides advanced controls. Advanced: shows prompt tools. Developer: also shows dev tags.
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="collapsible">
-                    <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                        <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Crew Login Credentials</span>
-                    </div>
-                        <div class="col-body" style="padding:12px; background:#f8f9fa;">
-                            <div id="crew-credentials"></div>
                         </div>
                     </div>
                 </div>
@@ -778,10 +820,7 @@
             <div class="page-sidebar" data-tab="Settings" onclick="toggleSidebar(this)">
                 <button class="sidebar-toggle">Context →</button>
                 <div class="sidebar-content">
-                    <div class="sidebar-section" data-sidebar-section="settings-overview">
-                        <div class="sidebar-title"><span class="sidebar-pill">Settings</span> Parameters</div>
-                        <div class="sidebar-body">Integer ac ligula nec sapien tristique porttitor. Suspendisse id ultrices eros, in ultricies mi.</div>
-                    </div>
+                    {% include 'sidebars/sidebar_settings.html' %}
                 </div>
             </div>
         </div>

@@ -141,6 +141,7 @@ function renderHistoryEntries(entries) {
             return `
                 <div class="collapsible" style="margin-bottom:6px;">
                     <div class="col-header crew-med-header" onclick="toggleLogEntry(this)" style="justify-content:flex-start; align-items:center;">
+                        <span class="dev-tag">dev:crew-history-entry</span>
                         <span class="toggle-label history-arrow" style="font-size:16px; margin-right:8px;">▸</span>
                         <span style="flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:600; font-size:13px;">${date || 'Entry'}${preview ? ' — ' + preview : ''}</span>
                         <div style="display:flex; gap:6px; align-items:center;">
@@ -164,6 +165,7 @@ function renderHistorySection(label, entries, defaultOpen = true) {
     return `
         <div class="collapsible history-item" style="margin-top:10px;">
             <div class="col-header crew-med-header" onclick="toggleCrewSection(this)" style="justify-content:flex-start; align-items:center;">
+                <span class="dev-tag">dev:crew-history-section</span>
                 <span class="toggle-label history-arrow" style="font-size:18px; margin-right:8px;">${arrow}</span>
                 <span style="flex:1; font-weight:600; font-size:14px;">${escapeHtml(label)}${count ? ` (${count} entries)` : ''}</span>
             </div>
@@ -250,11 +252,15 @@ function loadCrewData(data, history = []) {
             return `
             <div class="collapsible history-item">
                 <div class="col-header crew-med-header" onclick="toggleCrewSection(this)" style="justify-content:flex-start;">
+                    <span class="dev-tag">dev:crew-entry</span>
                     <span class="toggle-label history-arrow" style="font-size:18px; margin-right:8px;">▸</span>
                     <span style="flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:700;">${displayName}</span>
                     <button onclick="event.stopPropagation(); exportCrew('${p.id}', '${getCrewFullName(p).replace(/'/g, "\\'")}')" class="btn btn-sm history-action-btn" style="background:var(--inquiry); visibility:hidden;">📤 Export</button>
                 </div>
                 <div class="col-body" style="padding:12px; background:#e8f4ff; border:1px solid #c7ddff; border-radius:6px;">
+                    <div style="display:flex; align-items:center; gap:6px; margin-bottom:6px;">
+                        <span class="dev-tag">dev:crew-history-text</span>
+                    </div>
                     <textarea id="h-${p.id}" class="compact-textarea" placeholder="Medical history, conditions, allergies, medications, etc." onchange="autoSaveProfile('${p.id}')">${p.history || ''}</textarea>
                     ${historySection}
                 </div>
@@ -269,13 +275,18 @@ function loadCrewData(data, history = []) {
             medicalBlocks.push(renderHistorySection('Inquiry History', historyMap['Inquiry History'], true));
         }
 
-        medicalContainer.innerHTML = medicalBlocks.join('');
+        medicalContainer.innerHTML = `
+            <div style="display:flex; align-items:center; gap:6px; margin-bottom:6px;">
+                <span class="dev-tag">dev:crew-medical-wrapper</span>
+            </div>
+            ${medicalBlocks.join('')}
+        `;
     }
-    
+
     // Vessel & crew info list
     const infoContainer = document.getElementById('crew-info-list');
     if (infoContainer) {
-        infoContainer.innerHTML = data.map(p => {
+        infoContainer.innerHTML = `<div style="display:flex; align-items:center; gap:6px; margin-bottom:6px;"><span class="dev-tag">dev:crew-info-list</span></div>` + data.map(p => {
         const displayName = getCrewDisplayName(p);
         const ageStr = calculateAge(p.birthdate);
         const posInfo = p.position ? ` • ${p.position}` : '';
@@ -287,6 +298,7 @@ function loadCrewData(data, history = []) {
         return `
         <div class="collapsible history-item">
             <div class="col-header crew-med-header" onclick="toggleCrewSection(this)" style="justify-content:flex-start;">
+                <span class="dev-tag">dev:crew-profile</span>
                 <span class="toggle-label history-arrow" style="font-size:18px; margin-right:8px;">▸</span>
                 <span style="flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:700;">${info}</span>
                 <button onclick="event.stopPropagation(); importCrewData('${p.id}')" class="btn btn-sm history-action-btn" style="background:var(--inquiry); visibility:hidden;">📁 Import</button>
@@ -294,6 +306,9 @@ function loadCrewData(data, history = []) {
                 <button onclick="event.stopPropagation(); deleteCrewMember('patients','${p.id}', '${getCrewFullName(p).replace(/'/g, "\\'")}')" class="btn btn-sm history-action-btn" style="background:var(--red); visibility:hidden;">🗑 Delete</button>
             </div>
             <div class="col-body" style="padding:10px;">
+                <div style="display:flex; align-items:center; gap:6px; margin-bottom:6px;">
+                    <span class="dev-tag">dev:crew-profile-fields</span>
+                </div>
                 <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:8px; margin-bottom:8px; font-size:13px;">
                     <input type="text" id="fn-${p.id}" value="${p.firstName || ''}" placeholder="First name" onchange="autoSaveProfile('${p.id}')" style="padding:5px; width:100%;">
                     <input type="text" id="mn-${p.id}" value="${p.middleName || ''}" placeholder="Middle name(s)" onchange="autoSaveProfile('${p.id}')" style="padding:5px; width:100%;">

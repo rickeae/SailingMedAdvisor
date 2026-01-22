@@ -132,6 +132,7 @@ function renderMedicationCard(med) {
     const expiryText = med.expiryDate ? `Exp: ${med.expiryDate}` : 'No expiry set';
     const headerNote = [lowStock ? 'Low Stock' : null, expirySoon ? 'Expiring Soon' : null].filter(Boolean).join(' · ');
     const displayName = getMedicationDisplayName(med);
+    const strength = (med.strength || '').trim();
     const photoThumbs = (med.photos || []).map(
         (src, idx) => `
             <div style="display:flex; flex-direction:column; gap:4px; align-items:flex-start; border:1px solid #e0e0e0; padding:6px; border-radius:4px; background:#f9fbff;">
@@ -143,9 +144,10 @@ function renderMedicationCard(med) {
     return `
     <div class="collapsible history-item">
         <div class="col-header crew-med-header" onclick="toggleCrewSection(this)" style="justify-content:flex-start; align-items:center;">
+            <span class="dev-tag">dev:med-card</span>
             <span class="toggle-label history-arrow" style="font-size:18px; margin-right:8px;">▸</span>
             <span style="flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:700;">
-                ${displayName}
+                ${displayName}${strength ? ' — ' + strength : ''}
             </span>
             ${headerNote ? `<span class="sidebar-pill" style="margin-right:8px; background:${lowStock ? '#ffebee' : '#fff7e0'}; color:${lowStock ? '#c62828' : '#b26a00'};">${headerNote}</span>` : ''}
             <button onclick="event.stopPropagation(); deleteMedication('${med.id}')" class="btn btn-sm history-action-btn" style="background:var(--red); visibility:hidden;">🗑 Delete Medication</button>
@@ -153,6 +155,7 @@ function renderMedicationCard(med) {
         <div class="col-body" style="padding:12px; background:#e8f4ff; border:1px solid #c7ddff; border-radius:6px;">
             <div class="collapsible" style="margin-bottom:10px;">
                 <div class="col-header crew-med-header" onclick="toggleMedDetails(this)" style="background:#fff; justify-content:flex-start; align-items:center;">
+                    <span class="dev-tag">dev:med-details</span>
                     <span class="detail-icon history-arrow" style="font-size:16px; margin-right:8px;">▾</span>
                     <span style="font-weight:700;">Medication Details</span>
                 </div>
@@ -226,14 +229,20 @@ function renderMedicationCard(med) {
                 </div>
             </div>
             <div style="margin:10px 0; border-top:1px solid #d0dff5; padding-top:10px;">
-                <div style="font-weight:800; color:var(--dark); margin-bottom:6px;">Medicine Photos</div>
+                <div style="display:flex; gap:8px; align-items:center; font-weight:800; color:var(--dark); margin-bottom:6px;">
+                    <span>Medicine Photos</span>
+                    <span class="dev-tag">dev:med-photos</span>
+                </div>
                 <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-start;">
                     ${photoThumbs.length ? photoThumbs.join('') : '<div style="font-size:12px; color:#666;">No photos linked.</div>'}
                 </div>
             </div>
             <div style="margin:10px 0; border-top:1px solid #d0dff5; padding-top:10px;">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-                    <span style="font-weight:800; color:var(--dark);">Purchase History</span>
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; gap:8px;">
+                    <div style="display:flex; align-items:center; gap:6px; font-weight:800; color:var(--dark);">
+                        <span>Purchase History</span>
+                        <span class="dev-tag">dev:med-purchase</span>
+                    </div>
                     <button class="btn btn-sm" style="background:var(--inquiry);" onclick="addPurchaseEntry('${med.id}')">+ Add Purchase</button>
                 </div>
                 <div id="ph-${med.id}">${renderPurchaseRows(med)}</div>

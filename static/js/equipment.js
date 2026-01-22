@@ -4,6 +4,7 @@ let equipmentCache = [];
 let medPhotoQueue = [];
 let medPhotoProcessing = false;
 const equipmentSaveTimers = {};
+let medPhotoDropBound = false;
 
 function ensureEquipmentDefaults(item) {
     return {
@@ -55,6 +56,7 @@ async function loadMedPhotoQueue() {
     const container = document.getElementById('med-photo-queue');
     if (!container) return;
     container.innerHTML = '<div style="color:#666;">Loading photo queue...</div>';
+    bindMedPhotoDrop();
     try {
         const res = await fetch('/api/medicines/queue', { credentials: 'same-origin' });
         if (!res.ok) throw new Error(`Status ${res.status}`);
@@ -66,11 +68,30 @@ async function loadMedPhotoQueue() {
     }
 }
 
+async function queuePhotosFromFiles(files) {
+    const images = Array.from(files || []).filter((f) => f && f.type && f.type.toLowerCase().startsWith('image/'));
+    if (!images.length) {
+        alert('Please drop image files only.');
+        return;
+    }
+    const fd = new FormData();
+    images.forEach((file) => fd.append('files', file));
+    try {
+        const res = await fetch('/api/medicines/photos', { method: 'POST', body: fd, credentials: 'same-origin' });
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(data.error || `Status ${res.status}`);
+        medPhotoQueue = Array.isArray(data.queue) ? data.queue : medPhotoQueue;
+        renderMedPhotoQueue();
+    } catch (err) {
+        alert(`Unable to queue photos: ${err.message}`);
+    }
+}
+
 function renderMedPhotoQueue() {
     const container = document.getElementById('med-photo-queue');
     if (!container) return;
     if (!medPhotoQueue || medPhotoQueue.length === 0) {
-        container.innerHTML = '<div style="color:#666; padding:8px; border:1px dashed #ccc; border-radius:6px;">Queue is empty. Add medicine photos to import into inventory.</div>';
+        container.innerHTML = '<div style="color:#666; padding:8px; border:1px dashed #ccc; border-radius:6px;">Queue is empty. Add photos of the medicine packaging to load into inventory.</div>';
         return;
     }
     container.innerHTML = medPhotoQueue.map(renderMedQueueCard).join('');
@@ -107,6 +128,7 @@ function renderMedQueueCard(item) {
             : '';
     return `
         <div style="display:flex; gap:12px; padding:10px; border:1px solid #d9e5f7; border-radius:8px; background:#fff;">
+            <div class="dev-tag">dev:med-photo-card</div>
             <div style="width:82px; height:82px; background:#f4f4f4; border:1px solid #ddd; border-radius:6px; overflow:hidden; flex-shrink:0; display:flex; align-items:center; justify-content:center;">
                 ${item.url ? `<img src="${item.url}" alt="Medicine photo" style="width:100%; height:100%; object-fit:cover;">` : '<span style="color:#999; font-size:12px;">No photo</span>'}
             </div>
@@ -132,18 +154,8 @@ async function queueMedicinePhotos() {
         alert('Select one or more medicine photos first.');
         return;
     }
-    const fd = new FormData();
-    Array.from(input.files).forEach((file) => fd.append('files', file));
-    try {
-        const res = await fetch('/api/medicines/photos', { method: 'POST', body: fd, credentials: 'same-origin' });
-        const data = await res.json();
-        if (!res.ok || data.error) throw new Error(data.error || `Status ${res.status}`);
-        medPhotoQueue = Array.isArray(data.queue) ? data.queue : medPhotoQueue;
-        renderMedPhotoQueue();
-        input.value = '';
-    } catch (err) {
-        alert(`Unable to queue photos: ${err.message}`);
-    }
+    await queuePhotosFromFiles(input.files);
+    input.value = '';
 }
 
 async function processQueuedPhoto(id) {
@@ -171,6 +183,37 @@ async function processQueuedMedicinePhotos() {
         if (item.status === 'completed') continue;
         await processQueuedPhoto(item.id);
     }
+}
+
+function bindMedPhotoDrop() {
+    if (medPhotoDropBound) return;
+    const dropZone = document.getElementById('med-photo-drop');
+    const input = document.getElementById('med-photo-input');
+    if (!dropZone || !input) return;
+
+    const resetStyle = () => {
+        dropZone.style.borderColor = '#ccc';
+        dropZone.style.background = '#fafbff';
+    };
+
+    dropZone.addEventListener('click', () => input.click());
+    dropZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        dropZone.style.borderColor = 'var(--inquiry)';
+        dropZone.style.background = '#e8f5e9';
+    });
+    dropZone.addEventListener('dragleave', (e) => {
+        e.preventDefault();
+        resetStyle();
+    });
+    dropZone.addEventListener('drop', async (e) => {
+        e.preventDefault();
+        resetStyle();
+        if (e.dataTransfer && e.dataTransfer.files) {
+            await queuePhotosFromFiles(e.dataTransfer.files);
+        }
+    });
+    medPhotoDropBound = true;
 }
 
 function renderEquipment(items, expandId = null) {

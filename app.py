@@ -43,8 +43,8 @@ MED_UPLOAD_DIR = UPLOAD_ROOT / "medicines"
 MED_UPLOAD_DIR.mkdir(exist_ok=True)
 SECRET_KEY = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
 
-OFFLOAD_DIR = Path("offload")
-OFFLOAD_DIR.mkdir(exist_ok=True)
+#OFFLOAD_DIR = Path("offload")
+#OFFLOAD_DIR.mkdir(exist_ok=True)
 
 # app.py
 OFFLOAD_DIR = Path("/home/user/app/offload")

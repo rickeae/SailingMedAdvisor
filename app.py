@@ -500,7 +500,16 @@ def run_medicine_photo_inference(image_path: Path):
     return normalized
 
 
+def _has_creds():
+    creds = get_credentials()
+    return bool(creds)
+
+
 def require_auth(request: Request):
+    """Enforce auth only when credentials are configured."""
+    if not _has_creds():
+        # No credentials configured, allow pass-through
+        return True
     if not request.session.get("authenticated"):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
     return True
@@ -553,7 +562,11 @@ async def logout(request: Request):
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     if not request.session.get("authenticated"):
-        return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
+        if _has_creds():
+            return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
+        # Auto-admit when no credentials exist; avoid login loop on Spaces
+        request.session["authenticated"] = True
+        request.session["user"] = "auto"
     return templates.TemplateResponse("index.html", {"request": request})
 
 

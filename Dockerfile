@@ -1,7 +1,8 @@
-# Use a Python base image with CUDA support for MedGemma
+# Use a Python base image
 FROM python:3.10-slim
 
 # Set up a new user named "user" with user ID 1000
+# Hugging Face requires a non-root user to run the container
 RUN useradd -m -u 1000 user
 
 # Set home and path for the new user
@@ -11,26 +12,28 @@ ENV HOME=/home/user \
 # Set the working directory
 WORKDIR $HOME/app
 
-# Install system dependencies (needed for some medical/image libraries)
+# Install bare essential system dependencies
+# Removing software-properties-common to avoid the 'Unable to locate' error
 RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
-    software-properties-common \
-    && rm -rf /var/lib/apt/apt/lists/*
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install them
+# Copy requirements first to leverage Docker layer caching
 COPY --chown=user requirements.txt .
+
+# Install Python dependencies
 RUN pip install --no-cache-dir --upgrade -r requirements.txt
 
-# Copy the rest of the application
+# Copy the rest of the application files
 COPY --chown=user . .
 
-# Switch to the non-root user
+# Switch to the non-root user for security
 USER user
 
-# Tell Hugging Face to listen on port 7860
+# Hugging Face Spaces listen on port 7860
 EXPOSE 7860
 
-# Start the application using uvicorn
-# We use app:app because your file is named app.py
+# Start the application
+# Ensure 'app:app' matches your filename (app.py) and FastAPI instance name (app)
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "7860"]

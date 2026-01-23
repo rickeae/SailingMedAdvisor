@@ -10,6 +10,10 @@ WORKDIR /home/user/app
 # 3. Create the folder while still ROOT
 RUN mkdir -p /home/user/app/uploads && chown -R user:user /home/user/app/uploads
 
+# Create both folders and give 'user' ownership
+RUN mkdir -p /home/user/app/uploads /home/user/app/offload && \
+    chown -R user:user /home/user/app/uploads /home/user/app/offload
+
 # 4. NOW switch to the user
 USER user
 ENV HOME=/home/user \

@@ -34,6 +34,9 @@ USER user
 # Hugging Face Spaces listen on port 7860
 EXPOSE 7860
 
+# Create the uploads directory and ensure 'user' owns it
+RUN mkdir -p /home/user/app/uploads && chown -R user:user /home/user/app/uploads
+
 # Start the application
 # Ensure 'app:app' matches your filename (app.py) and FastAPI instance name (app)
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "7860"]

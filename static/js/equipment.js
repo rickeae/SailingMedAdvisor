@@ -3,8 +3,28 @@
 let equipmentCache = [];
 let medPhotoQueue = [];
 let medPhotoProcessing = false;
+let phoneSelectedFiles = [];
 const equipmentSaveTimers = {};
 let medPhotoDropBound = false;
+
+function openPhoneImportView() {
+    const overlay = document.getElementById('phone-import-overlay');
+    if (!overlay) return;
+    overlay.style.display = 'flex';
+    document.body.style.overflow = 'hidden';
+    // ensure input is present for iOS
+    const input = document.getElementById('phone-med-photo-input');
+    if (input) input.style.display = 'block';
+    updatePhoneImportView();
+    bindPhoneInput();
+    renderPhonePreview();
+}
+
+function closePhoneImportView() {
+    const overlay = document.getElementById('phone-import-overlay');
+    if (overlay) overlay.style.display = 'none';
+    document.body.style.overflow = '';
+}
 
 function ensureEquipmentDefaults(item) {
     return {
@@ -52,6 +72,34 @@ function classifyEquipment(item) {
     return 'equipment';
 }
 
+function bindPhoneInput() {
+    const input = document.getElementById('phone-med-photo-input');
+    if (!input || input.dataset.bound) return;
+    input.dataset.bound = 'true';
+    input.addEventListener('change', () => {
+        const files = Array.from(input.files || []);
+        if (!files.length) return;
+        phoneSelectedFiles.push(...files);
+        renderPhonePreview();
+        input.value = '';
+    });
+}
+
+function renderPhonePreview() {
+    const preview = document.getElementById('phone-photo-preview');
+    const count = document.getElementById('phone-photo-count');
+    if (count) count.textContent = phoneSelectedFiles.length ? `${phoneSelectedFiles.length} photo(s) ready` : 'No photos selected.';
+    if (!preview) return;
+    preview.innerHTML = '';
+    phoneSelectedFiles.forEach((file, idx) => {
+        const url = URL.createObjectURL(file);
+        const box = document.createElement('div');
+        box.style.cssText = 'border:1px solid #d0d7e2; border-radius:6px; padding:6px; background:#fff; display:flex; flex-direction:column; gap:4px; width:120px;';
+        box.innerHTML = `<div style="font-size:11px; font-weight:700;">Photo ${idx + 1}</div><img src="${url}" style="width:100%; height:90px; object-fit:cover; border-radius:4px;"><button class="btn btn-sm" style="background:var(--red); width:100%;" onclick="removePhonePhoto(${idx})">Remove</button>`;
+        preview.appendChild(box);
+    });
+}
+
 async function loadMedPhotoQueue() {
     const container = document.getElementById('med-photo-queue');
     if (!container) return;
@@ -63,12 +111,13 @@ async function loadMedPhotoQueue() {
         const data = await res.json();
         medPhotoQueue = Array.isArray(data.queue) ? data.queue : [];
         renderMedPhotoQueue();
+        updatePhoneImportView();
     } catch (err) {
         container.innerHTML = `<div style="color:red;">Unable to load queue: ${err.message}</div>`;
     }
 }
 
-async function queuePhotosFromFiles(files) {
+async function queuePhotosFromFiles(files, opts = {}) {
     const images = Array.from(files || []).filter((f) => f && f.type && f.type.toLowerCase().startsWith('image/'));
     if (!images.length) {
         alert('Please drop image files only.');
@@ -76,25 +125,48 @@ async function queuePhotosFromFiles(files) {
     }
     const fd = new FormData();
     images.forEach((file) => fd.append('files', file));
+    medPhotoProcessing = true;
     try {
-        const res = await fetch('/api/medicines/photos', { method: 'POST', body: fd, credentials: 'same-origin' });
+        const res = await fetch(`/api/medicines/photos${opts.group ? '?group=true' : ''}`, {
+            method: 'POST',
+            body: fd,
+            credentials: 'same-origin',
+        });
         const data = await res.json();
         if (!res.ok || data.error) throw new Error(data.error || `Status ${res.status}`);
         medPhotoQueue = Array.isArray(data.queue) ? data.queue : medPhotoQueue;
         renderMedPhotoQueue();
+        updatePhoneImportView();
+        // clear selection preview after successful queue
+        const input = document.getElementById('med-photo-input');
+        const sel = document.getElementById('med-photo-selected');
+        const preview = document.getElementById('med-photo-preview');
+        if (input) input.value = '';
+        if (sel) sel.textContent = 'No files selected.';
+        if (preview) preview.innerHTML = '';
     } catch (err) {
         alert(`Unable to queue photos: ${err.message}`);
+    } finally {
+        medPhotoProcessing = false;
     }
 }
 
 function renderMedPhotoQueue() {
     const container = document.getElementById('med-photo-queue');
     if (!container) return;
+    const banner = medPhotoProcessing
+        ? '<div style="padding:8px 10px; background:#e3f2fd; color:#0d47a1; border:1px solid #bbdefb; border-radius:6px; font-weight:700;">Processing photos with Qwen2.5-VL-7B…</div>'
+        : '';
+    const emptyMessage = 'Waiting for photos to import.';
     if (!medPhotoQueue || medPhotoQueue.length === 0) {
-        container.innerHTML = '<div style="color:#666; padding:8px; border:1px dashed #ccc; border-radius:6px;">Queue is empty. Add photos of the medicine packaging to load into inventory.</div>';
+        container.innerHTML =
+            banner +
+            `<div style="color:#666; padding:8px; border:1px dashed #ccc; border-radius:6px; margin-top:6px;">${emptyMessage}</div>`;
+        updatePhoneImportView();
         return;
     }
-    container.innerHTML = medPhotoQueue.map(renderMedQueueCard).join('');
+    container.innerHTML = banner + medPhotoQueue.map(renderMedQueueCard).join('');
+    updatePhoneImportView();
 }
 
 function renderMedQueueCard(item) {
@@ -106,18 +178,31 @@ function renderMedQueueCard(item) {
     };
     const status = statusColors[item.status] || statusColors.queued;
     const summary = item.result || {};
+    const thumbs = Array.isArray(item.urls) && item.urls.length ? item.urls : item.url ? [item.url] : [];
+    const thumbHtml =
+        thumbs && thumbs.length
+            ? thumbs
+                  .map(
+                      (u, idx) =>
+                          `<img src="${u}" alt="Photo ${idx + 1}" style="width:60px; height:60px; object-fit:cover; border:1px solid #ccc; border-radius:6px;">`
+                  )
+                  .join('<span style="width:6px;"></span>')
+            : '';
     const detected = [summary.genericName, summary.brandName, summary.strength].filter(Boolean).join(' · ');
     const expiry = summary.expiryDate ? `Exp: ${summary.expiryDate}` : '';
     const indicator = detected || expiry ? `${detected}${detected && expiry ? ' — ' : ''}${expiry}` : '';
     const primary = indicator || 'Awaiting processing';
     const disableRun = medPhotoProcessing || item.status === 'processing';
-    const runBtn =
-        item.status === 'queued' || item.status === 'failed'
-            ? `<button class="btn btn-sm" style="background:var(--inquiry);" onclick="processQueuedPhoto('${item.id}')" ${disableRun ? 'disabled' : ''}>Run with Qwen2.5-VL-7B</button>`
-            : '';
+    const runBtn = '';
     const viewLink = item.url
-        ? `<button class="btn btn-sm" style="background:#444;" onclick="window.open('${item.url}', '_blank')">View Photo</button>`
+        ? ``
         : '';
+    const deleteBtn =
+        item.status === 'queued' || item.status === 'failed'
+            ? `<button class="btn btn-sm" style="background:var(--red);" onclick="removeQueueItem('${item.id}')">${
+                  Array.isArray(item.urls) && item.urls.length > 1 ? 'Delete Photo Group' : 'Delete Photo'
+              }</button>`
+            : '';
     const recordLink =
         item.status === 'completed' && item.inventory_id
             ? `<span style="font-size:12px; color:#1b5e20;">Added to inventory #${item.inventory_id}</span>`
@@ -130,7 +215,7 @@ function renderMedQueueCard(item) {
         <div style="display:flex; gap:12px; padding:10px; border:1px solid #d9e5f7; border-radius:8px; background:#fff;">
             <div class="dev-tag">dev:med-photo-card</div>
             <div style="width:82px; height:82px; background:#f4f4f4; border:1px solid #ddd; border-radius:6px; overflow:hidden; flex-shrink:0; display:flex; align-items:center; justify-content:center;">
-                ${item.url ? `<img src="${item.url}" alt="Medicine photo" style="width:100%; height:100%; object-fit:cover;">` : '<span style="color:#999; font-size:12px;">No photo</span>'}
+                ${thumbHtml || '<span style="color:#999; font-size:12px;">No photo</span>'}
             </div>
             <div style="flex:1; min-width:0;">
                 <div style="display:flex; gap:8px; align-items:center; margin-bottom:4px; flex-wrap:wrap;">
@@ -141,11 +226,80 @@ function renderMedQueueCard(item) {
                 <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px;">
                     ${runBtn || ''}
                     ${viewLink || ''}
+                    ${deleteBtn || ''}
                 </div>
                 ${rawPreview}
             </div>
         </div>
     `;
+}
+
+function updatePhoneImportView() {
+    const list = document.getElementById('phone-import-queue');
+    if (!list) return;
+    const hasQueue = Array.isArray(medPhotoQueue) && medPhotoQueue.length > 0;
+    const waitingMessage = 'Waiting for photos to import.';
+    const banner = medPhotoProcessing
+        ? '<div style="padding:8px 10px; background:#e3f2fd; color:#0d47a1; border:1px solid #bbdefb; border-radius:6px; font-weight:700; margin-bottom:6px;">Processing photos with Qwen2.5-VL-7B…</div>'
+        : hasQueue
+        ? '<div style="padding:8px 10px; background:#f4f6fb; color:#1f2d3d; border:1px solid #d8e0f0; border-radius:6px; font-weight:700; margin-bottom:6px;">Ready to import photo queue.</div>'
+        : `<div style="padding:8px 10px; background:#f4f6fb; color:#1f2d3d; border:1px solid #d8e0f0; border-radius:6px; font-weight:700; margin-bottom:6px;">${waitingMessage}</div>`;
+    if (!hasQueue) {
+        list.innerHTML = banner;
+        return;
+    }
+    const statusColors = {
+        queued: { bg: '#fff7e0', color: '#a66b00', label: 'Queued' },
+        processing: { bg: '#e3f2fd', color: '#1565c0', label: 'Processing' },
+        completed: { bg: '#e8f5e9', color: '#1b5e20', label: 'Done' },
+        failed: { bg: '#ffebee', color: '#c62828', label: 'Failed' },
+    };
+    list.innerHTML =
+        banner +
+        medPhotoQueue
+            .map((item) => {
+                const status = statusColors[item.status] || statusColors.queued;
+                const summary = item.result || {};
+                const title =
+                    [summary.genericName, summary.brandName, summary.strength].filter(Boolean).join(' · ') ||
+                    summary.raw ||
+                    'Awaiting processing';
+    const action =
+        item.status === 'queued' || item.status === 'failed'
+            ? ''
+            : '';
+                const thumbs = Array.isArray(item.urls) && item.urls.length ? item.urls : item.url ? [item.url] : [];
+                const thumbHtml =
+                    thumbs && thumbs.length
+                        ? thumbs
+                              .map(
+                                  (u, idx) =>
+                                      `<img src="${u}" alt="Photo ${idx + 1}" style="width:80px; height:80px; object-fit:cover; border:1px solid #ccc; border-radius:6px;">`
+                              )
+                              .join('<span style="width:6px;"></span>')
+                        : '';
+                return `
+                <div style="border:1px solid #d9e5f7; border-radius:8px; padding:10px; background:#fff;">
+                    <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+                        <span style="font-size:12px; font-weight:800; padding:2px 8px; border-radius:999px; background:${status.bg}; color:${status.color};">${status.label}</span>
+                        ${item.inventory_id ? `<span style="font-size:12px; color:#1b5e20;">Added to inventory</span>` : ''}
+                    </div>
+                    <div style="display:flex; gap:10px; align-items:flex-start; margin-bottom:6px;">
+                        ${thumbHtml}
+                        <div style="font-weight:700; color:#1f2d3d;">${title}</div>
+                    </div>
+                    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                        ${
+                            item.status === 'queued'
+                                ? `<button class="btn btn-sm" style="background:var(--red);" onclick="removeQueueItem('${item.id}')">${Array.isArray(item.urls) && item.urls.length > 1 ? 'Delete Photo Group' : 'Delete Photo'}</button>`
+                                : item.status === 'failed'
+                                ? `<button class="btn btn-sm" style="background:var(--red);" onclick="removeQueueItem('${item.id}')">${Array.isArray(item.urls) && item.urls.length > 1 ? 'Delete Photo Group' : 'Delete Photo'}</button>`
+                                : ''
+                        }
+                    </div>
+                </div>`;
+            })
+            .join('');
 }
 
 async function queueMedicinePhotos() {
@@ -156,6 +310,34 @@ async function queueMedicinePhotos() {
     }
     await queuePhotosFromFiles(input.files);
     input.value = '';
+}
+
+async function removeQueueItem(id) {
+    try {
+        const res = await fetch(`/api/medicines/queue/${id}`, { method: 'DELETE', credentials: 'same-origin' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Status ${res.status}`);
+        medPhotoQueue = Array.isArray(data.queue) ? data.queue : medPhotoQueue.filter((q) => q.id !== id);
+        renderMedPhotoQueue();
+        updatePhoneImportView();
+    } catch (err) {
+        alert(`Unable to delete queue item: ${err.message}`);
+    }
+}
+
+async function queuePhoneImportPhotos() {
+    if (!phoneSelectedFiles.length) {
+        alert('Tap to take one or more medicine photos first.');
+        return;
+    }
+    await queuePhotosFromFiles(phoneSelectedFiles, { group: true });
+    phoneSelectedFiles = [];
+    renderPhonePreview();
+}
+
+function removePhonePhoto(idx) {
+    phoneSelectedFiles = phoneSelectedFiles.filter((_, i) => i !== idx);
+    renderPhonePreview();
 }
 
 async function processQueuedPhoto(id) {
@@ -178,17 +360,40 @@ async function processQueuedPhoto(id) {
     }
 }
 
+async function clearProcessedQueueItems() {
+    const processed = (medPhotoQueue || []).filter((item) => item.status === 'completed');
+    if (!processed.length) return;
+    for (const item of processed) {
+        try {
+            const res = await fetch(`/api/medicines/queue/${item.id}`, { method: 'DELETE', credentials: 'same-origin' });
+            let data = {};
+            try {
+                data = await res.json();
+            } catch (err) {
+                data = {};
+            }
+            if (!res.ok) throw new Error(data.error || `Status ${res.status}`);
+        } catch (err) {
+            console.error(`Unable to remove processed queue item ${item.id}: ${err.message}`);
+        }
+    }
+    await loadMedPhotoQueue();
+}
+
 async function processQueuedMedicinePhotos() {
     for (const item of medPhotoQueue) {
         if (item.status === 'completed') continue;
         await processQueuedPhoto(item.id);
     }
+    await clearProcessedQueueItems();
 }
 
 function bindMedPhotoDrop() {
     if (medPhotoDropBound) return;
     const dropZone = document.getElementById('med-photo-drop');
     const input = document.getElementById('med-photo-input');
+    const sel = document.getElementById('med-photo-selected');
+    const preview = document.getElementById('med-photo-preview');
     if (!dropZone || !input) return;
 
     const resetStyle = () => {
@@ -211,6 +416,28 @@ function bindMedPhotoDrop() {
         resetStyle();
         if (e.dataTransfer && e.dataTransfer.files) {
             await queuePhotosFromFiles(e.dataTransfer.files);
+        }
+    });
+    input.addEventListener('change', () => {
+        if (!sel) return;
+        const count = (input.files && input.files.length) || 0;
+        if (!count) {
+            sel.textContent = 'No files selected.';
+        } else if (count === 1) {
+            sel.textContent = `1 file selected: ${input.files[0].name}`;
+        } else {
+            sel.textContent = `${count} files selected (latest: ${input.files[input.files.length - 1].name})`;
+        }
+        // Show previews
+        if (preview) {
+            preview.innerHTML = '';
+            Array.from(input.files || []).forEach((file, idx) => {
+                const url = URL.createObjectURL(file);
+                const box = document.createElement('div');
+                box.style.cssText = 'border:1px solid #d0d7e2; border-radius:6px; padding:6px; background:#fff; display:flex; flex-direction:column; gap:4px; width:120px;';
+                box.innerHTML = `<div style="font-size:11px; font-weight:700;">Photo ${idx + 1}</div><img src="${url}" style="width:100%; height:90px; object-fit:cover; border-radius:4px;">`;
+                preview.appendChild(box);
+            });
         }
     });
     medPhotoDropBound = true;
@@ -602,5 +829,38 @@ window.deleteEquipment = deleteEquipment;
 window.scheduleSaveEquipment = scheduleSaveEquipment;
 window.loadMedPhotoQueue = loadMedPhotoQueue;
 window.queueMedicinePhotos = queueMedicinePhotos;
+window.queuePhoneImportPhotos = queuePhoneImportPhotos;
 window.processQueuedMedicinePhotos = processQueuedMedicinePhotos;
 window.processQueuedPhoto = processQueuedPhoto;
+window.openPhoneImportView = openPhoneImportView;
+window.closePhoneImportView = closePhoneImportView;
+window.forceClearCache = function forceClearCache() {
+    if (confirm('Force a hard reload and clear cached assets?')) {
+        const url = new URL(window.location.href);
+        url.searchParams.set('cache', Date.now().toString());
+        window.location.replace(url.toString());
+    }
+};
+window.removeQueueItem = removeQueueItem;
+// Ensure phone-only button appears on small screens and opens overlay
+document.addEventListener('DOMContentLoaded', () => {
+    const phoneBtns = Array.from(document.querySelectorAll('.phone-only'));
+    const updatePhoneBtnVisibility = () => {
+        const isPhoneLike = window.matchMedia('(pointer: coarse)').matches || window.innerWidth <= 1100;
+        phoneBtns.forEach((btn) => {
+            btn.style.display = isPhoneLike ? 'inline-flex' : 'none';
+        });
+    };
+
+    phoneBtns.forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            openPhoneImportView();
+        });
+    });
+
+    updatePhoneBtnVisibility();
+    window.addEventListener('resize', updatePhoneBtnVisibility);
+    bindPhoneInput();
+    renderPhonePreview();
+});

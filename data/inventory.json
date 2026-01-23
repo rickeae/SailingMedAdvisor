@@ -1,115 +1,12 @@
 [
     {
-        "id": "med-1769072077150",
-        "genericName": "Medication (photo import)",
-        "brandName": "",
-        "form": "",
-        "strength": "",
-        "currentQuantity": "",
-        "minThreshold": "",
-        "unit": "",
-        "storageLocation": "",
-        "expiryDate": "",
-        "batchLot": "",
-        "controlled": false,
-        "manufacturer": "",
-        "primaryIndication": "",
-        "allergyWarnings": "",
-        "standardDosage": "```json\n{\n  \"generic_name\": \"Sodium Hyaluronate\",\n  \"brand_name\": \"Hialid 0.1\",\n  \"form\": \"ophthalmic solution\",\n  \"strength\": \"0.05325mg/mL\",\n  \"expiry_date\": \"Not visible in the image\",\n  \"batch_lot\": \"Not visible in the image\",\n  \"storage_location\": \"Below 30\u00b0C in a tight container\",\n  \"manufacturer\": \"Not visible in the image\",\n  \"indication\": \"Ophthalmic use only\",\n  \"allergy_warnings\": \"Contains chlorhexidine gluconate\",\n  \"dosage\": \"Not specified in the image\",\n  \"notes\": \"Purified Sodium Hyaluronate",
-        "photos": [
-            "/uploads/medicines/medimg-88fba47ca5404ba0986eb05c854a01dc.jpg"
-        ],
-        "purchaseHistory": [
-            {
-                "id": "ph-b286e6e581f14088aff93252ee8a670b",
-                "date": "2026-01-22",
-                "quantity": "",
-                "price": "",
-                "notes": "```json\n{\n  \"generic_name\": \"Sodium Hyaluronate\",\n  \"brand_name\": \"Hialid 0.1\",\n  \"form\": \"ophthalmic solution\",\n  \"strength\": \"0.05325mg/mL\",\n  \"expiry_date\": \"Not visible in the image\",\n  \"batch_lot\": \"Not visible in the image\",\n  \"storage_location\": \"Below 30\u00b0C in a tight container\",\n  \"manufacturer\": \"Not visible in the image\",\n  \"indication\": \"Ophthalmic use only\",\n  \"allergy_warnings\": \"Contains chlorhexidine gluconate\",\n  \"dosage\": \"Not specified in the image\",\n  \"notes\": \"Purified Sodium Hyaluronate",
-                "photos": [
-                    "/uploads/medicines/medimg-88fba47ca5404ba0986eb05c854a01dc.jpg"
-                ]
-            }
-        ]
-    },
-    {
-        "id": "med-1769074454601",
-        "genericName": "Medication",
-        "brandName": "",
-        "form": "",
-        "strength": "",
-        "currentQuantity": "",
-        "minThreshold": "",
-        "unit": "",
-        "storageLocation": "",
-        "expiryDate": "",
-        "batchLot": "",
-        "controlled": false,
-        "manufacturer": "",
-        "primaryIndication": "",
-        "allergyWarnings": "",
-        "standardDosage": "```json\n{\n  \"generic_name\": \"Sodium Hyaluronate\",\n  \"brand_name\": \"Hialid 0.1\",\n  \"form\": \"ophthalmic solution\",\n  \"strength\": \"0.05325mg/mL\",\n  \"expiry_date\": \"Not visible in the image\",\n  \"batch_lot\": \"Not visible in the image\",\n  \"storage_location\": \"Below 30\u00b0C in a tight container\",\n  \"manufacturer\": \"Not visible in the image\",\n  \"indication\": \"Ophthalmic use only\",\n  \"allergy_warnings\": \"Contains chlorhexidine gluconate\",\n  \"dosage\": \"Not specified in the image\",\n  \"notes\": \"Purified Sodium Hyaluronate",
-        "photos": [
-            "/uploads/medicines/medimg-991c77eefc60406d9e4ffda246c69f0e.jpg"
-        ],
-        "purchaseHistory": [
-            {
-                "id": "ph-0796997dbccd4da595f352a6e8de6006",
-                "date": "2026-01-22",
-                "quantity": "",
-                "price": "",
-                "notes": "```json\n{\n  \"generic_name\": \"Sodium Hyaluronate\",\n  \"brand_name\": \"Hialid 0.1\",\n  \"form\": \"ophthalmic solution\",\n  \"strength\": \"0.05325mg/mL\",\n  \"expiry_date\": \"Not visible in the image\",\n  \"batch_lot\": \"Not visible in the image\",\n  \"storage_location\": \"Below 30\u00b0C in a tight container\",\n  \"manufacturer\": \"Not visible in the image\",\n  \"indication\": \"Ophthalmic use only\",\n  \"allergy_warnings\": \"Contains chlorhexidine gluconate\",\n  \"dosage\": \"Not specified in the image\",\n  \"notes\": \"Purified Sodium Hyaluronate",
-                "photos": [
-                    "/uploads/medicines/medimg-991c77eefc60406d9e4ffda246c69f0e.jpg"
-                ]
-            }
-        ],
-        "source": "photo_import",
-        "photoImported": true
-    },
-    {
-        "id": "med-1769074523488",
-        "genericName": "Medication",
-        "brandName": "",
-        "form": "",
-        "strength": "",
-        "currentQuantity": "",
-        "minThreshold": "",
-        "unit": "",
-        "storageLocation": "",
-        "expiryDate": "",
-        "batchLot": "",
-        "controlled": false,
-        "manufacturer": "",
-        "primaryIndication": "",
-        "allergyWarnings": "",
-        "standardDosage": "```json\n{\n  \"generic_name\": null,\n  \"brand_name\": null,\n  \"form\": null,\n  \"strength\": null,\n  \"expiry_date\": null,\n  \"batch_lot\": null,\n  \"storage_location\": null,\n  \"manufacturer\": null,\n  \"indication\": null,\n  \"allergy_warnings\": null,\n  \"dosage\": null,\n  \"notes\": null\n}\n```",
-        "photos": [
-            "/uploads/medicines/medimg-4dbf448b7ef04951a3f6d011745a0f4d.jpg"
-        ],
-        "purchaseHistory": [
-            {
-                "id": "ph-8d37cda45554430b8fa5007099e99f99",
-                "date": "2026-01-22",
-                "quantity": "",
-                "price": "",
-                "notes": "```json\n{\n  \"generic_name\": null,\n  \"brand_name\": null,\n  \"form\": null,\n  \"strength\": null,\n  \"expiry_date\": null,\n  \"batch_lot\": null,\n  \"storage_location\": null,\n  \"manufacturer\": null,\n  \"indication\": null,\n  \"allergy_warnings\": null,\n  \"dosage\": null,\n  \"notes\": null\n}\n```",
-                "photos": [
-                    "/uploads/medicines/medimg-4dbf448b7ef04951a3f6d011745a0f4d.jpg"
-                ]
-            }
-        ],
-        "source": "photo_import",
-        "photoImported": true
-    },
-    {
         "id": "med-1769074669376",
-        "genericName": "Medication",
-        "brandName": "",
-        "form": "",
-        "strength": "",
-        "currentQuantity": "",
-        "minThreshold": "",
+        "genericName": "Ibuprofen",
+        "brandName": "Aetos",
+        "form": "Tablet",
+        "strength": "400mg",
+        "currentQuantity": "110",
+        "minThreshold": "20",
         "unit": "",
         "storageLocation": "",
         "expiryDate": "",
@@ -118,7 +15,7 @@
         "manufacturer": "",
         "primaryIndication": "",
         "allergyWarnings": "",
-        "standardDosage": "```json\n{\n  \"generic_name\": \"Ibuprofen\",\n  \"brand_name\": \"Aetos Ibuprofen\",\n  \"form\": \"Film Coated Tablet\",\n  \"strength\": \"400 mg\",\n  \"expiry_date\": \"Not visible in the image\",\n  \"batch_lot\": \"Not visible in the image\",\n  \"storage_location\": \"Not visible in the image\",\n  \"manufacturer\": \"Not visible in the image\",\n  \"indication\": \"Not visible in the image\",\n  \"allergy_warnings\": \"Not visible in the image\",\n  \"dosage\": \"Not visible in the image\",\n  \"notes\": \"The image shows a blister pack of Aetos Ibuprofen 400 mg film-coated tablets.\"",
+        "standardDosage": "```json-\n{\n  \"generic_name\": \"Ibuprofen\",\n  \"brand_name\": \"Aetos Ibuprofen\",\n  \"form\": \"Film Coated Tablet\",\n  \"strength\": \"400 mg\",\n  \"expiry_date\": \"Not visible in the image\",\n  \"batch_lot\": \"Not visible in the image\",\n  \"storage_location\": \"Not visible in the image\",\n  \"manufacturer\": \"Not visible in the image\",\n  \"indication\": \"Not visible in the image\",\n  \"allergy_warnings\": \"Not visible in the image\",\n  \"dosage\": \"Not visible in the image\",\n  \"notes\": \"The image shows a blister pack of Aetos Ibuprofen 400 mg film-coated tablets.\"",
         "photos": [
             "/uploads/medicines/medimg-3094c2479ef847ae92b948f10c3f1979.jpg"
         ],
@@ -173,7 +70,461 @@
         "photoImported": true
     },
     {
-        "id": "med-1769074958403",
+        "id": "med-1769098042804",
+        "genericName": "Tramadol HCl",
+        "brandName": "Trablin\u2122-50",
+        "form": "tablet",
+        "strength": "50 mg",
+        "currentQuantity": "",
+        "minThreshold": "",
+        "unit": "",
+        "storageLocation": "not specified in image",
+        "expiryDate": "04.2019",
+        "batchLot": "MFCX04.2019",
+        "controlled": false,
+        "manufacturer": "Merck KGaA, Germany",
+        "primaryIndication": "not specified in image",
+        "allergyWarnings": "not specified in image",
+        "standardDosage": "not specified in image",
+        "photos": [
+            "/uploads/medicines/medimg-db90fdd1c2f141d8941d54aa44604d08.jpeg"
+        ],
+        "purchaseHistory": [
+            {
+                "id": "ph-267d4cff59e94b3ca313f44555887510",
+                "date": "2026-01-23",
+                "quantity": "",
+                "price": "",
+                "notes": "packaged in a plastic bag",
+                "photos": [
+                    "/uploads/medicines/medimg-db90fdd1c2f141d8941d54aa44604d08.jpeg"
+                ]
+            }
+        ],
+        "source": "photo_import",
+        "photoImported": true
+    },
+    {
+        "id": "med-1769098210978",
+        "genericName": "Diclofenac Sodium",
+        "brandName": "Avkare",
+        "form": "Topical Gel",
+        "strength": "1%",
+        "currentQuantity": "",
+        "minThreshold": "",
+        "unit": "",
+        "storageLocation": "Not specified in the image",
+        "expiryDate": "Not visible in the image",
+        "batchLot": "42291-2",
+        "controlled": false,
+        "manufacturer": "Not specified in the image",
+        "primaryIndication": "Not specified in the image",
+        "allergyWarnings": "Not specified in the image",
+        "standardDosage": "Use the Dosing Card Attached Inside the Carton",
+        "photos": [
+            "/uploads/medicines/medimg-c3cb3487a59642c0bf316d63c80ee615.jpeg"
+        ],
+        "purchaseHistory": [
+            {
+                "id": "ph-c15f7c77fbdd4d6cb421124863256f1d",
+                "date": "2026-01-23",
+                "quantity": "",
+                "price": "",
+                "notes": "See Medication Guide and Patient Instructions inside of Carton",
+                "photos": [
+                    "/uploads/medicines/medimg-c3cb3487a59642c0bf316d63c80ee615.jpeg"
+                ]
+            }
+        ],
+        "source": "photo_import",
+        "photoImported": true
+    },
+    {
+        "id": "med-1769098222666",
+        "genericName": "Meloxicam",
+        "brandName": "Mobic",
+        "form": "tablet",
+        "strength": "7.5 mg",
+        "currentQuantity": "",
+        "minThreshold": "",
+        "unit": "",
+        "storageLocation": "controlled medicine cabinet",
+        "expiryDate": "06/2026",
+        "batchLot": "0103616",
+        "controlled": false,
+        "manufacturer": "Boehringer Ingelheim",
+        "primaryIndication": "as directed",
+        "allergyWarnings": "Take tablets one or as directed.",
+        "standardDosage": "Take 1 tablet daily.",
+        "photos": [
+            "/uploads/medicines/medimg-23576f177670450893da79b70369989b.jpeg"
+        ],
+        "purchaseHistory": [
+            {
+                "id": "ph-861bcd36ada74f5499127f55520c829e",
+                "date": "2026-01-23",
+                "quantity": "",
+                "price": "",
+                "notes": "Tab",
+                "photos": [
+                    "/uploads/medicines/medimg-23576f177670450893da79b70369989b.jpeg"
+                ]
+            }
+        ],
+        "source": "photo_import",
+        "photoImported": true
+    },
+    {
+        "id": "med-1769098233980",
+        "genericName": "diclofenac",
+        "brandName": "Voltaren",
+        "form": "tablet",
+        "strength": "50 mg",
+        "currentQuantity": "",
+        "minThreshold": "",
+        "unit": "",
+        "storageLocation": "not specified in image",
+        "expiryDate": "2025",
+        "batchLot": "0812025",
+        "controlled": false,
+        "manufacturer": "Novartis",
+        "primaryIndication": "pain relief",
+        "allergyWarnings": "not specified in image",
+        "standardDosage": "not specified in image",
+        "photos": [
+            "/uploads/medicines/medimg-17f13d5e3e764aa3aa1b017bbdd23d0a.jpeg"
+        ],
+        "purchaseHistory": [
+            {
+                "id": "ph-959dec29f078409593a460e626c2219a",
+                "date": "2026-01-23",
+                "quantity": "",
+                "price": "",
+                "notes": "packaging appears to be partially opened",
+                "photos": [
+                    "/uploads/medicines/medimg-17f13d5e3e764aa3aa1b017bbdd23d0a.jpeg"
+                ]
+            }
+        ],
+        "source": "photo_import",
+        "photoImported": true
+    },
+    {
+        "id": "med-1769098248176",
+        "genericName": "Metoclopramide HCl",
+        "brandName": "Pulin",
+        "form": "Film Coated Tablet",
+        "strength": "10mg",
+        "currentQuantity": "",
+        "minThreshold": "",
+        "unit": "",
+        "storageLocation": "Controlled Medicine",
+        "expiryDate": "2023-06-15",
+        "batchLot": "H1008",
+        "controlled": false,
+        "manufacturer": "PMG PHARMACY (LANGKAWI) SDN BHD",
+        "primaryIndication": "Not specified in the image",
+        "allergyWarnings": "Not specified in the image",
+        "standardDosage": "Not specified in the image",
+        "photos": [
+            "/uploads/medicines/medimg-493788ca3acc4465b97bddf985e19671.jpeg"
+        ],
+        "purchaseHistory": [
+            {
+                "id": "ph-940fd9f67a5c440da1073cb504e971b5",
+                "date": "2026-01-23",
+                "quantity": "",
+                "price": "",
+                "notes": "Not specified in the image",
+                "photos": [
+                    "/uploads/medicines/medimg-493788ca3acc4465b97bddf985e19671.jpeg"
+                ]
+            }
+        ],
+        "source": "photo_import",
+        "photoImported": true
+    },
+    {
+        "id": "med-1769098262029",
+        "genericName": "Papain",
+        "brandName": "Axcel",
+        "form": "Tablets",
+        "strength": "10,000 USP unts",
+        "currentQuantity": "",
+        "minThreshold": "",
+        "unit": "",
+        "storageLocation": "",
+        "expiryDate": "",
+        "batchLot": "",
+        "controlled": false,
+        "manufacturer": "Kotra Pharma",
+        "primaryIndication": "",
+        "allergyWarnings": "",
+        "standardDosage": "```json\n{\n  \"generic_name\": \"Papain\",\n  \"brand_name\": \"Axcel\",\n  \"form\": \"Tablets\",\n  \"strength\": \"10,000 USP units\",\n  \"expiry_date\": \"Not visible in the image\",\n  \"batch_lot\": \"Not visible in the image\",\n  \"storage_location\": \"Not visible in the image\",\n  \"manufacturer\": \"Kotra Pharma\",\n  \"indication\": \"Not visible in the image\",\n  \"allergy_warnings\": \"Not visible in the image\",\n  \"dosage\": \"Not visible in the image\",\n  \"notes\": \"The image shows multiple packages of Axcel Papain Tablets, but specific details like expiry date, batch lot, storage location, indication",
+        "photos": [
+            "/uploads/medicines/medimg-9edd998139c2468b9ac10c129d1afb79.jpeg"
+        ],
+        "purchaseHistory": [
+            {
+                "id": "ph-f21942a9e16c4b6fbe2b3282917cd409",
+                "date": "2026-01-23",
+                "quantity": "",
+                "price": "",
+                "notes": "```json\n{\n  \"generic_name\": \"Papain\",\n  \"brand_name\": \"Axcel\",\n  \"form\": \"Tablets\",\n  \"strength\": \"10,000 USP units\",\n  \"expiry_date\": \"Not visible in the image\",\n  \"batch_lot\": \"Not visible in the image\",\n  \"storage_location\": \"Not visible in the image\",\n  \"manufacturer\": \"Kotra Pharma\",\n  \"indication\": \"Not visible in the image\",\n  \"allergy_warnings\": \"Not visible in the image\",\n  \"dosage\": \"Not visible in the image\",\n  \"notes\": \"The image shows multiple packages of Axcel Papain Tablets, but specific details like expiry date, batch lot, storage location, indication",
+                "photos": [
+                    "/uploads/medicines/medimg-9edd998139c2468b9ac10c129d1afb79.jpeg"
+                ]
+            }
+        ],
+        "source": "photo_import",
+        "photoImported": true
+    },
+    {
+        "id": "med-1769098774767",
+        "genericName": "Riamet",
+        "brandName": "",
+        "form": "Tablet",
+        "strength": "20mg/120mg",
+        "currentQuantity": "",
+        "minThreshold": "",
+        "unit": "",
+        "storageLocation": "",
+        "expiryDate": "",
+        "batchLot": "",
+        "controlled": false,
+        "manufacturer": "Novartis",
+        "primaryIndication": "",
+        "allergyWarnings": "",
+        "standardDosage": "```json\n{\n  \"generic_name\": \"artemether/lumefantrine\",\n  \"brand_name\": \"Riamet\",\n  \"form\": \"tablets\",\n  \"strength\": \"20 mg/120 mg\",\n  \"expiry_date\": \"05.2027\",\n  \"batch_lot\": \"30822 U57\",\n  \"storage_location\": \"not specified in image\",\n  \"manufacturer\": \"Novartis\",\n  \"indication\": \"not specified in image\",\n  \"allergy_warnings\": \"not specified in image\",\n  \"dosage\": \"not specified in image\",\n  \"notes\": \"The image shows a blister pack of Riamet tablets containing artemether/lumefantr",
+        "photos": [
+            "/uploads/medicines/medimg-156f09edf873401fbd0c074fbe77d783.jpeg"
+        ],
+        "purchaseHistory": [
+            {
+                "id": "ph-71a7cbb9654e476abc2f749e9675a463",
+                "date": "2026-01-23",
+                "quantity": "",
+                "price": "",
+                "notes": "```json\n{\n  \"generic_name\": \"artemether/lumefantrine\",\n  \"brand_name\": \"Riamet\",\n  \"form\": \"tablets\",\n  \"strength\": \"20 mg/120 mg\",\n  \"expiry_date\": \"05.2027\",\n  \"batch_lot\": \"30822 U57\",\n  \"storage_location\": \"not specified in image\",\n  \"manufacturer\": \"Novartis\",\n  \"indication\": \"not specified in image\",\n  \"allergy_warnings\": \"not specified in image\",\n  \"dosage\": \"not specified in image\",\n  \"notes\": \"The image shows a blister pack of Riamet tablets containing artemether/lumefantr",
+                "photos": [
+                    "/uploads/medicines/medimg-156f09edf873401fbd0c074fbe77d783.jpeg"
+                ]
+            }
+        ],
+        "source": "photo_import",
+        "photoImported": true
+    },
+    {
+        "id": "med-1769098788915",
+        "genericName": "Doxycycline Hydrochloride",
+        "brandName": "DOXYMYCIN",
+        "form": "Capsule",
+        "strength": "100mg",
+        "currentQuantity": "",
+        "minThreshold": "",
+        "unit": "",
+        "storageLocation": "",
+        "expiryDate": "",
+        "batchLot": "",
+        "controlled": false,
+        "manufacturer": "Y.S.P.",
+        "primaryIndication": "",
+        "allergyWarnings": "",
+        "standardDosage": "```json\n{\n  \"generic_name\": \"\",\n  \"brand_name\": \"DOXYMYCIN\",\n  \"form\": \"Capsule\",\n  \"strength\": \"100mg\",\n  \"expiry_date\": \"Not visible in the image\",\n  \"batch_lot\": \"10271002\",\n  \"storage_location\": \"Not specified in the image\",\n  \"manufacturer\": \"Y.S.P.\",\n  \"indication\": \"Not specified in the image\",\n  \"allergy_warnings\": \"Not specified in the image\",\n  \"dosage\": \"Not specified in the image\",\n  \"notes\": \"The image does not provide information about the expiry date, storage location, indication, allergy warnings, or dosage",
+        "photos": [
+            "/uploads/medicines/medimg-f3db7f4ebb0947a28815be431e2fce56.jpeg"
+        ],
+        "purchaseHistory": [
+            {
+                "id": "ph-c1d006303019437caa41dfacb7905c83",
+                "date": "2026-01-23",
+                "quantity": "",
+                "price": "",
+                "notes": "```json\n{\n  \"generic_name\": \"Doxycycline Hydrochloride\",\n  \"brand_name\": \"DOXYMYCIN\",\n  \"form\": \"Capsule\",\n  \"strength\": \"100mg\",\n  \"expiry_date\": \"Not visible in the image\",\n  \"batch_lot\": \"10271002\",\n  \"storage_location\": \"Not specified in the image\",\n  \"manufacturer\": \"Y.S.P.\",\n  \"indication\": \"Not specified in the image\",\n  \"allergy_warnings\": \"Not specified in the image\",\n  \"dosage\": \"Not specified in the image\",\n  \"notes\": \"The image does not provide information about the expiry date, storage location, indication, allergy warnings, or dosage",
+                "photos": [
+                    "/uploads/medicines/medimg-f3db7f4ebb0947a28815be431e2fce56.jpeg"
+                ]
+            }
+        ],
+        "source": "photo_import",
+        "photoImported": true
+    },
+    {
+        "id": "med-1769098804200",
+        "genericName": "Atovaquone",
+        "brandName": "Malarone",
+        "form": "Tablets",
+        "strength": "(250/100) mg",
+        "currentQuantity": "",
+        "minThreshold": "",
+        "unit": "",
+        "storageLocation": "",
+        "expiryDate": "",
+        "batchLot": "",
+        "controlled": false,
+        "manufacturer": "GSK",
+        "primaryIndication": "Treatment of malaria",
+        "allergyWarnings": "",
+        "standardDosage": "```json\n{\n  \"generic_name\": \"atovaquone\",\n  \"brand_name\": \"Malarone\",\n  \"form\": \"Tablets\",\n  \"strength\": \"(250/100) mg\",\n  \"expiry_date\": \"Not visible in the image\",\n  \"batch_lot\": \"Not visible in the image\",\n  \"storage_location\": \"Not visible in the image\",\n  \"manufacturer\": \"GSK\",\n  \"indication\": \"Treatment of malaria\",\n  \"allergy_warnings\": \"Not visible in the image\",\n  \"dosage\": \"Not visible in the image\",\n  \"notes\": \"The image shows a blister pack of Malarone tablets containing atovaquone 250 mg and proguanil hydrochlor",
+        "photos": [
+            "/uploads/medicines/medimg-1e9437c2be514258a0c849046432b3b0.jpeg"
+        ],
+        "purchaseHistory": [
+            {
+                "id": "ph-aeb0985e3f264925bb0e230092e8a7f8",
+                "date": "2026-01-23",
+                "quantity": "",
+                "price": "",
+                "notes": "```json\n{\n  \"generic_name\": \"atovaquone\",\n  \"brand_name\": \"Malarone\",\n  \"form\": \"Tablets\",\n  \"strength\": \"(250/100) mg\",\n  \"expiry_date\": \"Not visible in the image\",\n  \"batch_lot\": \"Not visible in the image\",\n  \"storage_location\": \"Not visible in the image\",\n  \"manufacturer\": \"GSK\",\n  \"indication\": \"Treatment of malaria\",\n  \"allergy_warnings\": \"Not visible in the image\",\n  \"dosage\": \"Not visible in the image\",\n  \"notes\": \"The image shows a blister pack of Malarone tablets containing atovaquone 250 mg and proguanil hydrochlor",
+                "photos": [
+                    "/uploads/medicines/medimg-1e9437c2be514258a0c849046432b3b0.jpeg"
+                ]
+            }
+        ],
+        "source": "photo_import",
+        "photoImported": true
+    },
+    {
+        "id": "med-1769147056979",
+        "genericName": "Aloe Vera",
+        "brandName": "Vaseline",
+        "form": "Jelly",
+        "strength": "Not specified",
+        "currentQuantity": "",
+        "minThreshold": "",
+        "unit": "",
+        "storageLocation": "Not visible in the image",
+        "expiryDate": "Not visible in the image",
+        "batchLot": "Not visible in the image",
+        "controlled": false,
+        "manufacturer": "Not visible in the image",
+        "primaryIndication": "Soothing",
+        "allergyWarnings": "Not visible in the image",
+        "standardDosage": "Not visible in the image",
+        "photos": [
+            "/uploads/medicines/medimg-b99e44ecc70a48ddaf7984e35e2e67b6.jpg"
+        ],
+        "purchaseHistory": [
+            {
+                "id": "ph-01ce6cfd59274beda1b4e4d829fadb02",
+                "date": "2026-01-23",
+                "quantity": "",
+                "price": "",
+                "notes": "The image shows a Vaseline Aloe Soothing Jelly container.",
+                "photos": [
+                    "/uploads/medicines/medimg-b99e44ecc70a48ddaf7984e35e2e67b6.jpg"
+                ]
+            }
+        ],
+        "source": "photo_import",
+        "photoImported": true
+    },
+    {
+        "id": "med-1769148295969",
+        "genericName": "Nifedipine",
+        "brandName": "Niferin SR",
+        "form": "tablet",
+        "strength": "30mg",
+        "currentQuantity": "295",
+        "minThreshold": "100",
+        "unit": "Tablets",
+        "storageLocation": "Not visible in the image",
+        "expiryDate": "2028-04-29",
+        "batchLot": "Not visible in the image",
+        "controlled": false,
+        "manufacturer": "Not visible in the image",
+        "primaryIndication": "Not visible in the image",
+        "allergyWarnings": "Not visible in the image",
+        "standardDosage": "Not visible in the image",
+        "photos": [
+            "/uploads/medicines/medimg-31b283f1d5564d639d0e1bb928a24d4e.jpg"
+        ],
+        "purchaseHistory": [
+            {
+                "id": "ph-b19eb6f600194910b174a6ea2cb6b939",
+                "date": "2026-01-23",
+                "quantity": "",
+                "price": "",
+                "notes": "The image shows a blister pack of Nifedipine 30mg tablets.",
+                "photos": [
+                    "/uploads/medicines/medimg-31b283f1d5564d639d0e1bb928a24d4e.jpg"
+                ]
+            }
+        ],
+        "source": "photo_import",
+        "photoImported": true
+    },
+    {
+        "id": "med-1769149063197",
+        "genericName": "Magnesium Glycinate",
+        "brandName": "Pslalae",
+        "form": "Capsules",
+        "strength": "500mg",
+        "currentQuantity": "",
+        "minThreshold": "",
+        "unit": "Tablets",
+        "storageLocation": "",
+        "expiryDate": "2027-08-01",
+        "batchLot": "",
+        "controlled": false,
+        "manufacturer": "",
+        "primaryIndication": "Cardiovascular Health,Immune Support,Bone and Joint Support,Nervous System Support",
+        "allergyWarnings": "",
+        "standardDosage": "```json\n{\n  \"generic_name\": \"Magnesium Glycinate\",\n  \"brand_name\": \"Pslalae\",\n  \"form\": \"Capsules\",\n  \"strength\": \"500mg\",\n  \"expiry_date\": null,\n  \"batch_lot\": null,\n  \"storage_location\": null,\n  \"manufacturer\": null,\n  \"indication\": [\n    \"Cardiovascular Health\",\n    \"Immune Support\",\n    \"Bone and Joint Support\",\n    \"Nervous System Support\"\n  ],\n  \"allergy_warnings\": null,\n  \"dosage\": null,\n  \"notes\": null\n}\n```",
+        "photos": [
+            "/uploads/medicines/medimg-d9d4b4d0ff2043b28d01f13609428830.jpg"
+        ],
+        "purchaseHistory": [
+            {
+                "id": "ph-631e57942f8b4358990a41b03de399a3",
+                "date": "2026-01-23",
+                "quantity": "",
+                "price": "",
+                "notes": "```json\n{\n  \"generic_name\": \"Magnesium Glycinate\",\n  \"brand_name\": \"Pslalae\",\n  \"form\": \"Capsules\",\n  \"strength\": \"500mg\",\n  \"expiry_date\": null,\n  \"batch_lot\": null,\n  \"storage_location\": null,\n  \"manufacturer\": null,\n  \"indication\": [\n    \"Cardiovascular Health\",\n    \"Immune Support\",\n    \"Bone and Joint Support\",\n    \"Nervous System Support\"\n  ],\n  \"allergy_warnings\": null,\n  \"dosage\": null,\n  \"notes\": null\n}\n```",
+                "photos": [
+                    "/uploads/medicines/medimg-d9d4b4d0ff2043b28d01f13609428830.jpg"
+                ]
+            }
+        ],
+        "source": "photo_import",
+        "photoImported": true
+    },
+    {
+        "id": "med-1769149558572",
+        "genericName": "Centrum Multivitamin-Multimineral",
+        "brandName": "Centrum",
+        "form": "Tablets",
+        "strength": "100 Tablets",
+        "currentQuantity": "",
+        "minThreshold": "",
+        "unit": "",
+        "storageLocation": "Not visible in the image",
+        "expiryDate": "",
+        "batchLot": "Not visible in the image",
+        "controlled": false,
+        "manufacturer": "Haleon",
+        "primaryIndication": "Not visible in the image",
+        "allergyWarnings": "Not visible in the image",
+        "standardDosage": "Not visible in the image",
+        "photos": [
+            "/uploads/medicines/medimg-e13ecb95bbbb48c6b5c8256f1e5db602.jpg",
+            "/uploads/medicines/medimg-fc5c043774a84827adbe8619d0538b86.jpg"
+        ],
+        "purchaseHistory": [
+            {
+                "id": "ph-de66ba8ea21e46c2a07b8955d8e27342",
+                "date": "2026-01-23",
+                "quantity": "",
+                "price": "",
+                "notes": "The image shows a bottle of Centrum Multivitamin-Multimineral Plus Lutein & Lycopene tablets.",
+                "photos": []
+            }
+        ],
+        "source": "photo_import",
+        "photoImported": true
+    },
+    {
+        "id": "med-1769149861574",
         "genericName": "Medication",
         "brandName": "",
         "form": "",
@@ -188,19 +539,19 @@
         "manufacturer": "",
         "primaryIndication": "",
         "allergyWarnings": "",
-        "standardDosage": "```json\n{\n  \"generic_name\": \"Azitromicina Dihidrato\",\n  \"brand_name\": \"Imbys\u00ae 500\",\n  \"form\": \"Comprimidos\",\n  \"strength\": \"500 mg\",\n  \"expiry_date\": \"2018-1234\",\n  \"batch_lot\": \"2018-1234\",\n  \"storage_location\": \"No specific information provided in the image.\",\n  \"manufacturer\": \"ALTIAN Pharma, S.A., Guatemala\",\n  \"indication\": \"Venta bajo receta / V\u00eda Oral\",\n  \"allergy_warnings\": \"No specific information provided in the image.\",\n  \"dosage\": \"No specific information provided in the image.\",\n  \"",
+        "standardDosage": "```json\n{\n  \"generic_name\": \"Calcium\",\n  \"brand_name\": \"Caltrate\",\n  \"form\": \"Tablets\",\n  \"strength\": \"600mg Calcium with Vitamin D3 500IU\",\n  \"expiry_date\": \"Not visible in the image\",\n  \"batch_lot\": \"Not visible in the image\",\n  \"storage_location\": \"Not visible in the image\",\n  \"manufacturer\": \"Not visible in the image\",\n  \"indication\": \"Not visible in the image\",\n  \"allergy_warnings\": \"Not visible in the image\",\n  \"dosage\": \"Not visible in the image\",\n  \"notes\": \"The image shows a bottle of Caltrate Calcium +D containing 100 film-coated",
         "photos": [
-            "/uploads/medicines/medimg-5e8e3462c8b9406582036b35eb5cf190.jpg"
+            "/uploads/medicines/medimg-54c42e09c25e4389b4d3ac9ee78eaf3f.jpg"
         ],
         "purchaseHistory": [
             {
-                "id": "ph-f5cae32ef68b4968b73a2c00479ac530",
-                "date": "2026-01-22",
+                "id": "ph-7a0485a284894c67828a5b19c91319cc",
+                "date": "2026-01-23",
                 "quantity": "",
                 "price": "",
-                "notes": "```json\n{\n  \"generic_name\": \"Azitromicina Dihidrato\",\n  \"brand_name\": \"Imbys\u00ae 500\",\n  \"form\": \"Comprimidos\",\n  \"strength\": \"500 mg\",\n  \"expiry_date\": \"2018-1234\",\n  \"batch_lot\": \"2018-1234\",\n  \"storage_location\": \"No specific information provided in the image.\",\n  \"manufacturer\": \"ALTIAN Pharma, S.A., Guatemala\",\n  \"indication\": \"Venta bajo receta / V\u00eda Oral\",\n  \"allergy_warnings\": \"No specific information provided in the image.\",\n  \"dosage\": \"No specific information provided in the image.\",\n  \"",
+                "notes": "```json\n{\n  \"generic_name\": \"Calcium\",\n  \"brand_name\": \"Caltrate\",\n  \"form\": \"Tablets\",\n  \"strength\": \"600mg Calcium with Vitamin D3 500IU\",\n  \"expiry_date\": \"Not visible in the image\",\n  \"batch_lot\": \"Not visible in the image\",\n  \"storage_location\": \"Not visible in the image\",\n  \"manufacturer\": \"Not visible in the image\",\n  \"indication\": \"Not visible in the image\",\n  \"allergy_warnings\": \"Not visible in the image\",\n  \"dosage\": \"Not visible in the image\",\n  \"notes\": \"The image shows a bottle of Caltrate Calcium +D containing 100 film-coated",
                 "photos": [
-                    "/uploads/medicines/medimg-5e8e3462c8b9406582036b35eb5cf190.jpg"
+                    "/uploads/medicines/medimg-54c42e09c25e4389b4d3ac9ee78eaf3f.jpg"
                 ]
             }
         ],

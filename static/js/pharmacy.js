@@ -3,6 +3,16 @@
 let pharmacyCache = [];
 const pharmacySaveTimers = {};
 
+function getTextareaHeights() {
+    const map = {};
+    document.querySelectorAll('#pharmacy-list textarea').forEach((el) => {
+        if (el.id && el.style && el.style.height) {
+            map[el.id] = el.style.height;
+        }
+    });
+    return map;
+}
+
 function ensurePurchaseDefaults(p) {
     return {
         id: p.id || `ph-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
@@ -63,6 +73,31 @@ function getMedicationDisplayName(med) {
     return `${primary}${showBrand ? ' — ' + brand : ''}`;
 }
 
+function sortPharmacyItems(items) {
+    const list = Array.isArray(items) ? [...items] : [];
+    const sortSel = document.getElementById('pharmacy-sort');
+    const mode = (sortSel && sortSel.value) || 'generic';
+    const byText = (a, b, pathA, pathB) => {
+        const va = (pathA || '').toLowerCase();
+        const vb = (pathB || '').toLowerCase();
+        return va.localeCompare(vb);
+    };
+    list.sort((a, b) => {
+        if (mode === 'brand') {
+            return byText(a, b, a.brandName || '', b.brandName || '');
+        }
+        if (mode === 'strength') {
+            return byText(a, b, a.strength || '', b.strength || '');
+        }
+        if (mode === 'expiry') {
+            return byText(a, b, a.expiryDate || '', b.expiryDate || '');
+        }
+        // default generic
+        return byText(a, b, a.genericName || a.brandName || '', b.genericName || b.brandName || '');
+    });
+    return list;
+}
+
 async function loadPharmacy() {
     const list = document.getElementById('pharmacy-list');
     if (!list) return;
@@ -78,14 +113,22 @@ async function loadPharmacy() {
     }
 }
 
-function renderPharmacy(items) {
+function getOpenMedIds() {
+    return Array.from(document.querySelectorAll('#pharmacy-list .history-item .col-body[data-med-id]'))
+        .filter((el) => el.style.display !== 'none')
+        .map((el) => el.dataset.medId)
+        .filter(Boolean);
+}
+
+function renderPharmacy(items, openIds = [], textHeights = {}) {
     const list = document.getElementById('pharmacy-list');
     if (!list) return;
     if (!items || items.length === 0) {
         list.innerHTML = '<div style="color:#666; padding:12px;">No medications logged. Add your first item.</div>';
         return;
     }
-    const cards = items.map(renderMedicationCard).join('');
+    const sorted = sortPharmacyItems(items);
+    const cards = sorted.map((m) => renderMedicationCard(m, openIds.includes(m.id), textHeights)).join('');
     list.innerHTML = cards;
 }
 
@@ -114,25 +157,31 @@ function renderPurchaseRows(med) {
                 <div class="ph-notes-container" style="margin-bottom:10px; display:block;">
                     <textarea class="ph-notes" placeholder="Notes/Vendor" style="width:100%; padding:8px; min-height:60px; font-size:14px;" oninput="scheduleSaveMedication('${med.id}')">${p.notes || ''}</textarea>
                 </div>
-                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-start;">
+                <div class="ph-photos-container" style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-start; margin-top:6px;">
                     ${photos.join('')}
                     <div>
                         <label style="font-size:12px; font-weight:700; display:block; margin-bottom:4px;">Add Photo</label>
                         <input type="file" accept="image/*" onchange="uploadPurchasePhoto('${med.id}', '${p.id}')" style="font-size:12px;">
                     </div>
                 </div>
+                <div style="display:flex; gap:10px; margin-top:10px; flex-wrap:wrap;">
+                    <button class="btn btn-sm" style="background:var(--red);" onclick="deletePurchaseEntry('${med.id}')">Delete Medication Purchase</button>
+                </div>
             </div>`;
         })
         .join('');
 }
 
-function renderMedicationCard(med) {
+function renderMedicationCard(med, isOpen = true, textHeights = {}) {
     const lowStock = med.minThreshold && Number(med.currentQuantity) <= Number(med.minThreshold);
     const expirySoon = med.expiryDate && daysUntil(med.expiryDate) <= 60;
     const expiryText = med.expiryDate ? `Exp: ${med.expiryDate}` : 'No expiry set';
     const headerNote = [lowStock ? 'Low Stock' : null, expirySoon ? 'Expiring Soon' : null].filter(Boolean).join(' · ');
     const displayName = getMedicationDisplayName(med);
     const strength = (med.strength || '').trim();
+    const bodyDisplay = isOpen ? 'display:block;' : 'display:none;';
+    const arrow = isOpen ? '▾' : '▸';
+    const doseHeight = textHeights[`dose-${med.id}`] ? `height:${textHeights[`dose-${med.id}`]};` : '';
     const photoThumbs = (med.photos || []).map(
         (src, idx) => `
             <div style="display:flex; flex-direction:column; gap:4px; align-items:flex-start; border:1px solid #e0e0e0; padding:6px; border-radius:4px; background:#f9fbff;">
@@ -142,17 +191,17 @@ function renderMedicationCard(med) {
             </div>`
     );
     return `
-    <div class="collapsible history-item">
+            <div class="collapsible history-item">
         <div class="col-header crew-med-header" onclick="toggleCrewSection(this)" style="justify-content:flex-start; align-items:center;">
             <span class="dev-tag">dev:med-card</span>
-            <span class="toggle-label history-arrow" style="font-size:18px; margin-right:8px;">▸</span>
+            <span class="toggle-label history-arrow" style="font-size:18px; margin-right:8px;">${arrow}</span>
             <span style="flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:700;">
                 ${displayName}${strength ? ' — ' + strength : ''}
             </span>
             ${headerNote ? `<span class="sidebar-pill" style="margin-right:8px; background:${lowStock ? '#ffebee' : '#fff7e0'}; color:${lowStock ? '#c62828' : '#b26a00'};">${headerNote}</span>` : ''}
             <button onclick="event.stopPropagation(); deleteMedication('${med.id}')" class="btn btn-sm history-action-btn" style="background:var(--red); visibility:hidden;">🗑 Delete Medication</button>
         </div>
-        <div class="col-body" style="padding:12px; background:#e8f4ff; border:1px solid #c7ddff; border-radius:6px;">
+        <div class="col-body" data-med-id="${med.id}" style="padding:12px; background:#e8f4ff; border:1px solid #c7ddff; border-radius:6px; ${bodyDisplay}">
             <div class="collapsible" style="margin-bottom:10px;">
                 <div class="col-header crew-med-header" onclick="toggleMedDetails(this)" style="background:#fff; justify-content:flex-start; align-items:center;">
                     <span class="dev-tag">dev:med-details</span>
@@ -223,18 +272,18 @@ function renderMedicationCard(med) {
                         </div>
                         <div style="grid-column: span 2;">
                             <label style="font-weight:700; font-size:12px;">Standard Dosage (adult reference)</label>
-                            <textarea id="dose-${med.id}" style="width:100%; padding:8px; min-height:60px;" oninput="scheduleSaveMedication('${med.id}')">${med.standardDosage || ''}</textarea>
+                            <textarea id="dose-${med.id}" style="width:100%; padding:8px; min-height:60px; ${doseHeight}" oninput="scheduleSaveMedication('${med.id}')">${med.standardDosage || ''}</textarea>
                         </div>
                     </div>
-                </div>
-            </div>
-            <div style="margin:10px 0; border-top:1px solid #d0dff5; padding-top:10px;">
-                <div style="display:flex; gap:8px; align-items:center; font-weight:800; color:var(--dark); margin-bottom:6px;">
-                    <span>Medicine Photos</span>
-                    <span class="dev-tag">dev:med-photos</span>
-                </div>
-                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-start;">
-                    ${photoThumbs.length ? photoThumbs.join('') : '<div style="font-size:12px; color:#666;">No photos linked.</div>'}
+                    <div style="margin:10px 0; border-top:1px solid #d0dff5; padding-top:10px;">
+                        <div style="display:flex; gap:8px; align-items:center; font-weight:800; color:var(--dark); margin-bottom:6px;">
+                            <span>Medicine Photos</span>
+                            <span class="dev-tag">dev:med-photos</span>
+                        </div>
+                        <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-start;">
+                            ${photoThumbs.length ? photoThumbs.join('') : '<div style="font-size:12px; color:#666;">No photos linked.</div>'}
+                        </div>
+                    </div>
                 </div>
             </div>
             <div style="margin:10px 0; border-top:1px solid #d0dff5; padding-top:10px;">
@@ -246,9 +295,6 @@ function renderMedicationCard(med) {
                     <button class="btn btn-sm" style="background:var(--inquiry);" onclick="addPurchaseEntry('${med.id}')">+ Add Purchase</button>
                 </div>
                 <div id="ph-${med.id}">${renderPurchaseRows(med)}</div>
-            </div>
-            <div style="display:flex; gap:10px; margin-top:10px; flex-wrap:wrap;">
-                <button class="btn btn-sm" style="background:var(--red);" onclick="deletePurchaseEntry('${med.id}')">Delete Medication Purchase</button>
             </div>
         </div>
     </div>`;
@@ -295,10 +341,19 @@ function addPurchaseEntry(medId) {
 }
 
 async function saveMedication(id) {
+    const openMedIds = getOpenMedIds();
+    const textHeights = getTextareaHeights();
     const data = await (await fetch('/api/data/inventory', { credentials: 'same-origin' })).json();
     const meds = Array.isArray(data) ? data.map(ensurePharmacyDefaults) : [];
     const med = meds.find((m) => m.id === id);
     if (!med) return alert('Medication not found');
+    const genericVal = (document.getElementById(`gn-${id}`)?.value || '').trim();
+    const strengthVal = (document.getElementById(`str-${id}`)?.value || '').trim();
+    const dup = meds.find((m) => m.id !== id && (m.genericName || '').trim().toLowerCase() === genericVal.toLowerCase() && (m.strength || '').trim().toLowerCase() === strengthVal.toLowerCase());
+    if (dup) {
+        alert('A medication with the same generic name and strength already exists. Please adjust to keep entries unique.');
+        return;
+    }
     med.genericName = document.getElementById(`gn-${id}`)?.value || '';
     med.brandName = document.getElementById(`bn-${id}`)?.value || '';
     med.form = document.getElementById(`form-${id}`)?.value || '';
@@ -322,7 +377,8 @@ async function saveMedication(id) {
         body: JSON.stringify(meds),
         credentials: 'same-origin',
     });
-    loadPharmacy();
+    pharmacyCache = meds;
+    renderPharmacy(pharmacyCache, openMedIds, textHeights);
 }
 
 function collectPurchaseEntries(medId) {
@@ -394,6 +450,12 @@ async function deletePurchaseEntry(medId) {
 async function addMedication() {
     const data = await (await fetch('/api/data/inventory', { credentials: 'same-origin' })).json();
     const meds = Array.isArray(data) ? data : [];
+    const emptyName = 'Medication';
+    const dup = meds.find((m) => (m.genericName || '').trim().toLowerCase() === emptyName.toLowerCase());
+    if (dup) {
+        alert('Please edit the existing placeholder medication before adding another blank entry (duplicate Medication).');
+        return;
+    }
     meds.push(ensurePharmacyDefaults({ id: `med-${Date.now()}` }));
     await fetch('/api/data/inventory', {
         method: 'POST',
@@ -483,6 +545,11 @@ window.uploadPurchasePhoto = uploadPurchasePhoto;
 window.removePurchasePhoto = removePurchasePhoto;
 window.removeMedicationPhoto = removeMedicationPhoto;
 window.scheduleSaveMedication = scheduleSaveMedication;
+window.sortPharmacyList = function(mode) {
+    const openMedIds = getOpenMedIds();
+    const textHeights = getTextareaHeights();
+    renderPharmacy(pharmacyCache, openMedIds, textHeights);
+};
 window.toggleMedDetails = function(el) {
     const body = el.nextElementSibling;
     const icon = el.querySelector('.detail-icon');
@@ -495,8 +562,10 @@ window.togglePurchaseNotes = function(el) {
     const row = el.closest('.purchase-row');
     if (!row) return;
     const notes = row.querySelector('.ph-notes-container');
+    const photos = row.querySelector('.ph-photos-container');
     if (!notes) return;
     const isHidden = notes.style.display === 'none';
     notes.style.display = isHidden ? 'block' : 'none';
+    if (photos) photos.style.display = isHidden ? 'flex' : 'none';
     el.textContent = isHidden ? '▾' : '▸';
 };

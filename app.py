@@ -2,12 +2,19 @@ import os
 import json
 import uuid
 import secrets
+import shutil
+import zipfile
+import asyncio
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import List
 
 # Encourage less fragmentation on GPUs with limited VRAM (e.g., RTX 5000)
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+# Enforce offline/local-only model loading by default
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 import torch
 
@@ -35,6 +42,18 @@ MED_UPLOAD_DIR.mkdir(exist_ok=True)
 SECRET_KEY = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
 OFFLOAD_DIR = Path("offload")
 OFFLOAD_DIR.mkdir(exist_ok=True)
+CACHE_DIR = Path("models_cache")
+CACHE_DIR.mkdir(exist_ok=True)
+# Point Hugging Face cache to a local directory to avoid network dependency
+os.environ.setdefault("HF_HOME", str(CACHE_DIR))
+os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(CACHE_DIR / "hub"))
+BACKUP_DIR = Path("backups")
+BACKUP_DIR.mkdir(exist_ok=True)
+REQUIRED_MODELS = [
+    "google/medgemma-1.5-4b-it",
+    "google/medgemma-27b-text-it",
+    "Qwen/Qwen2.5-VL-7B-Instruct",
+]
 
 # FastAPI app
 app = FastAPI(title="SailingMedAdvisor")
@@ -42,6 +61,7 @@ app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY, same_site="lax")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 templates = Jinja2Templates(directory="templates")
+templates.env.auto_reload = True
 
 # Model state
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -53,6 +73,7 @@ elif device == "cuda":
 else:
     dtype = torch.float32
 models = {"active_name": "", "model": None, "processor": None, "tokenizer": None, "is_text": False}
+MODEL_MUTEX = threading.Lock()
 quant_config = None
 if device == "cuda":
     quant_config = BitsAndBytesConfig(
@@ -74,6 +95,43 @@ def unload_model():
     models["is_text"] = False
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+
+def _same_med(a, b):
+    """Decide if two meds are the same item.
+
+    We require a real generic name match; placeholders/empties don't dedupe to avoid swallowing new imports.
+    Strength must match when both are provided.
+    """
+
+    def norm(val):
+        v = (val or "").strip().lower()
+        return "" if v in {"", "medication", "med"} else v
+
+    ga, gb = norm(a.get("genericName")), norm(b.get("genericName"))
+    sa, sb = norm(a.get("strength")), norm(b.get("strength"))
+    if not ga or not gb:
+        return False
+    if ga != gb:
+        return False
+    if sa and sb:
+        return sa == sb
+    return True
+
+
+def _is_blank(val):
+    """Return True when a value is effectively empty for merge purposes."""
+    if val is None:
+        return True
+    if isinstance(val, bool):
+        return False
+    if isinstance(val, (int, float)):
+        return False
+    if isinstance(val, str):
+        return not val.strip()
+    if isinstance(val, (list, dict, set, tuple)):
+        return len(val) == 0
+    return False
 
 
 def load_model(model_name: str, allow_cpu_large: bool = False):
@@ -101,6 +159,7 @@ def load_model(model_name: str, allow_cpu_large: bool = False):
             low_cpu_mem_usage=True,
             offload_folder=str(OFFLOAD_DIR),
             quantization_config=quant_config,
+            local_files_only=True,
         )
     else:
         models["processor"] = AutoProcessor.from_pretrained(model_name, use_fast=True)
@@ -113,6 +172,7 @@ def load_model(model_name: str, allow_cpu_large: bool = False):
             low_cpu_mem_usage=True,
             offload_folder=str(OFFLOAD_DIR),
             quantization_config=quant_config,
+            local_files_only=True,
         )
     models["is_text"] = is_text_only
     models["active_name"] = model_name
@@ -304,16 +364,17 @@ def normalize_medicine_fields(raw: dict, fallback_notes: str):
     }
 
 
-def build_inventory_record(extracted: dict, photo_url: str):
+def build_inventory_record(extracted: dict, photo_urls: List[str]):
     now_id = f"med-{int(datetime.now().timestamp() * 1000)}"
     note = extracted.get("notes") or "Imported from medication photo."
+    primary_photo = photo_urls[0] if photo_urls else ""
     purchase_row = {
         "id": f"ph-{uuid.uuid4().hex}",
         "date": datetime.now().strftime("%Y-%m-%d"),
         "quantity": "",
         "price": "",
         "notes": note,
-        "photos": [photo_url] if photo_url else [],
+        "photos": photo_urls or [],
     }
     # Tag source for traceability without polluting the display name
     source = "photo_import"
@@ -334,7 +395,7 @@ def build_inventory_record(extracted: dict, photo_url: str):
         "primaryIndication": extracted.get("primaryIndication") or "",
         "allergyWarnings": extracted.get("allergyWarnings") or "",
         "standardDosage": extracted.get("standardDosage") or "",
-        "photos": [photo_url] if photo_url else [],
+        "photos": photo_urls or ([] if not primary_photo else [primary_photo]),
         "purchaseHistory": [purchase_row],
         "source": source,
         "photoImported": True,
@@ -361,41 +422,42 @@ def decode_generated_text(out, inputs, processor):
 def run_medicine_photo_inference(image_path: Path):
     if not image_path.exists():
         raise FileNotFoundError("Image not found on disk")
-    model_name = "Qwen/Qwen2.5-VL-7B-Instruct"
-    load_model(model_name, allow_cpu_large=True)
-    image = Image.open(image_path).convert("RGB")
-    # Limit resolution to reduce VRAM/KV cache size
-    image.thumbnail((1024, 1024))
-    prompt = (
-        "You are a pharmacy intake assistant on a sailing vessel. "
-        "Look at the medication photo and return JSON only with keys: "
-        "generic_name, brand_name, form, strength, expiry_date, batch_lot, "
-        "storage_location, manufacturer, indication, allergy_warnings, dosage, notes."
-    )
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "image", "image": image},
-                {"type": "text", "text": prompt},
-            ],
-        }
-    ]
-    processor = models["processor"]
-    if processor is None:
-        raise RuntimeError("Vision processor not initialized")
-    chat = processor.apply_chat_template(messages, add_generation_prompt=True)
-    inputs = processor(text=[chat], images=[image], return_tensors="pt").to(models["model"].device)
-    with torch.no_grad():
-        out = models["model"].generate(
-            **inputs,
-            max_new_tokens=160,
-            temperature=0.1,
-            top_p=0.9,
-            do_sample=False,
-            use_cache=True,
+    with MODEL_MUTEX:
+        model_name = "Qwen/Qwen2.5-VL-7B-Instruct"
+        load_model(model_name, allow_cpu_large=True)
+        image = Image.open(image_path).convert("RGB")
+        # Limit resolution to reduce VRAM/KV cache size
+        image.thumbnail((1024, 1024))
+        prompt = (
+            "You are a pharmacy intake assistant on a sailing vessel. "
+            "Look at the medication photo and return JSON only with keys: "
+            "generic_name, brand_name, form, strength, expiry_date, batch_lot, "
+            "storage_location, manufacturer, indication, allergy_warnings, dosage, notes."
         )
-    decoded = decode_generated_text(out, inputs, processor)
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image},
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ]
+        processor = models["processor"]
+        if processor is None:
+            raise RuntimeError("Vision processor not initialized")
+        chat = processor.apply_chat_template(messages, add_generation_prompt=True)
+        inputs = processor(text=[chat], images=[image], return_tensors="pt").to(models["model"].device)
+        with torch.no_grad():
+            out = models["model"].generate(
+                **inputs,
+                max_new_tokens=160,
+                temperature=0.1,
+                top_p=0.9,
+                do_sample=False,
+                use_cache=True,
+            )
+        decoded = decode_generated_text(out, inputs, processor)
     payload = extract_json_payload(decoded)
     if not payload:
         payload = {"notes": decoded}
@@ -501,36 +563,76 @@ async def get_medicine_queue(_=Depends(require_auth)):
 
 
 @app.post("/api/medicines/photos")
-async def enqueue_medicine_photos(files: List[UploadFile] = File(...), _=Depends(require_auth)):
+async def enqueue_medicine_photos(files: List[UploadFile] = File(...), group: bool = False, _=Depends(require_auth)):
     if not files:
         return JSONResponse({"error": "No files uploaded"}, status_code=status.HTTP_400_BAD_REQUEST)
     queue = get_med_photo_queue()
     added = []
-    for file in files:
-        content_type = (file.content_type or "").lower()
-        if not content_type.startswith("image/"):
-            continue
-        suffix = Path(file.filename or "").suffix.lower()
-        if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}:
-            suffix = ".png"
-        new_id = f"medimg-{uuid.uuid4().hex}"
-        filename = f"{new_id}{suffix}"
-        raw = await file.read()
-        if not raw:
-            continue
-        save_path = MED_UPLOAD_DIR / filename
-        save_path.write_bytes(raw)
-        entry = {
-            "id": new_id,
-            "filename": filename,
-            "path": str(save_path),
-            "url": f"/uploads/medicines/{filename}",
-            "status": "queued",
-            "created_at": datetime.now().isoformat(),
-            "error": "",
-        }
-        queue.append(entry)
-        added.append(entry)
+    if group:
+        file_ids = []
+        filenames = []
+        paths = []
+        urls = []
+        for file in files:
+            content_type = (file.content_type or "").lower()
+            if not content_type.startswith("image/"):
+                continue
+            suffix = Path(file.filename or "").suffix.lower()
+            if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}:
+                suffix = ".png"
+            new_id = f"medimg-{uuid.uuid4().hex}"
+            filename = f"{new_id}{suffix}"
+            raw = await file.read()
+            if not raw:
+                continue
+            save_path = MED_UPLOAD_DIR / filename
+            save_path.write_bytes(raw)
+            file_ids.append(new_id)
+            filenames.append(filename)
+            paths.append(str(save_path))
+            urls.append(f"/uploads/medicines/{filename}")
+        if urls:
+            group_id = f"group-{uuid.uuid4().hex}"
+            entry = {
+                "id": group_id,
+                "file_ids": file_ids,
+                "filenames": filenames,
+                "paths": paths,
+                "urls": urls,
+                "url": urls[0],
+                "status": "queued",
+                "created_at": datetime.now().isoformat(),
+                "error": "",
+            }
+            queue.append(entry)
+            added.append(entry)
+    else:
+        for file in files:
+            content_type = (file.content_type or "").lower()
+            if not content_type.startswith("image/"):
+                continue
+            suffix = Path(file.filename or "").suffix.lower()
+            if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}:
+                suffix = ".png"
+            new_id = f"medimg-{uuid.uuid4().hex}"
+            filename = f"{new_id}{suffix}"
+            raw = await file.read()
+            if not raw:
+                continue
+            save_path = MED_UPLOAD_DIR / filename
+            save_path.write_bytes(raw)
+            entry = {
+                "id": new_id,
+                "filename": filename,
+                "path": str(save_path),
+                "url": f"/uploads/medicines/{filename}",
+                "urls": [f"/uploads/medicines/{filename}"],
+                "status": "queued",
+                "created_at": datetime.now().isoformat(),
+                "error": "",
+            }
+            queue.append(entry)
+            added.append(entry)
     db_op("med_photo_queue", queue)
     if not added:
         return JSONResponse({"error": "No valid image files were queued"}, status_code=status.HTTP_400_BAD_REQUEST)
@@ -547,25 +649,102 @@ async def process_medicine_photo(item_id: str, _=Depends(require_auth)):
     entry["error"] = ""
     db_op("med_photo_queue", queue)
     try:
-        image_path = Path(entry.get("path") or "")
-        result = run_medicine_photo_inference(image_path)
-        med_record = build_inventory_record(result, entry.get("url", ""))
+        paths = entry.get("paths") if isinstance(entry.get("paths"), list) else []
+        urls = entry.get("urls") if isinstance(entry.get("urls"), list) else []
+        image_path = Path(paths[0] if paths else entry.get("path") or "")
+        result = await asyncio.to_thread(run_medicine_photo_inference, image_path)
+        photo_urls = urls or ([entry.get("url", "")] if entry.get("url") else [])
+        med_record = build_inventory_record(result, photo_urls)
         inventory = db_op("inventory")
-        inventory.append(med_record)
+        existing = next((m for m in inventory if _same_med(m, med_record)), None)
+        if existing:
+            # Append photo to existing med without overwriting
+            existing.setdefault("photos", [])
+            photo_url = entry.get("url", "")
+            all_urls = photo_urls or ([photo_url] if photo_url else [])
+            if all_urls:
+                merged_photos = existing["photos"] + all_urls
+                # keep unique order
+                seen = set()
+                existing["photos"] = [p for p in merged_photos if not (p in seen or seen.add(p))]
+            # Also append purchase history entry
+            existing.setdefault("purchaseHistory", [])
+            med_record_ph = med_record.get("purchaseHistory") or []
+            if med_record_ph:
+                existing["purchaseHistory"].extend(med_record_ph)
+            # Merge empty fields from med_record into existing if missing
+            for key, val in med_record.items():
+                if key in {"id", "photos", "purchaseHistory"}:
+                    continue
+                if _is_blank(existing.get(key)) and not _is_blank(val):
+                    existing[key] = val
+            entry["inventory_id"] = existing.get("id")
+        else:
+            inventory.append(med_record)
+            entry["inventory_id"] = med_record["id"]
         db_op("inventory", inventory)
         entry["status"] = "completed"
         entry["completed_at"] = datetime.now().isoformat()
         entry["result"] = result
-        entry["inventory_id"] = med_record["id"]
     except Exception as e:
         entry["status"] = "failed"
         entry["error"] = str(e)
-    # Remove completed items from the queue so they no longer appear in the UI
-    if entry.get("status") == "completed":
-        queue = [i for i in queue if i.get("status") != "completed"]
+    # Keep queue entries so the phone UI can show thumbnails/status and allow deletes
     db_op("med_photo_queue", queue)
     status_code = status.HTTP_200_OK if entry.get("status") == "completed" else status.HTTP_500_INTERNAL_SERVER_ERROR
     return JSONResponse(entry, status_code=status_code)
+
+
+@app.delete("/api/medicines/queue/{item_id}")
+async def delete_medicine_queue_item(item_id: str, _=Depends(require_auth)):
+    queue = get_med_photo_queue()
+    new_queue = [i for i in queue if i.get("id") != item_id]
+    db_op("med_photo_queue", new_queue)
+    return {"queue": new_queue}
+
+
+def _generate_response(model_choice: str, force_cpu_slow: bool, prompt: str, cfg: dict):
+    with MODEL_MUTEX:
+        load_model(model_choice, allow_cpu_large=force_cpu_slow)
+        if models["is_text"]:
+            tok = models["tokenizer"]
+            messages = [{"role": "user", "content": prompt}]
+            inputs = tok.apply_chat_template(
+                messages,
+                add_generation_prompt=True,
+                return_tensors="pt",
+                return_dict=True,
+            ).to(models["model"].device)
+            out = models["model"].generate(
+                **inputs,
+                max_new_tokens=cfg["tk"],
+                temperature=cfg["t"],
+                top_p=cfg["p"],
+                repetition_penalty=cfg.get("rep_penalty", 1.1),
+                do_sample=(cfg["t"] > 0),
+            )
+            res = models["tokenizer"].decode(out[0][inputs["input_ids"].shape[-1] :], skip_special_tokens=True).strip()
+        else:
+            processor = models["processor"]
+            if processor is None:
+                raise RuntimeError("Vision processor not initialized")
+            inputs = processor.apply_chat_template(
+                [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
+                add_generation_prompt=True,
+                tokenize=True,
+                return_dict=True,
+                return_tensors="pt",
+            ).to(models["model"].device)
+            out = models["model"].generate(
+                **inputs,
+                max_new_tokens=cfg["tk"],
+                temperature=cfg["t"],
+                top_p=cfg["p"],
+                repetition_penalty=cfg.get("rep_penalty", 1.1),
+                do_sample=(cfg["t"] > 0),
+            )
+            res = processor.decode(out[0][inputs["input_ids"].shape[-1] :], skip_special_tokens=True).strip()
+    return res
 
 
 @app.post("/api/chat")
@@ -580,9 +759,32 @@ async def chat(request: Request, _=Depends(require_auth)):
         model_choice = form.get("model_choice")
         force_cpu_slow = form.get("force_28b") == "true"
         override_prompt = form.get("override_prompt") or ""
+        triage_status = form.get("triage_status") or ""
+        triage_breathing = form.get("triage_breathing") or ""
+        triage_bleeding = form.get("triage_bleeding") or ""
+        triage_incident = form.get("triage_incident") or ""
+        s = db_op("settings")
+
+        if mode == "triage":
+            meta_lines = []
+            if triage_status:
+                meta_lines.append(f"Patient Status: {triage_status}")
+            if triage_breathing:
+                meta_lines.append(f"Breathing: {triage_breathing}")
+            if triage_bleeding:
+                meta_lines.append(f"Major Bleeding: {triage_bleeding} (if Severe, place APPLY TOURNIQUET/PRESSURE first)")
+            if triage_incident:
+                meta_lines.append(f"Incident Type: {triage_incident}")
+            if meta_lines:
+                meta_text = "\n".join(f"- {line}" for line in meta_lines)
+                msg = f"{msg}\n\nTRIAGE INTAKE:\n{meta_text}"
+
+        prompt, cfg = build_prompt(s, mode, msg, p_name)
+        if override_prompt.strip():
+            prompt = override_prompt.strip()
 
         try:
-            load_model(model_choice, allow_cpu_large=force_cpu_slow)
+            res = await asyncio.to_thread(_generate_response, model_choice, force_cpu_slow, prompt, cfg)
         except RuntimeError as e:
             if str(e) == "SLOW_28B_CPU":
                 return JSONResponse(
@@ -593,44 +795,6 @@ async def chat(request: Request, _=Depends(require_auth)):
                     status_code=status.HTTP_400_BAD_REQUEST,
                 )
             return JSONResponse({"error": str(e)}, status_code=status.HTTP_400_BAD_REQUEST)
-        s = db_op("settings")
-
-        prompt, cfg = build_prompt(s, mode, msg, p_name)
-        if override_prompt.strip():
-            prompt = override_prompt.strip()
-
-        if models["is_text"]:
-            tok = models["tokenizer"]
-            messages = [{"role": "user", "content": prompt}]
-            inputs = tok.apply_chat_template(
-                messages,
-                add_generation_prompt=True,
-                return_tensors="pt",
-                return_dict=True,
-            ).to(models["model"].device)
-        else:
-            inputs = models["processor"].apply_chat_template(
-                [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
-                add_generation_prompt=True,
-                tokenize=True,
-                return_dict=True,
-                return_tensors="pt",
-            ).to(models["model"].device)
-
-        out = models["model"].generate(
-            **inputs,
-            max_new_tokens=cfg["tk"],
-            temperature=cfg["t"],
-            top_p=cfg["p"],
-            repetition_penalty=cfg.get("rep_penalty", 1.1),
-            do_sample=(cfg["t"] > 0),
-        )
-
-        if models["is_text"]:
-            res = models["tokenizer"].decode(out[0][inputs["input_ids"].shape[-1] :], skip_special_tokens=True).strip()
-        else:
-            res = models["processor"].decode(out[0][inputs["input_ids"].shape[-1] :], skip_special_tokens=True).strip()
-
         elapsed_ms = max(int((datetime.now() - start_time).total_seconds() * 1000), 0)
 
         if not is_priv:
@@ -648,7 +812,13 @@ async def chat(request: Request, _=Depends(require_auth)):
             )
             db_op("history", h)
 
-        return JSONResponse({"response": res, "model": models["active_name"], "duration_ms": elapsed_ms})
+        return JSONResponse(
+            {
+                "response": f"{res}\n\n(Response time: {elapsed_ms} ms)",
+                "model": models["active_name"],
+                "duration_ms": elapsed_ms,
+            }
+        )
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -662,6 +832,52 @@ async def chat_preview(request: Request, _=Depends(require_auth)):
     s = db_op("settings")
     prompt, cfg = build_prompt(s, mode, msg, p_name)
     return {"prompt": prompt, "mode": mode, "patient": p_name, "cfg": cfg}
+
+
+def has_model_cache(model_name: str):
+    safe = model_name.replace("/", "--")
+    base = CACHE_DIR / "hub" / f"models--{safe}"
+    if not base.exists():
+        return False
+    snap_dir = base / "snapshots"
+    if not snap_dir.exists():
+        return False
+    for child in snap_dir.iterdir():
+        if child.is_dir() and any(child.rglob("*")):
+            return True
+    return False
+
+
+@app.get("/api/offline/check")
+async def offline_check(_=Depends(require_auth)):
+    try:
+        model_status = []
+        for m in REQUIRED_MODELS:
+            model_status.append({"model": m, "cached": has_model_cache(m)})
+        env_flags = {
+            "HF_HUB_OFFLINE": os.environ.get("HF_HUB_OFFLINE"),
+            "TRANSFORMERS_OFFLINE": os.environ.get("TRANSFORMERS_OFFLINE"),
+            "HF_HOME": os.environ.get("HF_HOME"),
+            "HUGGINGFACE_HUB_CACHE": os.environ.get("HUGGINGFACE_HUB_CACHE"),
+        }
+        return {"models": model_status, "env": env_flags, "cache_dir": str(CACHE_DIR.resolve())}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.post("/api/offline/backup")
+async def offline_backup(_=Depends(require_auth)):
+    try:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dest = BACKUP_DIR / f"offline_backup_{ts}.zip"
+        with zipfile.ZipFile(dest, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for root in [DATA_DIR, UPLOAD_ROOT, CACHE_DIR]:
+                for path in root.rglob("*"):
+                    if path.is_file():
+                        zf.write(path, arcname=path.relative_to(Path(".")))
+        return {"backup": str(dest.resolve())}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 if __name__ == "__main__":

@@ -171,6 +171,46 @@ function resetSection(section) {
     saveSettings();
 }
 
+function renderOfflineStatus(msg, isError = false) {
+    const box = document.getElementById('offline-status');
+    if (!box) return;
+    box.style.color = isError ? 'var(--red)' : '#2c3e50';
+    box.innerHTML = msg;
+}
+
+async function runOfflineCheck() {
+    renderOfflineStatus('Checking offline requirements…');
+    try {
+        const res = await fetch('/api/offline/check', { credentials: 'same-origin' });
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(data.error || `Status ${res.status}`);
+        const modelLines = (data.models || []).map(m => {
+            return `${m.model}: ${m.cached ? 'Cached ✅' : 'Missing ❌'}`;
+        }).join('<br>');
+        const env = data.env || {};
+        const envLines = Object.entries(env).map(([k,v]) => `${k}: ${v || 'unset'}`).join('<br>');
+        renderOfflineStatus(
+            `<strong>Models</strong><br>${modelLines || 'None'}<br><br>` +
+            `<strong>Env</strong><br>${envLines}<br><br>` +
+            `<strong>Cache</strong><br>${data.cache_dir || ''}`
+        );
+    } catch (err) {
+        renderOfflineStatus(`Error: ${err.message}`, true);
+    }
+}
+
+async function createOfflineBackup() {
+    renderOfflineStatus('Creating offline backup…');
+    try {
+        const res = await fetch('/api/offline/backup', { method: 'POST', credentials: 'same-origin' });
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(data.error || `Status ${res.status}`);
+        renderOfflineStatus(`Backup created: ${data.backup}`);
+    } catch (err) {
+        renderOfflineStatus(`Backup failed: ${err.message}`, true);
+    }
+}
+
 // Load crew credentials list
 async function loadCrewCredentials() {
     const container = document.getElementById('crew-credentials');
@@ -233,3 +273,5 @@ window.resetSection = resetSection;
 window.loadCrewCredentials = loadCrewCredentials;
 window.saveCrewCredential = saveCrewCredential;
 window.setUserMode = setUserMode;
+window.runOfflineCheck = runOfflineCheck;
+window.createOfflineBackup = createOfflineBackup;

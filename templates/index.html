@@ -132,9 +132,40 @@
             .page-body { flex-direction: column; }
             .page-body.sidebar-open .page-main,
             .page-body.sidebar-collapsed .page-main { margin-right: 0; padding-right: 0; }
-            .page-sidebar .sidebar-toggle { width: 100%; justify-content: center; }
-            .nav { flex-wrap: wrap; }
-            .tab { flex: 1 1 50%; }
+        .page-sidebar .sidebar-toggle { width: 100%; justify-content: center; }
+        .nav { flex-wrap: wrap; }
+        .tab { flex: 1 1 50%; }
+    }
+    .desktop-block { display: block; }
+    .phone-block { display: none; }
+    #phone-import-overlay {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.55);
+        z-index: 5000;
+        align-items: center;
+        justify-content: center;
+        padding: 16px;
+        box-sizing: border-box;
+        overflow-y: auto;
+    }
+    .phone-import-panel {
+        width: min(736px, 96vw);
+        max-height: 184vh;
+        overflow-y: auto;
+        background: #fff;
+        border-radius: 12px;
+        box-shadow: 0 14px 40px rgba(0,0,0,0.22);
+        padding: 14px;
+        box-sizing: border-box;
+    }
+    .phone-import-actions { display: flex; flex-direction: column; gap: 8px; }
+    .phone-import-step { font-weight: 800; color: #1f2d3d; font-size: 13px; }
+    @media (max-width: 900px) {
+        .desktop-block { display: none; }
+        .phone-block { display: block; }
+        .phone-import-panel { width: 100%; min-height: 120vh; }
         }
     </style>
 </head>
@@ -272,12 +303,12 @@
                     <div class="panel-wrapper" data-sidebar-id="equipment-section">
                         <div class="collapsible">
                             <div class="col-header crew-med-header" data-sidebar-id="equipment-medication-section" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                                <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Medicines (Pharmaceuticals)</span><span class="dev-tag">dev:medicines-shell</span>
+                                <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Pharmaceuticals</span><span class="dev-tag">dev:medicines-shell</span>
                             </div>
                             <div class="col-body" style="padding:12px; display:none;">
                                 <div class="collapsible" style="margin-bottom:12px;">
                                     <div class="col-header crew-med-header" data-sidebar-id="equipment-medication-inventory" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                                        <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Medicines (Pharmaceuticals) Inventory</span><span class="dev-tag">dev:pharmacy-inventory</span>
+                                        <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Pharmaceuticals</span><span class="dev-tag">dev:pharmacy-inventory</span>
                                     </div>
                                     <div class="col-body" style="padding:12px; background:#f8f9fa; display:none;">
                                         <div class="dev-tag" style="margin-bottom:6px;">dev:pharmacy-controls</div>
@@ -287,14 +318,14 @@
                                 </div>
                                 <div class="collapsible" style="margin-bottom:12px;">
                                     <div id="medication-add-header" class="col-header crew-med-header" data-sidebar-id="equipment-medication-add" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                                        <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▾</span><span style="font-weight:700;">Add Medication</span><span class="dev-tag">dev:medication-add</span>
+                                        <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Add Pharmaceuticals</span><span class="dev-tag">dev:medication-add</span>
                                     </div>
-                                    <div id="medication-add-body" class="col-body" style="padding:12px; background:#f8f9fa; display:block;">
+                                    <div id="medication-add-body" class="col-body" style="padding:12px; background:#f8f9fa; display:none;">
                                         <div class="collapsible" style="margin-bottom:12px;">
                                             <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                                                <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▾</span><span style="font-weight:700;">Manual Entry</span><span class="dev-tag">dev:medication-add-form</span>
+                                                <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Manual Entry</span><span class="dev-tag">dev:medication-add-form</span>
                                             </div>
-                                            <div class="col-body" style="padding:10px; background:#fff; display:block;">
+                                            <div class="col-body" style="padding:10px; background:#fff; display:none;">
                                         <div style="display:grid; grid-template-columns: repeat(2, minmax(240px, 1fr)); gap:10px; margin-bottom:10px;">
                                             <div>
                                                 <label style="font-weight:700; font-size:12px;">Medication Name *</label>
@@ -366,28 +397,30 @@
                                                 <textarea id="med-new-notes" style="width:100%; padding:8px; min-height:60px;"></textarea>
                                             </div>
                                         </div>
-                                        <button onclick="addMedicationItem()" class="btn btn-sm" style="background:var(--dark); width:100%;">Add Medication</button>
+                                        <button onclick="addMedicationItem()" class="btn btn-sm" style="background:var(--dark); width:100%;">Add Pharmaceutical</button>
                                             </div>
                                         </div>
                                         <div class="collapsible" style="margin-top:12px;">
                                             <div class="col-header crew-med-header" data-sidebar-id="equipment-medication-intake" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                                                <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▾</span><span style="font-weight:700;">Import Medicines from Photo (Qwen2.5-VL-7B)</span><span class="dev-tag">dev:med-photo-import</span>
+                                                <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Import From Photo</span><span class="dev-tag">dev:med-photo-import</span>
                                             </div>
-                                            <div class="col-body" style="padding:12px; background:#eef4ff; display:block;">
+                                            <div class="col-body" style="padding:12px; background:#eef4ff; display:none;">
                                                 <div class="dev-tag" style="margin-bottom:8px;">dev:med-photo-controls</div>
                                                 <div style="display:flex; flex-direction:column; gap:8px; align-items:flex-start; margin-bottom:10px;">
-                                                    <div style="font-size:12px; color:#444;">Step 1: Choose photo files</div>
+                                                    <button class="btn btn-sm phone-only" style="background:#1f2d3d; min-width:180px;" onclick="openPhoneImportView()"><span class="dev-tag">dev:med-photo-mobile-btn</span>Phone Camera Helper</button>
+                                                    <div style="font-size:12px; color:#444;">Step 1: Choose or Take Photo(s)</div>
                                                     <input id="med-photo-input" type="file" accept="image/*" multiple style="padding:6px; font-size:13px;">
                                                     <div id="med-photo-drop" class="dev-tag" style="display:flex; align-items:center; justify-content:center; width:100%; min-height:80px; border:2px dashed #ccc; border-radius:8px; background:#fafbff; color:#444; font-size:12px; padding:10px; box-sizing:border-box;">
                                                         <span>Drag and drop photos here</span>
                                                     </div>
+                                                    <div id="med-photo-selected" style="font-size:12px; color:#2c3e50;">No files selected.</div>
+                                                    <div id="med-photo-preview" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
                                                     <div style="font-size:12px; color:#444;">Step 2: Add to queue</div>
                                                     <button class="btn btn-sm" style="background:var(--dark); min-width:180px;" onclick="queueMedicinePhotos()">Queue Photos</button>
                                                     <div style="font-size:12px; color:#444;">Step 3: Run queue</div>
                                                     <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-                                                        <button class="btn btn-sm" style="background:var(--inquiry); min-width:180px;" onclick="processQueuedMedicinePhotos()">Run Import Queue</button>
+                                                        <button class="btn btn-sm" style="background:var(--inquiry); min-width:180px;" onclick="processQueuedMedicinePhotos()">Import Photo Queue</button>
                                                         <div style="font-size:12px; color:#555; display:flex; gap:6px; align-items:center; min-width:180px;">
-                                                            <span class="sidebar-pill" style="background:#e8f4ff; color:#1a4b8f;">Qwen2.5-VL-7B</span>
                                                             <span>Reads packaging, creates inventory item, stores photo in record.</span>
                                                         </div>
                                                     </div>
@@ -403,7 +436,7 @@
                         </div>
                         <div class="collapsible">
                             <div id="equipment-section-header" class="col-header crew-med-header" data-sidebar-id="equipment-section" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                                <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Medical Equipment (Durable tools)</span><span class="dev-tag">dev:equipment-shell</span>
+                                <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Devices and Equipment</span><span class="dev-tag">dev:equipment-shell</span>
                             </div>
                             <div class="col-body" style="padding:12px; display:none;">
                                 <div id="equipment-add-container" class="collapsible" style="margin-bottom:12px;">
@@ -492,7 +525,7 @@
                         </div>
                         <div class="collapsible">
                             <div class="col-header crew-med-header" data-sidebar-id="equipment-consumables-section" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                                <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Medical Supplies (Consumables/sundries)</span><span class="dev-tag">dev:consumables-shell</span>
+                                <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Consumables</span><span class="dev-tag">dev:consumables-shell</span>
                             </div>
                             <div class="col-body" style="padding:12px; display:none;">
                                 <div id="consumables-add-container" class="collapsible" style="margin-bottom:12px;">
@@ -731,6 +764,9 @@
                                 <option value="advanced">Advanced</option>
                                 <option value="developer">Developer</option>
                             </select>
+                            <div style="margin-top:10px;">
+                                <button class="btn btn-sm" style="background:#b23b00;" onclick="forceClearCache()"><span class="dev-tag">dev:cache-bust</span>Force Reload (Dev)</button>
+                            </div>
                             <div style="margin-top:8px; font-size:12px; color:#555;">
                                 User: hides advanced controls. Advanced: shows prompt tools. Developer: also shows dev tags.
                             </div>
@@ -824,6 +860,31 @@
                 </div>
             </div>
         </div>
+    </div>
+</div>
+
+<!-- Phone-friendly medicine photo import overlay -->
+<div id="phone-import-overlay">
+    <div class="phone-import-panel">
+        <div class="dev-tag" style="margin-bottom:6px;">dev:med-photo-mobile</div>
+        <div style="display:flex; justify-content:center; margin-bottom:10px; margin-top:-6px;">
+            <button class="btn" style="background:var(--red); font-size:16px;" onclick="closePhoneImportView()">Close Phone Photo Helper</button>
+        </div>
+        <div style="font-size:13px; color:#3a3a3a; margin-bottom:10px;">Use your phone camera to snap medicine packaging and import directly.</div>
+        <div class="phone-import-actions">
+            <div class="phone-import-step">Step 1: Take or pick photos</div>
+            <input id="phone-med-photo-input" type="file" accept="image/*" multiple style="position:absolute; width:1px; height:1px; opacity:0; pointer-events:none;">
+            <div id="phone-photo-count" style="font-size:12px; color:#2c3e50;">No photos selected.</div>
+            <div id="phone-photo-preview" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
+            <button class="btn" style="background:var(--dark);" onclick="document.getElementById('phone-med-photo-input').click()">Choose / Take Photos</button>
+            <div class="phone-import-step">Step 2: Queue the photo-group above to import one Medicine record</div>
+            <button class="btn" style="background:var(--inquiry);" onclick="queuePhoneImportPhotos()">Add Above Photos to Queue</button>
+            <div class="phone-import-step">Step 3: Import queue</div>
+            <button class="btn" style="background:var(--inquiry);" onclick="processQueuedMedicinePhotos()">Import Photo Queue</button>
+            <div style="font-size:12px; color:#555;">Reads packaging, creates inventory item, stores photo in record.</div>
+        </div>
+        <div style="font-weight:700; font-size:13px; margin-top:8px;">Queue status <span class="dev-tag">dev:med-photo-mobile-queue</span></div>
+        <div id="phone-import-queue" style="margin-top:6px; display:flex; flex-direction:column; gap:8px;"></div>
     </div>
 </div>
 

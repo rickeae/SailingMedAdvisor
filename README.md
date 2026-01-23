@@ -1,3 +1,12 @@
+---
+title: SailingMedAdvisor
+emoji: ⛵
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+pinned: false
+---
+
 # 🏥 SailingMedAdvisor - Offshore Medical AI Assistant
 
 **Version:** 5.7 MVP (Security-Lite Edition)

@@ -6,6 +6,7 @@ import shutil
 import zipfile
 import asyncio
 import threading
+import base64
 from datetime import datetime
 from pathlib import Path
 from typing import List
@@ -18,7 +19,7 @@ os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 import torch
 
-from fastapi import FastAPI, Request, HTTPException, status, Depends, UploadFile, File
+from fastapi import Body, FastAPI, Request, HTTPException, status, Depends, UploadFile, File
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -33,10 +34,11 @@ from transformers import (
 )
 
 # Core config
+BASE_DIR = Path(__file__).parent.resolve()
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
-UPLOAD_ROOT = Path("uploads")
-UPLOAD_ROOT.mkdir(exist_ok=True)
+UPLOAD_ROOT = BASE_DIR / "uploads"
+UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
 MED_UPLOAD_DIR = UPLOAD_ROOT / "medicines"
 MED_UPLOAD_DIR.mkdir(exist_ok=True)
 SECRET_KEY = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
@@ -329,6 +331,26 @@ def get_med_photo_queue():
     return queue if isinstance(queue, list) else []
 
 
+def _safe_suffix(name: str, mime: str = "") -> str:
+    suffix = ""
+    try:
+        suffix = Path(name or "").suffix.lower()
+    except Exception:
+        suffix = ""
+    mime = (mime or "").lower()
+    if suffix in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}:
+        return suffix
+    if "jpeg" in mime or "jpg" in mime:
+        return ".jpg"
+    if "png" in mime:
+        return ".png"
+    if "webp" in mime:
+        return ".webp"
+    if "bmp" in mime:
+        return ".bmp"
+    return ".png"
+
+
 def extract_json_payload(text: str):
     if not text:
         return {}
@@ -564,79 +586,190 @@ async def get_medicine_queue(_=Depends(require_auth)):
 
 @app.post("/api/medicines/photos")
 async def enqueue_medicine_photos(files: List[UploadFile] = File(...), group: bool = False, _=Depends(require_auth)):
-    if not files:
-        return JSONResponse({"error": "No files uploaded"}, status_code=status.HTTP_400_BAD_REQUEST)
-    queue = get_med_photo_queue()
-    added = []
-    if group:
-        file_ids = []
-        filenames = []
-        paths = []
-        urls = []
-        for file in files:
-            content_type = (file.content_type or "").lower()
-            if not content_type.startswith("image/"):
-                continue
-            suffix = Path(file.filename or "").suffix.lower()
-            if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}:
-                suffix = ".png"
-            new_id = f"medimg-{uuid.uuid4().hex}"
-            filename = f"{new_id}{suffix}"
-            raw = await file.read()
-            if not raw:
-                continue
-            save_path = MED_UPLOAD_DIR / filename
-            save_path.write_bytes(raw)
-            file_ids.append(new_id)
-            filenames.append(filename)
-            paths.append(str(save_path))
-            urls.append(f"/uploads/medicines/{filename}")
-        if urls:
-            group_id = f"group-{uuid.uuid4().hex}"
-            entry = {
-                "id": group_id,
-                "file_ids": file_ids,
-                "filenames": filenames,
-                "paths": paths,
-                "urls": urls,
-                "url": urls[0],
-                "status": "queued",
-                "created_at": datetime.now().isoformat(),
-                "error": "",
-            }
-            queue.append(entry)
-            added.append(entry)
-    else:
-        for file in files:
-            content_type = (file.content_type or "").lower()
-            if not content_type.startswith("image/"):
-                continue
-            suffix = Path(file.filename or "").suffix.lower()
-            if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}:
-                suffix = ".png"
-            new_id = f"medimg-{uuid.uuid4().hex}"
-            filename = f"{new_id}{suffix}"
-            raw = await file.read()
-            if not raw:
-                continue
-            save_path = MED_UPLOAD_DIR / filename
-            save_path.write_bytes(raw)
-            entry = {
-                "id": new_id,
-                "filename": filename,
-                "path": str(save_path),
-                "url": f"/uploads/medicines/{filename}",
-                "urls": [f"/uploads/medicines/{filename}"],
-                "status": "queued",
-                "created_at": datetime.now().isoformat(),
-                "error": "",
-            }
-            queue.append(entry)
-            added.append(entry)
-    db_op("med_photo_queue", queue)
-    if not added:
-        return JSONResponse({"error": "No valid image files were queued"}, status_code=status.HTTP_400_BAD_REQUEST)
-    return {"queued": added, "queue": queue}
+    try:
+        if not files:
+            return JSONResponse({"error": "No files uploaded"}, status_code=status.HTTP_400_BAD_REQUEST)
+
+        queue = get_med_photo_queue()
+        added = []
+        if group:
+            file_ids = []
+            filenames = []
+            paths = []
+            urls = []
+            for idx, file in enumerate(files):
+                content_type = (file.content_type or "").lower()
+                if not content_type.startswith("image/"):
+                    continue
+                suffix = _safe_suffix(file.filename, content_type)
+                new_id = f"medimg-{uuid.uuid4().hex}"
+                filename = f"{new_id}{suffix}"
+                raw = await file.read()
+                if not raw:
+                    continue
+                save_path = MED_UPLOAD_DIR / filename
+                save_path.write_bytes(raw)
+                file_ids.append(new_id)
+                filenames.append(filename)
+                paths.append(str(save_path))
+                urls.append(f"/uploads/medicines/{filename}")
+            if urls:
+                group_id = f"group-{uuid.uuid4().hex}"
+                entry = {
+                    "id": group_id,
+                    "file_ids": file_ids,
+                    "filenames": filenames,
+                    "paths": paths,
+                    "urls": urls,
+                    "url": urls[0],
+                    "status": "queued",
+                    "created_at": datetime.now().isoformat(),
+                    "error": "",
+                }
+                queue.append(entry)
+                added.append(entry)
+        else:
+            for idx, file in enumerate(files):
+                content_type = (file.content_type or "").lower()
+                if not content_type.startswith("image/"):
+                    continue
+                suffix = _safe_suffix(file.filename, content_type)
+                new_id = f"medimg-{uuid.uuid4().hex}"
+                filename = f"{new_id}{suffix}"
+                raw = await file.read()
+                if not raw:
+                    continue
+                save_path = MED_UPLOAD_DIR / filename
+                save_path.write_bytes(raw)
+                entry = {
+                    "id": new_id,
+                    "filename": filename,
+                    "path": str(save_path),
+                    "url": f"/uploads/medicines/{filename}",
+                    "urls": [f"/uploads/medicines/{filename}"],
+                    "status": "queued",
+                    "created_at": datetime.now().isoformat(),
+                    "error": "",
+                }
+                queue.append(entry)
+                added.append(entry)
+        db_op("med_photo_queue", queue)
+        if not added:
+            return JSONResponse({"error": "No valid image files were queued"}, status_code=status.HTTP_400_BAD_REQUEST)
+        return {"queued": added, "queue": queue}
+    except Exception as e:
+        # Return the underlying error so the client can surface a useful message
+        return JSONResponse({"error": f"Unable to queue photos: {e}"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+def _decode_data_url(data_str: str, fallback_mime: str = "image/png"):
+    if not data_str:
+        return b"", fallback_mime
+    text = data_str.strip()
+    if text.startswith("data:") and "," in text:
+        try:
+            header, b64 = text.split(",", 1)
+            mime = fallback_mime
+            parts = header.split(";")[0].split(":")
+            if len(parts) == 2 and parts[1]:
+                mime = parts[1]
+            raw = base64.b64decode(b64)
+            return raw, mime or fallback_mime
+        except Exception:
+            pass
+    try:
+        return base64.b64decode(text), fallback_mime
+    except Exception:
+        return b"", fallback_mime
+
+
+@app.post("/api/medicines/photos/base64")
+async def enqueue_medicine_photos_base64(payload: dict = Body(...), group: bool = False, _=Depends(require_auth)):
+    try:
+        files = payload.get("files") if isinstance(payload, dict) else None
+        if not files or not isinstance(files, list):
+            return JSONResponse({"error": "No files uploaded"}, status_code=status.HTTP_400_BAD_REQUEST)
+        queue = get_med_photo_queue()
+        added = []
+        if group:
+            file_ids = []
+            filenames = []
+            paths = []
+            urls = []
+            for idx, file in enumerate(files):
+                name = ""
+                mime = ""
+                data = ""
+                if isinstance(file, dict):
+                    name = file.get("name") or ""
+                    mime = file.get("type") or ""
+                    data = file.get("data") or ""
+                elif isinstance(file, str):
+                    data = file
+                raw, detected_mime = _decode_data_url(data, mime or "image/png")
+                if not raw:
+                    continue
+                suffix = _safe_suffix(name, detected_mime)
+                new_id = f"medimg-{uuid.uuid4().hex}"
+                filename = f"{new_id}{suffix}"
+                save_path = MED_UPLOAD_DIR / filename
+                save_path.write_bytes(raw)
+                file_ids.append(new_id)
+                filenames.append(filename)
+                paths.append(str(save_path))
+                urls.append(f"/uploads/medicines/{filename}")
+            if urls:
+                group_id = f"group-{uuid.uuid4().hex}"
+                entry = {
+                    "id": group_id,
+                    "file_ids": file_ids,
+                    "filenames": filenames,
+                    "paths": paths,
+                    "urls": urls,
+                    "url": urls[0],
+                    "status": "queued",
+                    "created_at": datetime.now().isoformat(),
+                    "error": "",
+                }
+                queue.append(entry)
+                added.append(entry)
+        else:
+            for idx, file in enumerate(files):
+                name = ""
+                mime = ""
+                data = ""
+                if isinstance(file, dict):
+                    name = file.get("name") or ""
+                    mime = file.get("type") or ""
+                    data = file.get("data") or ""
+                elif isinstance(file, str):
+                    data = file
+                raw, detected_mime = _decode_data_url(data, mime or "image/png")
+                if not raw:
+                    continue
+                suffix = _safe_suffix(name, detected_mime)
+                new_id = f"medimg-{uuid.uuid4().hex}"
+                filename = f"{new_id}{suffix}"
+                save_path = MED_UPLOAD_DIR / filename
+                save_path.write_bytes(raw)
+                entry = {
+                    "id": new_id,
+                    "filename": filename,
+                    "path": str(save_path),
+                    "url": f"/uploads/medicines/{filename}",
+                    "urls": [f"/uploads/medicines/{filename}"],
+                    "status": "queued",
+                    "created_at": datetime.now().isoformat(),
+                    "error": "",
+                }
+                queue.append(entry)
+                added.append(entry)
+        db_op("med_photo_queue", queue)
+        if not added:
+            return JSONResponse({"error": "No valid image files were queued"}, status_code=status.HTTP_400_BAD_REQUEST)
+        return {"queued": added, "queue": queue}
+    except Exception as e:
+        return JSONResponse({"error": f"Unable to queue photos: {e}"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @app.post("/api/medicines/photos/{item_id}/process")

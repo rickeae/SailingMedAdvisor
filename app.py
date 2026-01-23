@@ -63,9 +63,15 @@ REQUIRED_MODELS = [
     "Qwen/Qwen2.5-VL-7B-Instruct",
 ]
 
+IS_HF_SPACE = bool(os.environ.get("SPACE_ID") or os.environ.get("HF_SPACE") or os.environ.get("HUGGINGFACE_SPACE"))
+
 # FastAPI app
 app = FastAPI(title="SailingMedAdvisor")
-app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY, same_site="lax")
+session_cfg = {"secret_key": SECRET_KEY, "same_site": "lax"}
+if IS_HF_SPACE:
+    # Hugging Face runs inside an iframe on huggingface.co, so we need a third-party cookie
+    session_cfg.update({"same_site": "none", "https_only": True})
+app.add_middleware(SessionMiddleware, **session_cfg)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_ROOT)), name="uploads")
 templates = Jinja2Templates(directory="templates")

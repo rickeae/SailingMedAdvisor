@@ -8,11 +8,12 @@ RUN useradd -m -u 1000 user
 WORKDIR /home/user/app
 
 # 3. Create the folder while still ROOT
-RUN mkdir -p /home/user/app/uploads && chown -R user:user /home/user/app/uploads
-
-# Create both folders and give 'user' ownership
-RUN mkdir -p /home/user/app/uploads /home/user/app/offload && \
-    chown -R user:user /home/user/app/uploads /home/user/app/offload
+RUN mkdir -p /home/user/app/data \
+             /home/user/app/uploads/medicines \
+             /home/user/app/offload \
+             /home/user/app/models_cache \
+             /home/user/app/backups && \
+    chown -R user:user /home/user/app
 
 # 4. NOW switch to the user
 USER user

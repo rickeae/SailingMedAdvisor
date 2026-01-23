@@ -13,9 +13,9 @@ from typing import List
 
 # Encourage less fragmentation on GPUs with limited VRAM (e.g., RTX 5000)
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-# Enforce offline/local-only model loading by default
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
-os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+# Allow online downloads by default (HF Spaces first run needs this). You can set these to "1" after caches are warm.
+os.environ.setdefault("HF_HUB_OFFLINE", "0")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "0")
 
 import torch
 
@@ -35,29 +35,28 @@ from transformers import (
 
 # Core config
 BASE_DIR = Path(__file__).parent.resolve()
-DATA_DIR = Path("data")
-DATA_DIR.mkdir(exist_ok=True)
-UPLOAD_ROOT = BASE_DIR / "uploads"
+APP_HOME = Path("/home/user/app").resolve()
+
+# Data + uploads live inside app home (HF Spaces non-root safe)
+DATA_DIR = APP_HOME / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+UPLOAD_ROOT = APP_HOME / "uploads"
 UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
 MED_UPLOAD_DIR = UPLOAD_ROOT / "medicines"
-MED_UPLOAD_DIR.mkdir(exist_ok=True)
+MED_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 SECRET_KEY = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
 
-#OFFLOAD_DIR = Path("offload")
-#OFFLOAD_DIR.mkdir(exist_ok=True)
-
-# app.py
-OFFLOAD_DIR = Path("/home/user/app/offload")
+OFFLOAD_DIR = APP_HOME / "offload"
 OFFLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-
-CACHE_DIR = Path("models_cache")
-CACHE_DIR.mkdir(exist_ok=True)
+CACHE_DIR = APP_HOME / "models_cache"
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
 # Point Hugging Face cache to a local directory to avoid network dependency
-os.environ.setdefault("HF_HOME", str(CACHE_DIR))
-os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(CACHE_DIR / "hub"))
-BACKUP_DIR = Path("backups")
-BACKUP_DIR.mkdir(exist_ok=True)
+os.environ["HF_HOME"] = str(CACHE_DIR)
+os.environ["HUGGINGFACE_HUB_CACHE"] = str(CACHE_DIR / "hub")
+
+BACKUP_DIR = APP_HOME / "backups"
+BACKUP_DIR.mkdir(parents=True, exist_ok=True)
 REQUIRED_MODELS = [
     "google/medgemma-1.5-4b-it",
     "google/medgemma-27b-text-it",
@@ -68,7 +67,7 @@ REQUIRED_MODELS = [
 app = FastAPI(title="SailingMedAdvisor")
 app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY, same_site="lax")
 app.mount("/static", StaticFiles(directory="static"), name="static")
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_ROOT)), name="uploads")
 templates = Jinja2Templates(directory="templates")
 templates.env.auto_reload = True
 

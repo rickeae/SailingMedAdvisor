@@ -10,3 +10,5 @@ bitsandbytes
 accelerate
 safetensors
 huggingface-hub
+itsdangerous
+python-dotenv

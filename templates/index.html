@@ -151,21 +151,26 @@
         overflow-y: auto;
     }
     .phone-import-panel {
-        width: min(736px, 96vw);
-        max-height: 184vh;
+        width: min(860px, 98vw);
+        min-height: 78vh;
+        max-height: none;
         overflow-y: auto;
         background: #fff;
         border-radius: 12px;
         box-shadow: 0 14px 40px rgba(0,0,0,0.22);
         padding: 14px;
         box-sizing: border-box;
+        font-size: 30px;
+        line-height: 1.5;
     }
+    #phone-import-overlay { font-size: 30px; }
+    #phone-import-overlay * { font-size: inherit !important; }
     .phone-import-actions { display: flex; flex-direction: column; gap: 8px; }
-    .phone-import-step { font-weight: 800; color: #1f2d3d; font-size: 13px; }
+    .phone-import-step { font-weight: 800; color: #1f2d3d; font-size: 30px; }
     @media (max-width: 900px) {
         .desktop-block { display: none; }
         .phone-block { display: block; }
-        .phone-import-panel { width: 100%; min-height: 120vh; }
+        .phone-import-panel { width: 100%; min-height: 130vh; }
         }
     </style>
 </head>
@@ -870,11 +875,11 @@
         <div style="display:flex; justify-content:center; margin-bottom:10px; margin-top:-6px;">
             <button class="btn" style="background:var(--red); font-size:16px;" onclick="closePhoneImportView()">Close Phone Photo Helper</button>
         </div>
-        <div style="font-size:13px; color:#3a3a3a; margin-bottom:10px;">Use your phone camera to snap medicine packaging and import directly.</div>
+        <div style="font-size:30px; color:#3a3a3a; margin-bottom:10px;">Use your phone camera to snap medicine packaging and import directly.</div>
         <div class="phone-import-actions">
             <div class="phone-import-step">Step 1: Take or pick photos</div>
             <input id="phone-med-photo-input" type="file" accept="image/*" multiple style="position:absolute; width:1px; height:1px; opacity:0; pointer-events:none;">
-            <div id="phone-photo-count" style="font-size:12px; color:#2c3e50;">No photos selected.</div>
+            <div id="phone-photo-count" style="font-size:28px; color:#2c3e50;">No photos selected.</div>
             <div id="phone-photo-preview" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
             <button class="btn" style="background:var(--dark);" onclick="document.getElementById('phone-med-photo-input').click()">Choose / Take Photos</button>
             <div class="phone-import-step">Step 2: Queue the photo-group above to import one Medicine record</div>

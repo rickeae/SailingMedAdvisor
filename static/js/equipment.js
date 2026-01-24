@@ -7,7 +7,7 @@ let phoneSelectedFiles = [];
 const equipmentSaveTimers = {};
 let medPhotoDropBound = false;
 
-function openPhoneImportView() {
+async function openPhoneImportView() {
     const overlay = document.getElementById('phone-import-overlay');
     if (!overlay) return;
     overlay.style.display = 'flex';
@@ -15,6 +15,8 @@ function openPhoneImportView() {
     // ensure input is present for iOS
     const input = document.getElementById('phone-med-photo-input');
     if (input) input.style.display = 'block';
+    await loadMedPhotoQueue();
+    await clearProcessedQueueItems();
     updatePhoneImportView();
     bindPhoneInput();
     renderPhonePreview();
@@ -94,8 +96,8 @@ function renderPhonePreview() {
     phoneSelectedFiles.forEach((file, idx) => {
         const url = URL.createObjectURL(file);
         const box = document.createElement('div');
-        box.style.cssText = 'border:1px solid #d0d7e2; border-radius:6px; padding:6px; background:#fff; display:flex; flex-direction:column; gap:4px; width:120px;';
-        box.innerHTML = `<div style="font-size:11px; font-weight:700;">Photo ${idx + 1}</div><img src="${url}" style="width:100%; height:90px; object-fit:cover; border-radius:4px;"><button class="btn btn-sm" style="background:var(--red); width:100%;" onclick="removePhonePhoto(${idx})">Remove</button>`;
+        box.style.cssText = 'border:1px solid #d0d7e2; border-radius:6px; padding:12px; background:#fff; display:flex; flex-direction:column; gap:8px; width:200px;';
+        box.innerHTML = `<div style="font-weight:700;">Photo ${idx + 1}</div><img src="${url}" style="width:100%; height:160px; object-fit:cover; border-radius:4px;"><button class="btn btn-sm" style="background:var(--red); width:100%;" onclick="removePhonePhoto(${idx})">Remove</button>`;
         preview.appendChild(box);
     });
 }
@@ -117,14 +119,78 @@ async function loadMedPhotoQueue() {
     }
 }
 
+function isLikelyImage(file) {
+    if (!file) return false;
+    const type = (file.type || '').toLowerCase();
+    if (type.startsWith('image/')) return true;
+    const name = (file.name || '').toLowerCase();
+    return ['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.heic', '.heif'].some((ext) => name.endsWith(ext));
+}
+
+function clearDesktopPhotoSelection() {
+    const input = document.getElementById('med-photo-input');
+    const sel = document.getElementById('med-photo-selected');
+    const preview = document.getElementById('med-photo-preview');
+    if (input) input.value = '';
+    if (sel) sel.textContent = 'No files selected.';
+    if (preview) preview.innerHTML = '';
+}
+
+function safeAsciiName(file, idx) {
+    const hasAsciiName = file && typeof file.name === 'string' && /^[\x20-\x7E]+$/.test(file.name);
+    return hasAsciiName ? file.name : `phone-photo-${Date.now()}-${idx + 1}.jpg`;
+}
+
+function fileToDataUrl(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = (e) => reject(e);
+        reader.readAsDataURL(file);
+    });
+}
+
+async function queuePhotosViaJson(images, opts = {}) {
+    const payload = {
+        files: await Promise.all(
+            images.map(async (file, idx) => ({
+                name: safeAsciiName(file, idx),
+                type: file.type || '',
+                data: await fileToDataUrl(file),
+            }))
+        ),
+    };
+    const res = await fetch(`/api/medicines/photos/base64${opts.group ? '?group=true' : ''}`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+    const rawText = await res.text();
+    let data = {};
+    try {
+        data = rawText ? JSON.parse(rawText) : {};
+    } catch (err) {
+        data = {};
+    }
+    if (!res.ok || data.error) throw new Error(data.error || rawText || `Status ${res.status}`);
+    medPhotoQueue = Array.isArray(data.queue) ? data.queue : medPhotoQueue;
+    renderMedPhotoQueue();
+    updatePhoneImportView();
+    clearDesktopPhotoSelection();
+}
+
 async function queuePhotosFromFiles(files, opts = {}) {
-    const images = Array.from(files || []).filter((f) => f && f.type && f.type.toLowerCase().startsWith('image/'));
+    const images = Array.from(files || []).filter(isLikelyImage);
     if (!images.length) {
         alert('Please drop image files only.');
         return;
     }
     const fd = new FormData();
-    images.forEach((file) => fd.append('files', file));
+    images.forEach((file, idx) => {
+        const safeName = safeAsciiName(file, idx);
+        fd.append('files', file, safeName);
+    });
     medPhotoProcessing = true;
     try {
         const res = await fetch(`/api/medicines/photos${opts.group ? '?group=true' : ''}`, {
@@ -132,19 +198,29 @@ async function queuePhotosFromFiles(files, opts = {}) {
             body: fd,
             credentials: 'same-origin',
         });
-        const data = await res.json();
-        if (!res.ok || data.error) throw new Error(data.error || `Status ${res.status}`);
+        const rawText = await res.text();
+        let data = {};
+        try {
+            data = rawText ? JSON.parse(rawText) : {};
+        } catch (err) {
+            data = {};
+        }
+        if (!res.ok || data.error) throw new Error(data.error || rawText || `Status ${res.status}`);
         medPhotoQueue = Array.isArray(data.queue) ? data.queue : medPhotoQueue;
         renderMedPhotoQueue();
         updatePhoneImportView();
-        // clear selection preview after successful queue
-        const input = document.getElementById('med-photo-input');
-        const sel = document.getElementById('med-photo-selected');
-        const preview = document.getElementById('med-photo-preview');
-        if (input) input.value = '';
-        if (sel) sel.textContent = 'No files selected.';
-        if (preview) preview.innerHTML = '';
+        clearDesktopPhotoSelection();
     } catch (err) {
+        console.error('Multipart queue failed, falling back to JSON', err);
+        if (!opts.__triedJson) {
+            try {
+                await queuePhotosViaJson(images, { ...opts, __triedJson: true });
+                return;
+            } catch (err2) {
+                alert(`Unable to queue photos: ${err2.message}`);
+                return;
+            }
+        }
         alert(`Unable to queue photos: ${err.message}`);
     } finally {
         medPhotoProcessing = false;

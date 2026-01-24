@@ -522,40 +522,5 @@
         ],
         "source": "photo_import",
         "photoImported": true
-    },
-    {
-        "id": "med-1769149861574",
-        "genericName": "Medication",
-        "brandName": "",
-        "form": "",
-        "strength": "",
-        "currentQuantity": "",
-        "minThreshold": "",
-        "unit": "",
-        "storageLocation": "",
-        "expiryDate": "",
-        "batchLot": "",
-        "controlled": false,
-        "manufacturer": "",
-        "primaryIndication": "",
-        "allergyWarnings": "",
-        "standardDosage": "```json\n{\n  \"generic_name\": \"Calcium\",\n  \"brand_name\": \"Caltrate\",\n  \"form\": \"Tablets\",\n  \"strength\": \"600mg Calcium with Vitamin D3 500IU\",\n  \"expiry_date\": \"Not visible in the image\",\n  \"batch_lot\": \"Not visible in the image\",\n  \"storage_location\": \"Not visible in the image\",\n  \"manufacturer\": \"Not visible in the image\",\n  \"indication\": \"Not visible in the image\",\n  \"allergy_warnings\": \"Not visible in the image\",\n  \"dosage\": \"Not visible in the image\",\n  \"notes\": \"The image shows a bottle of Caltrate Calcium +D containing 100 film-coated",
-        "photos": [
-            "/uploads/medicines/medimg-54c42e09c25e4389b4d3ac9ee78eaf3f.jpg"
-        ],
-        "purchaseHistory": [
-            {
-                "id": "ph-7a0485a284894c67828a5b19c91319cc",
-                "date": "2026-01-23",
-                "quantity": "",
-                "price": "",
-                "notes": "```json\n{\n  \"generic_name\": \"Calcium\",\n  \"brand_name\": \"Caltrate\",\n  \"form\": \"Tablets\",\n  \"strength\": \"600mg Calcium with Vitamin D3 500IU\",\n  \"expiry_date\": \"Not visible in the image\",\n  \"batch_lot\": \"Not visible in the image\",\n  \"storage_location\": \"Not visible in the image\",\n  \"manufacturer\": \"Not visible in the image\",\n  \"indication\": \"Not visible in the image\",\n  \"allergy_warnings\": \"Not visible in the image\",\n  \"dosage\": \"Not visible in the image\",\n  \"notes\": \"The image shows a bottle of Caltrate Calcium +D containing 100 film-coated",
-                "photos": [
-                    "/uploads/medicines/medimg-54c42e09c25e4389b4d3ac9ee78eaf3f.jpg"
-                ]
-            }
-        ],
-        "source": "photo_import",
-        "photoImported": true
     }
 ]

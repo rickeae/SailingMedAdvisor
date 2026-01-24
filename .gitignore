@@ -26,3 +26,5 @@ __pycache__/
 data/*
 !data/.gitkeep
 !data/*.json
+# Local secrets (keep out of version control)
+templates/sidebars/SailingMedAdvisorDeloy\ token\ Huggingface

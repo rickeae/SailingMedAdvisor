@@ -8,6 +8,7 @@ const LAST_PROMPT_KEY = 'sailingmed:lastPrompt';
 const LAST_PATIENT_KEY = 'sailingmed:lastPatient';
 const PROMPT_PREVIEW_STATE_KEY = 'sailingmed:promptPreviewOpen';
 const PROMPT_PREVIEW_CONTENT_KEY = 'sailingmed:promptPreviewContent';
+const CHAT_STATE_KEY = 'sailingmed:chatState';
 
 function setupPromptInjectionPanel() {
     const promptHeader = document.getElementById('prompt-preview-header');
@@ -32,6 +33,13 @@ function setupPromptInjectionPanel() {
         promptBox.addEventListener('input', () => {
             promptBox.dataset.autofilled = 'false';
             try { localStorage.setItem(PROMPT_PREVIEW_CONTENT_KEY, promptBox.value || ''); } catch (err) { /* ignore */ }
+        });
+    }
+    const msgTextarea = document.getElementById('msg');
+    if (msgTextarea && !msgTextarea.dataset.stateBound) {
+        msgTextarea.dataset.stateBound = 'true';
+        msgTextarea.addEventListener('input', () => {
+            persistChatState();
         });
     }
 
@@ -60,18 +68,21 @@ function setupPromptInjectionPanel() {
 
 if (document.readyState !== 'loading') {
     setupPromptInjectionPanel();
+    bindTriageMetaRefresh();
+    applyChatState(currentMode);
 } else {
     document.addEventListener('DOMContentLoaded', setupPromptInjectionPanel, { once: true });
+    document.addEventListener('DOMContentLoaded', bindTriageMetaRefresh, { once: true });
+    document.addEventListener('DOMContentLoaded', () => applyChatState(currentMode), { once: true });
 }
 
 function updateUI() {
     const banner = document.getElementById('banner');
-    const modeBtn = document.getElementById('mode-toggle');
+    const modeSelect = document.getElementById('mode-select');
     const privBtn = document.getElementById('priv-btn');
     const msg = document.getElementById('msg');
     const queryTitle = document.getElementById('query-form-title');
     const runBtn = document.getElementById('run-btn');
-    const triageMeta = document.getElementById('triage-meta-row');
     
     // Remove both classes first
     banner.classList.remove('inquiry-mode', 'private-mode', 'no-privacy');
@@ -88,13 +99,16 @@ function updateUI() {
         banner.classList.add('no-privacy');
     }
     
-    if (modeBtn) {
-        modeBtn.innerText = currentMode === 'triage' ? '🚨 TRIAGE CHAT' : '📘 INQUIRY CHAT';
-        modeBtn.style.background = 'white';
-        modeBtn.style.color = 'var(--dark)';
+    if (modeSelect) {
+        modeSelect.value = currentMode;
+        modeSelect.style.background = currentMode === 'triage' ? '#ffecec' : '#e6f5ec';
+    }
+    const triageMeta = document.getElementById('triage-meta-selects');
+    if (triageMeta) {
+        triageMeta.style.display = currentMode === 'triage' ? 'grid' : 'none';
     }
     if (queryTitle) {
-        queryTitle.innerText = currentMode === 'triage' ? 'New Triage Chat' : 'New Inquiry Chat';
+        queryTitle.innerText = currentMode === 'triage' ? 'Triage Chat Prompt Detail' : 'Inquiry Chat Prompt Detail';
     }
 
     if (privBtn) {
@@ -111,8 +125,79 @@ function updateUI() {
         runBtn.innerText = currentMode === 'triage' ? 'SUBMIT FOR TRIAGE' : 'SUBMIT INQUIRY';
         runBtn.style.background = currentMode === 'triage' ? 'var(--triage)' : 'var(--inquiry)';
     }
-    if (triageMeta) {
-        triageMeta.style.display = currentMode === 'triage' ? 'flex' : 'none';
+}
+
+function bindTriageMetaRefresh() {
+    const ids = [
+        'triage-consciousness',
+        'triage-breathing-status',
+        'triage-pain-level',
+        'triage-main-problem',
+        'triage-temperature',
+        'triage-circulation',
+        'triage-cause',
+    ];
+    ids.forEach((id) => {
+        const el = document.getElementById(id);
+        if (el && !el.dataset.tmodeBound) {
+            el.dataset.tmodeBound = 'true';
+            el.addEventListener('change', () => {
+                persistChatState();
+                refreshPromptPreview(true);
+            });
+        }
+    });
+}
+
+function loadChatState() {
+    try {
+        const raw = localStorage.getItem(CHAT_STATE_KEY);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        return typeof parsed === 'object' && parsed ? parsed : {};
+    } catch (err) {
+        return {};
+    }
+}
+
+function persistChatState(modeOverride) {
+    const mode = modeOverride || currentMode;
+    const state = loadChatState();
+    const msgEl = document.getElementById('msg');
+    state[mode] = state[mode] || {};
+    state[mode].msg = msgEl ? msgEl.value : '';
+    if (mode === 'triage') {
+        const ids = [
+            'triage-consciousness',
+            'triage-breathing-status',
+            'triage-pain-level',
+            'triage-main-problem',
+            'triage-temperature',
+            'triage-circulation',
+            'triage-cause',
+        ];
+        state[mode].fields = {};
+        ids.forEach((id) => {
+            const el = document.getElementById(id);
+            if (el) state[mode].fields[id] = el.value || '';
+        });
+    }
+    try { localStorage.setItem(CHAT_STATE_KEY, JSON.stringify(state)); } catch (err) { /* ignore */ }
+}
+
+function applyChatState(modeOverride) {
+    const mode = modeOverride || currentMode;
+    const state = loadChatState();
+    const modeState = state[mode] || {};
+    const msgEl = document.getElementById('msg');
+    if (msgEl && typeof modeState.msg === 'string') {
+        msgEl.value = modeState.msg;
+    }
+    if (mode === 'triage' && modeState.fields && typeof modeState.fields === 'object') {
+        Object.entries(modeState.fields).forEach(([id, val]) => {
+            const el = document.getElementById(id);
+            if (el) el.value = val;
+        });
     }
 }
 
@@ -157,10 +242,13 @@ async function runChat(promptText = null, force28b = false) {
         fd.append('model_choice', document.getElementById('model-select').value);
         fd.append('force_28b', force28b ? 'true' : 'false');
         if (currentMode === 'triage') {
-            fd.append('triage_status', document.getElementById('triage-patient-status')?.value || '');
-            fd.append('triage_breathing', document.getElementById('triage-breathing')?.value || '');
-            fd.append('triage_bleeding', document.getElementById('triage-bleeding')?.value || '');
-            fd.append('triage_incident', document.getElementById('triage-incident')?.value || '');
+            fd.append('triage_consciousness', document.getElementById('triage-consciousness')?.value || '');
+            fd.append('triage_breathing_status', document.getElementById('triage-breathing-status')?.value || '');
+            fd.append('triage_pain_level', document.getElementById('triage-pain-level')?.value || '');
+            fd.append('triage_main_problem', document.getElementById('triage-main-problem')?.value || '');
+            fd.append('triage_temperature', document.getElementById('triage-temperature')?.value || '');
+            fd.append('triage_circulation', document.getElementById('triage-circulation')?.value || '');
+            fd.append('triage_cause', document.getElementById('triage-cause')?.value || '');
         }
         const promptEditor = document.getElementById('prompt-preview-container');
         const promptTextarea = document.getElementById('prompt-preview');
@@ -200,6 +288,7 @@ async function runChat(promptText = null, force28b = false) {
         if (!promptText) {
             document.getElementById('msg').value = '';
         }
+        persistChatState();
         try { localStorage.setItem(LAST_PROMPT_KEY, lastPrompt); } catch (err) { /* ignore storage issues */ }
         if (display.lastElementChild) display.lastElementChild.scrollIntoView({behavior:'smooth'});
     } catch (error) {
@@ -245,13 +334,26 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 });
 
-function toggleMode() {
-    currentMode = currentMode === 'triage' ? 'inquiry' : 'triage';
+function setMode(mode) {
+    const target = mode === 'inquiry' ? 'inquiry' : 'triage';
+    if (target === currentMode) return;
+    // Save current mode state before switching
+    persistChatState(currentMode);
+    currentMode = target;
     updateUI();
+    const select = document.getElementById('mode-select');
+    if (select) {
+        select.value = target;
+    }
+    applyChatState(target);
     const container = document.getElementById('prompt-preview-container');
     if (container && container.style.display === 'block') {
         refreshPromptPreview();
     }
+}
+
+function toggleMode() {
+    setMode(currentMode === 'triage' ? 'inquiry' : 'triage');
 }
 
 function cleanPromptWhitespace(text) {
@@ -303,6 +405,15 @@ async function refreshPromptPreview(force = false) {
     fd.append('message', msgVal);
     fd.append('patient', patientVal);
     fd.append('mode', currentMode);
+    if (currentMode === 'triage') {
+        fd.append('triage_consciousness', document.getElementById('triage-consciousness')?.value || '');
+        fd.append('triage_breathing_status', document.getElementById('triage-breathing-status')?.value || '');
+        fd.append('triage_pain_level', document.getElementById('triage-pain-level')?.value || '');
+        fd.append('triage_main_problem', document.getElementById('triage-main-problem')?.value || '');
+        fd.append('triage_temperature', document.getElementById('triage-temperature')?.value || '');
+        fd.append('triage_circulation', document.getElementById('triage-circulation')?.value || '');
+        fd.append('triage_cause', document.getElementById('triage-cause')?.value || '');
+    }
     try {
         const res = await fetch('/api/chat/preview', { method: 'POST', body: fd, credentials: 'same-origin' });
         if (!res.ok) throw new Error(`Preview failed (${res.status})`);

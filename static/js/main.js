@@ -110,6 +110,9 @@ async function showTab(e, n) {
         if (typeof loadCrewCredentials === 'function') {
             loadCrewCredentials();
         }
+        if (typeof loadWorkspaceSwitcher === 'function') {
+            loadWorkspaceSwitcher();
+        }
         loadContext('Settings');
     } else if(n === 'CrewMedical' || n === 'VesselCrewInfo') { 
         loadData(); 
@@ -134,7 +137,7 @@ async function showTab(e, n) {
         restoreCollapsibleState('query-form-header', true);
         // Prefetch prompt preview so it is ready when expanded
         if (typeof refreshPromptPreview === 'function') {
-            refreshPromptPreview();
+            refreshPromptPreview(true);
         }
     }
 }

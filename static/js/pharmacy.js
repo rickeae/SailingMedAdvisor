@@ -2,6 +2,110 @@
 
 let pharmacyCache = [];
 const pharmacySaveTimers = {};
+let WHO_RECOMMENDED_MEDS = [
+    {
+        id: 'who-1',
+        genericName: 'Amoxicillin',
+        alsoKnownAs: 'Trimox, Amoxil',
+        formStrength: 'Capsule, 500 mg',
+        indications: 'Broad-spectrum antibiotic for common infections on board',
+        contraindications: 'Penicillin allergy',
+        consultDoctor: 'If severe infection or allergy history',
+        adultDosage: '500 mg every 8 hours for 5–7 days (per infection protocol)',
+        unwantedEffects: 'Rash, diarrhoea',
+        remarks: 'First-line oral antibiotic',
+    },
+    {
+        id: 'who-2',
+        genericName: 'Ciprofloxacin',
+        alsoKnownAs: 'Cipro',
+        formStrength: 'Tablet, 500 mg',
+        indications: 'GI/urinary infections when culture not available',
+        contraindications: 'Pregnancy, tendon disorders',
+        consultDoctor: 'If QT risk or major comorbidities',
+        adultDosage: '500 mg every 12 hours',
+        unwantedEffects: 'Nausea, tendon pain',
+        remarks: 'Reserve for indicated cases',
+    },
+    {
+        id: 'who-3',
+        genericName: 'Paracetamol',
+        alsoKnownAs: 'Acetaminophen',
+        formStrength: 'Tablet, 500 mg',
+        indications: 'Pain, fever',
+        contraindications: 'Severe liver disease',
+        consultDoctor: 'If fever >48h or hepatic disease',
+        adultDosage: '500–1000 mg every 6–8 hours (max 4 g/day)',
+        unwantedEffects: 'Rare at normal dose; hepatic injury if overdosed',
+        remarks: 'Preferred first-line analgesic/antipyretic',
+    },
+    {
+        id: 'who-4',
+        genericName: 'Ibuprofen',
+        alsoKnownAs: 'Advil, Nurofen',
+        formStrength: 'Tablet, 400 mg',
+        indications: 'Pain, inflammation',
+        contraindications: 'Peptic ulcer, renal impairment',
+        consultDoctor: 'If renal disease or anticoagulants',
+        adultDosage: '400 mg every 6–8 hours with food',
+        unwantedEffects: 'GI upset, renal stress',
+        remarks: 'Use with food; avoid prolonged use',
+    },
+    {
+        id: 'who-5',
+        genericName: 'Salbutamol',
+        alsoKnownAs: 'Albuterol',
+        formStrength: 'Inhaler, 100 mcg per dose',
+        indications: 'Bronchospasm/asthma',
+        contraindications: 'Severe tachyarrhythmia',
+        consultDoctor: 'If no relief after 2–3 doses',
+        adultDosage: '1–2 puffs every 4–6 hours as needed',
+        unwantedEffects: 'Tremor, tachycardia',
+        remarks: 'Ensure spacer use if available',
+    },
+];
+
+function workspaceHeaders(extra = {}) {
+    const label = (window.WORKSPACE_LABEL || localStorage.getItem('workspace_label') || '').trim();
+    const headers = { ...extra };
+    if (label) {
+        headers['x-workspace'] = label;
+        headers['x-workspace-slug'] = label;
+    }
+    return headers;
+}
+
+function fetchInventory(options = {}) {
+    const headers = workspaceHeaders(options.headers || {});
+    return fetch('/api/data/inventory', { credentials: 'same-origin', ...options, headers });
+}
+
+function updatePharmacyCount(count) {
+    const el = document.getElementById('pharmacy-count');
+    if (el) {
+        el.textContent = `(${count})`;
+    }
+}
+
+function syncPharmacyCountFromDOM() {
+    const list = document.getElementById('pharmacy-list');
+    if (!list) {
+        updatePharmacyCount(0);
+        return;
+    }
+    const domCount = list.querySelectorAll('.history-item').length;
+    updatePharmacyCount(domCount);
+}
+
+function observePharmacyList() {
+    const list = document.getElementById('pharmacy-list');
+    if (!list || list.dataset.countObserver === 'true') return;
+    const observer = new MutationObserver(() => syncPharmacyCountFromDOM());
+    observer.observe(list, { childList: true, subtree: true });
+    list.dataset.countObserver = 'true';
+    // Initial sync
+    syncPharmacyCountFromDOM();
+}
 
 function getTextareaHeights() {
     const map = {};
@@ -18,7 +122,6 @@ function ensurePurchaseDefaults(p) {
         id: p.id || `ph-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
         date: p.date || '',
         quantity: p.quantity || '',
-        price: p.price || '',
         notes: p.notes || '',
         photos: Array.isArray(p.photos) ? p.photos : [],
     };
@@ -48,6 +151,7 @@ function ensurePharmacyDefaults(item) {
             : [ensurePurchaseDefaults({})],
         source: item.source || '',
         photoImported: !!item.photoImported,
+        excludeFromResources: Boolean(item.excludeFromResources),
     };
 }
 
@@ -101,14 +205,21 @@ function sortPharmacyItems(items) {
 async function loadPharmacy() {
     const list = document.getElementById('pharmacy-list');
     if (!list) return;
+    observePharmacyList();
     list.innerHTML = '<div style="color:#666;">Loading inventory...</div>';
     try {
-        const res = await fetch('/api/data/inventory', { credentials: 'same-origin' });
+        const res = await fetchInventory();
         if (!res.ok) throw new Error(`Status ${res.status}`);
         const data = await res.json();
         pharmacyCache = (Array.isArray(data) ? data : []).map(ensurePharmacyDefaults);
+        updatePharmacyCount(pharmacyCache.length);
         renderPharmacy(pharmacyCache);
+        renderWhoMedList();
+        // Safety: if DOM render diverges, re-sync from DOM node count
+        syncPharmacyCountFromDOM();
+        setTimeout(syncPharmacyCountFromDOM, 50);
     } catch (err) {
+        updatePharmacyCount(0);
         list.innerHTML = `<div style="color:red;">Error loading inventory: ${err.message}</div>`;
     }
 }
@@ -123,13 +234,20 @@ function getOpenMedIds() {
 function renderPharmacy(items, openIds = [], textHeights = {}) {
     const list = document.getElementById('pharmacy-list');
     if (!list) return;
+    updatePharmacyCount((items || []).length);
     if (!items || items.length === 0) {
-        list.innerHTML = '<div style="color:#666; padding:12px;">No medications logged. Add your first item.</div>';
+        list.innerHTML = '<div style="color:#666; padding:12px;">No medications entered. Add your first item.</div>';
         return;
     }
     const sorted = sortPharmacyItems(items);
     const cards = sorted.map((m) => renderMedicationCard(m, openIds.includes(m.id), textHeights)).join('');
     list.innerHTML = cards;
+    // After HTML render, verify count matches actual cards
+    syncPharmacyCountFromDOM();
+    setTimeout(syncPharmacyCountFromDOM, 50);
+    if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(() => syncPharmacyCountFromDOM());
+    }
 }
 
 function renderPurchaseRows(med) {
@@ -145,17 +263,16 @@ function renderPurchaseRows(med) {
                     </div>`
             );
             return `
-            <div class="purchase-row" data-med-id="${med.id}" data-ph-id="${p.id || ''}" style="border:1px solid #d9e5f7; padding:10px; border-radius:6px; margin-bottom:10px; background:#f5f9ff;">
-                <div style="display:grid; grid-template-columns: repeat(3, minmax(200px, 1fr)); gap:10px; align-items:center; margin-bottom:10px;">
+                <div class="purchase-row" data-med-id="${med.id}" data-ph-id="${p.id || ''}" style="border:1px solid #d9e5f7; padding:10px; border-radius:6px; margin-bottom:10px; background:#f5f9ff;">
+                <div style="display:grid; grid-template-columns: repeat(2, minmax(200px, 1fr)); gap:10px; align-items:center; margin-bottom:10px;">
                     <div style="display:flex; align-items:center; gap:8px;">
                         <span class="ph-notes-toggle" style="cursor:pointer; font-weight:800; color:var(--dark);" onclick="togglePurchaseNotes(this)">▾</span>
-                        <input type="date" class="ph-date" value="${p.date || ''}" style="padding:8px; font-size:14px; width:100%;" onchange="scheduleSaveMedication('${med.id}')">
+                        <input type="date" class="ph-date" value="${p.date || ''}" style="padding:8px; font-size:14px; width:100%;" onchange="scheduleSaveMedication('${med.id}')" title="Expiry Date">
                     </div>
-                    <input type="number" class="ph-qty" value="${p.quantity || ''}" placeholder="Qty" style="padding:8px; font-size:14px;" oninput="scheduleSaveMedication('${med.id}')">
-                    <input type="text" class="ph-price" value="${p.price || ''}" placeholder="Price" style="padding:8px; font-size:14px;" oninput="scheduleSaveMedication('${med.id}')">
+                    <input type="number" class="ph-qty" value="${p.quantity || ''}" placeholder="Qty" style="padding:8px; font-size:14px;" oninput="scheduleSaveMedication('${med.id}')" title="Quantity tied to this expiry">
                 </div>
                 <div class="ph-notes-container" style="margin-bottom:10px; display:block;">
-                    <textarea class="ph-notes" placeholder="Notes/Vendor" style="width:100%; padding:8px; min-height:60px; font-size:14px;" oninput="scheduleSaveMedication('${med.id}')">${p.notes || ''}</textarea>
+                    <textarea class="ph-notes" placeholder="Notes (batch/lot/location)" style="width:100%; padding:8px; min-height:60px; font-size:14px;" oninput="scheduleSaveMedication('${med.id}')">${p.notes || ''}</textarea>
                 </div>
                 <div class="ph-photos-container" style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-start; margin-top:6px;">
                     ${photos.join('')}
@@ -165,7 +282,7 @@ function renderPurchaseRows(med) {
                     </div>
                 </div>
                 <div style="display:flex; gap:10px; margin-top:10px; flex-wrap:wrap;">
-                    <button class="btn btn-sm" style="background:var(--red);" onclick="deletePurchaseEntry('${med.id}')">Delete Medication Purchase</button>
+                    <button class="btn btn-sm" style="background:var(--red);" onclick="deletePurchaseEntry('${med.id}')">Delete Expiry Entry</button>
                 </div>
             </div>`;
         })
@@ -181,6 +298,13 @@ function renderMedicationCard(med, isOpen = true, textHeights = {}) {
     const strength = (med.strength || '').trim();
     const bodyDisplay = isOpen ? 'display:block;' : 'display:none;';
     const arrow = isOpen ? '▾' : '▸';
+    const headerBg = med.excludeFromResources ? '#ffecef' : '#eef7ff';
+    const headerBorderColor = med.excludeFromResources ? '#ffcfe0' : '#c7ddff';
+    const bodyBg = med.excludeFromResources ? '#fff6f6' : '#f7fff7';
+    const bodyBorderColor = med.excludeFromResources ? '#ffcfd0' : '#cfe9d5';
+    const badgeColor = med.excludeFromResources ? '#d32f2f' : '#2e7d32';
+    const badgeText = med.excludeFromResources ? 'Resource Currently Unavailable' : 'Resource Available';
+    const availabilityBadge = `<span style="margin-left:auto; padding:2px 10px; border-radius:999px; background:${badgeColor}; color:#fff; font-size:11px; white-space:nowrap;">${badgeText}</span>`;
     const doseHeight = textHeights[`dose-${med.id}`] ? `height:${textHeights[`dose-${med.id}`]};` : '';
     const photoThumbs = (med.photos || []).map(
         (src, idx) => `
@@ -192,7 +316,7 @@ function renderMedicationCard(med, isOpen = true, textHeights = {}) {
     );
     return `
             <div class="collapsible history-item">
-        <div class="col-header crew-med-header" onclick="toggleCrewSection(this)" style="justify-content:flex-start; align-items:center;">
+        <div class="col-header crew-med-header" onclick="toggleCrewSection(this)" style="justify-content:flex-start; align-items:center; background:${headerBg}; border:1px solid ${headerBorderColor}; padding:8px 12px;">
             <span class="dev-tag">dev:med-card</span>
             <span class="toggle-label history-arrow" style="font-size:18px; margin-right:8px;">${arrow}</span>
             <span style="flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:700;">
@@ -200,15 +324,20 @@ function renderMedicationCard(med, isOpen = true, textHeights = {}) {
             </span>
             ${headerNote ? `<span class="sidebar-pill" style="margin-right:8px; background:${lowStock ? '#ffebee' : '#fff7e0'}; color:${lowStock ? '#c62828' : '#b26a00'};">${headerNote}</span>` : ''}
             <button onclick="event.stopPropagation(); deleteMedication('${med.id}')" class="btn btn-sm history-action-btn" style="background:var(--red); visibility:hidden;">🗑 Delete Medication</button>
+            ${availabilityBadge}
         </div>
-        <div class="col-body" data-med-id="${med.id}" style="padding:12px; background:#e8f4ff; border:1px solid #c7ddff; border-radius:6px; ${bodyDisplay}">
+        <div class="col-body" data-med-id="${med.id}" style="padding:12px; background:${bodyBg}; border:1px solid ${bodyBorderColor}; border-radius:6px; ${bodyDisplay}">
             <div class="collapsible" style="margin-bottom:10px;">
                 <div class="col-header crew-med-header" onclick="toggleMedDetails(this)" style="background:#fff; justify-content:flex-start; align-items:center;">
                     <span class="dev-tag">dev:med-details</span>
                     <span class="detail-icon history-arrow" style="font-size:16px; margin-right:8px;">▾</span>
                     <span style="font-weight:700;">Medication Details</span>
                 </div>
-                <div class="col-body" style="padding:10px; display:block;" id="details-${med.id}">
+            <div class="col-body" style="padding:10px; display:block;" id="details-${med.id}">
+                <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+                    <input id="exclude-${med.id}" type="checkbox" ${med.excludeFromResources ? 'checked' : ''} onchange="scheduleSaveMedication('${med.id}')">
+                    <label style="font-size:12px; line-height:1.2; margin:0;">Resource Currently Unavailable</label>
+                </div>
                     <div style="display:grid; grid-template-columns: repeat(2, minmax(240px, 1fr)); gap:10px; margin-bottom:10px;">
                         <div>
                             <label style="font-weight:700; font-size:12px;">Generic Name</label>
@@ -226,17 +355,19 @@ function renderMedicationCard(med, isOpen = true, textHeights = {}) {
                             <label style="font-weight:700; font-size:12px;">Strength</label>
                             <input id="str-${med.id}" type="text" value="${med.strength}" placeholder="500mg, 10mg/ml" style="width:100%; padding:8px;" oninput="scheduleSaveMedication('${med.id}')">
                         </div>
-                        <div>
-                            <label style="font-weight:700; font-size:12px;">Current Quantity</label>
-                            <input id="qty-${med.id}" type="number" value="${med.currentQuantity}" style="width:100%; padding:8px;" oninput="scheduleSaveMedication('${med.id}')">
-                        </div>
-                        <div>
-                            <label style="font-weight:700; font-size:12px;">Minimum Threshold</label>
-                            <input id="min-${med.id}" type="number" value="${med.minThreshold}" style="width:100%; padding:8px;" oninput="scheduleSaveMedication('${med.id}')">
-                        </div>
-                        <div>
-                            <label style="font-weight:700; font-size:12px;">Unit of Measure</label>
-                            <input id="unit-${med.id}" type="text" value="${med.unit}" placeholder="Bottle, Box, Blister" style="width:100%; padding:8px;" oninput="scheduleSaveMedication('${med.id}')">
+                        <div style="grid-column: 1 / span 2; display:grid; grid-template-columns: repeat(3, minmax(160px, 1fr)); gap:10px;">
+                            <div>
+                                <label style="font-weight:700; font-size:12px;">Current Quantity</label>
+                                <input id="qty-${med.id}" type="number" value="${med.currentQuantity}" style="width:100%; padding:8px;" oninput="scheduleSaveMedication('${med.id}')">
+                            </div>
+                            <div>
+                                <label style="font-weight:700; font-size:12px;">Minimum Threshold</label>
+                                <input id="min-${med.id}" type="number" value="${med.minThreshold}" style="width:100%; padding:8px;" oninput="scheduleSaveMedication('${med.id}')">
+                            </div>
+                            <div>
+                                <label style="font-weight:700; font-size:12px;">Unit of Measure</label>
+                                <input id="unit-${med.id}" type="text" value="${med.unit}" placeholder="Bottle, Box, Blister" style="width:100%; padding:8px;" oninput="scheduleSaveMedication('${med.id}')">
+                            </div>
                         </div>
                         <div>
                             <label style="font-weight:700; font-size:12px;">Storage Location</label>
@@ -287,17 +418,172 @@ function renderMedicationCard(med, isOpen = true, textHeights = {}) {
                 </div>
             </div>
             <div style="margin:10px 0; border-top:1px solid #d0dff5; padding-top:10px;">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; gap:8px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; gap:8px;">
                     <div style="display:flex; align-items:center; gap:6px; font-weight:800; color:var(--dark);">
-                        <span>Purchase History</span>
-                        <span class="dev-tag">dev:med-purchase</span>
+                        <span>Expiry Tracking</span>
+                        <span class="dev-tag">dev:med-expiry</span>
                     </div>
-                    <button class="btn btn-sm" style="background:var(--inquiry);" onclick="addPurchaseEntry('${med.id}')">+ Add Purchase</button>
+                    <button class="btn btn-sm" style="background:var(--inquiry);" onclick="addPurchaseEntry('${med.id}')">+ Add Entry</button>
                 </div>
                 <div id="ph-${med.id}">${renderPurchaseRows(med)}</div>
             </div>
         </div>
     </div>`;
+}
+
+function renderWhoMedList() {
+    const container = document.getElementById('who-med-list');
+    if (!container) return;
+    container.innerHTML = WHO_RECOMMENDED_MEDS.map((m, idx) => {
+        const id = `who-${m.id || idx}`;
+        return `
+            <label style="display:flex; gap:10px; align-items:flex-start; border:1px solid #d9e5f7; padding:10px; border-radius:8px; background:#fff;">
+                <input type="checkbox" name="who-med-check" value="${id}" style="margin-top:4px;">
+                <div>
+                    <div style="font-weight:800; color:#1f2d3d;">${m.genericName}</div>
+                    ${m.alsoKnownAs ? `<div style="font-size:12px; color:#37474f;">Also known as: ${m.alsoKnownAs}</div>` : ''}
+                    ${m.formStrength ? `<div style="font-size:12px; color:#455a64;">Dosage form/strength: ${m.formStrength}</div>` : ''}
+                    ${m.indications ? `<div style="font-size:12px; color:#455a64;">Indications: ${m.indications}</div>` : ''}
+                    ${m.contraindications ? `<div style="font-size:12px; color:#b23b3b;">Contraindications: ${m.contraindications}</div>` : ''}
+                    ${m.consultDoctor ? `<div style="font-size:12px; color:#6a1b9a;">Consult doctor: ${m.consultDoctor}</div>` : ''}
+                    ${m.adultDosage ? `<div style="font-size:12px; color:#455a64;">Adult dosage: ${m.adultDosage}</div>` : ''}
+                    ${m.unwantedEffects ? `<div style="font-size:12px; color:#b23b3b;">Unwanted effects: ${m.unwantedEffects}</div>` : ''}
+                    ${m.remarks ? `<div style="font-size:12px; color:#455a64;">Remarks: ${m.remarks}</div>` : ''}
+                </div>
+            </label>
+        `;
+    }).join('') || '<div style="color:#666;">WHO list unavailable.</div>';
+}
+
+function parseWHOListText(text) {
+    if (typeof text !== 'string') return [];
+    const lines = text
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+    const now = Date.now();
+    return lines
+        .map((line, idx) => {
+            const cols = line.split('\t');
+            if (idx === 0 && /generic\s+name/i.test(cols[0] || '')) {
+                return null;
+            }
+            return {
+                id: `who-import-${now}-${idx}`,
+                genericName: (cols[0] || '').trim(),
+                alsoKnownAs: (cols[1] || '').trim(),
+                formStrength: (cols[2] || '').trim(),
+                indications: (cols[3] || '').trim(),
+                contraindications: (cols[4] || '').trim(),
+                consultDoctor: (cols[5] || '').trim(),
+                adultDosage: (cols[6] || '').trim(),
+                unwantedEffects: (cols[7] || '').trim(),
+                remarks: (cols[8] || '').trim(),
+            };
+        })
+        .filter((entry) => entry && entry.genericName);
+}
+
+function setWhoMedStatus(message, isError = false) {
+    const statusEl = document.getElementById('who-med-status');
+    if (!statusEl) return;
+    statusEl.textContent = message;
+    statusEl.style.color = isError ? 'var(--red)' : '#1f2d3d';
+}
+
+function openWhoListFilePicker() {
+    const input = document.getElementById('who-list-import-file');
+    if (!input) return;
+    input.value = '';
+    input.click();
+}
+
+async function handleWhoListFileImport(event) {
+    const file = event?.target?.files?.[0];
+    if (!file) return;
+    try {
+        const text = await file.text();
+        const entries = parseWHOListText(text);
+        if (!entries.length) {
+            setWhoMedStatus('No valid WHO medicines found in the file.', true);
+            return;
+        }
+        WHO_RECOMMENDED_MEDS = entries;
+        renderWhoMedList();
+        setWhoMedStatus(`Loaded ${entries.length} WHO medicine(s).`);
+    } catch (err) {
+        setWhoMedStatus(`Unable to load WHO list: ${err.message}`, true);
+    } finally {
+        if (event?.target) event.target.value = '';
+    }
+}
+
+async function addWhoMeds() {
+    const statusEl = document.getElementById('who-med-status');
+    const setStatus = (msg, isErr = false) => {
+        if (!statusEl) return;
+        statusEl.textContent = msg;
+        statusEl.style.color = isErr ? 'var(--red)' : '#1f2d3d';
+    };
+    const checked = Array.from(document.querySelectorAll('input[name="who-med-check"]:checked'));
+    if (!checked.length) {
+        setStatus('Select one or more medicines to copy.', true);
+        return;
+    }
+    try {
+        const data = await (await fetchInventory()).json();
+        const meds = Array.isArray(data) ? data.map(ensurePharmacyDefaults) : [];
+        let added = 0;
+        let skipped = 0;
+        checked.forEach((input, idx) => {
+            const medTpl = WHO_RECOMMENDED_MEDS.find((m) => `who-${m.id || idx}` === input.value);
+            if (!medTpl) return;
+            const dup = meds.find(
+                (m) =>
+                    (m.genericName || '').trim().toLowerCase() === (medTpl.genericName || '').trim().toLowerCase() &&
+                    (m.strength || '').trim().toLowerCase() === (medTpl.formStrength || '').trim().toLowerCase()
+            );
+            if (dup) {
+                skipped += 1;
+                return;
+            }
+            const newMed = ensurePharmacyDefaults({
+                id: `med-who-${Date.now()}-${idx}`,
+                genericName: medTpl.genericName || '',
+                brandName: medTpl.alsoKnownAs || '',
+                form: medTpl.formStrength ? medTpl.formStrength.split(',')[0].trim() : '',
+                strength: medTpl.formStrength ? (medTpl.formStrength.split(',')[1] || '').trim() : '',
+                currentQuantity: '',
+                minThreshold: '',
+                unit: '',
+                storageLocation: 'Medical Locker',
+                expiryDate: '',
+                batchLot: '',
+                controlled: false,
+                manufacturer: '',
+                primaryIndication: medTpl.indications || '',
+                allergyWarnings: medTpl.contraindications || medTpl.unwantedEffects || '',
+                standardDosage: medTpl.adultDosage || '',
+                notes: medTpl.remarks || medTpl.consultDoctor || 'WHO ship list import',
+                source: 'who_recommended',
+                photoImported: false,
+                purchaseHistory: [],
+                excludeFromResources: true,
+            });
+            meds.push(newMed);
+            added += 1;
+        });
+        await fetchInventory({
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(meds),
+        });
+        pharmacyCache = meds;
+        renderPharmacy(pharmacyCache);
+        setStatus(`Added ${added} item(s)${skipped ? `, skipped ${skipped} duplicate(s)` : ''}.`);
+    } catch (err) {
+        setStatus(`Unable to add medicines: ${err.message}`, true);
+    }
 }
 
 function daysUntil(dateStr) {
@@ -318,16 +604,15 @@ function addPurchaseEntry(medId) {
     row.dataset.phId = newPhId;
     row.style = 'border:1px solid #d9e5f7; padding:10px; border-radius:6px; margin-bottom:10px; background:#f5f9ff;';
     row.innerHTML = `
-        <div style="display:grid; grid-template-columns: repeat(3, minmax(200px, 1fr)); gap:10px; align-items:center; margin-bottom:10px;">
+        <div style="display:grid; grid-template-columns: repeat(2, minmax(200px, 1fr)); gap:10px; align-items:center; margin-bottom:10px;">
             <div style="display:flex; align-items:center; gap:8px;">
                 <span class="ph-notes-toggle" style="cursor:pointer; font-weight:800; color:var(--dark);" onclick="togglePurchaseNotes(this)">▾</span>
-                <input type="date" class="ph-date" style="padding:8px; font-size:14px; width:100%;" onchange="scheduleSaveMedication('${medId}')">
+                <input type="date" class="ph-date" style="padding:8px; font-size:14px; width:100%;" onchange="scheduleSaveMedication('${medId}')" title="Expiry Date">
             </div>
-            <input type="number" class="ph-qty" placeholder="Qty" style="padding:8px; font-size:14px;" oninput="scheduleSaveMedication('${medId}')">
-            <input type="text" class="ph-price" placeholder="Price" style="padding:8px; font-size:14px;" oninput="scheduleSaveMedication('${medId}')">
+            <input type="number" class="ph-qty" placeholder="Qty" style="padding:8px; font-size:14px;" oninput="scheduleSaveMedication('${medId}')" title="Quantity tied to this expiry">
         </div>
         <div class="ph-notes-container" style="margin-bottom:10px; display:block;">
-            <textarea class="ph-notes" placeholder="Notes/Vendor" style="width:100%; padding:8px; min-height:60px; font-size:14px;" oninput="scheduleSaveMedication('${medId}')"></textarea>
+            <textarea class="ph-notes" placeholder="Notes (batch/lot/location)" style="width:100%; padding:8px; min-height:60px; font-size:14px;" oninput="scheduleSaveMedication('${medId}')"></textarea>
         </div>
         <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-start;">
             <div>
@@ -343,7 +628,7 @@ function addPurchaseEntry(medId) {
 async function saveMedication(id) {
     const openMedIds = getOpenMedIds();
     const textHeights = getTextareaHeights();
-    const data = await (await fetch('/api/data/inventory', { credentials: 'same-origin' })).json();
+    const data = await (await fetchInventory()).json();
     const meds = Array.isArray(data) ? data.map(ensurePharmacyDefaults) : [];
     const med = meds.find((m) => m.id === id);
     if (!med) return alert('Medication not found');
@@ -369,13 +654,13 @@ async function saveMedication(id) {
     med.primaryIndication = document.getElementById(`ind-${id}`)?.value || '';
     med.allergyWarnings = document.getElementById(`alg-${id}`)?.value || '';
     med.standardDosage = document.getElementById(`dose-${id}`)?.value || '';
+    med.excludeFromResources = !!document.getElementById(`exclude-${id}`)?.checked;
     med.purchaseHistory = collectPurchaseEntries(id);
 
-    await fetch('/api/data/inventory', {
+    await fetchInventory({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(meds),
-        credentials: 'same-origin',
     });
     pharmacyCache = meds;
     renderPharmacy(pharmacyCache, openMedIds, textHeights);
@@ -393,7 +678,6 @@ function collectPurchaseEntries(medId) {
             id: phId,
             date: row.querySelector('.ph-date')?.value || '',
             quantity: row.querySelector('.ph-qty')?.value || '',
-            price: row.querySelector('.ph-price')?.value || '',
             notes: row.querySelector('.ph-notes')?.value || '',
             photos: existing && Array.isArray(existing.photos) ? existing.photos : [],
         };
@@ -407,14 +691,13 @@ async function deleteMedication(id) {
         alert('Deletion cancelled.');
         return;
     }
-    const data = await (await fetch('/api/data/inventory', { credentials: 'same-origin' })).json();
+    const data = await (await fetchInventory()).json();
     const meds = Array.isArray(data) ? data : [];
     const filtered = meds.filter((m) => m.id !== id);
-    await fetch('/api/data/inventory', {
+    await fetchInventory({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(filtered),
-        credentials: 'same-origin',
     });
     loadPharmacy();
 }
@@ -424,13 +707,12 @@ async function deletePurchaseEntry(medId) {
     if (!container) return;
     const rows = Array.from(container.querySelectorAll('.purchase-row'));
     if (rows.length === 0) return;
-    const proceed = confirm('Delete the most recent purchase entry?');
+    const proceed = confirm('Delete the most recent expiry entry?');
     if (!proceed) return;
     if (rows.length === 1) {
         // Clear fields if only one row
         rows[0].querySelector('.ph-date').value = '';
         rows[0].querySelector('.ph-qty').value = '';
-        rows[0].querySelector('.ph-price').value = '';
         rows[0].querySelector('.ph-notes').value = '';
         // Clear photos
         const phId = rows[0].dataset.phId;
@@ -448,7 +730,7 @@ async function deletePurchaseEntry(medId) {
 }
 
 async function addMedication() {
-    const data = await (await fetch('/api/data/inventory', { credentials: 'same-origin' })).json();
+    const data = await (await fetchInventory()).json();
     const meds = Array.isArray(data) ? data : [];
     const emptyName = 'Medication';
     const dup = meds.find((m) => (m.genericName || '').trim().toLowerCase() === emptyName.toLowerCase());
@@ -457,11 +739,10 @@ async function addMedication() {
         return;
     }
     meds.push(ensurePharmacyDefaults({ id: `med-${Date.now()}` }));
-    await fetch('/api/data/inventory', {
+    await fetchInventory({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(meds),
-        credentials: 'same-origin',
     });
     loadPharmacy();
 }
@@ -480,7 +761,7 @@ function uploadPurchasePhoto(medId, phId) {
         const reader = new FileReader();
         reader.onload = async (e) => {
             const base64 = e.target.result;
-            const data = await (await fetch('/api/data/inventory', { credentials: 'same-origin' })).json();
+            const data = await (await fetchInventory()).json();
             const meds = Array.isArray(data) ? data.map(ensurePharmacyDefaults) : [];
             const med = meds.find((m) => m.id === medId);
             if (!med) return alert('Medication not found');
@@ -490,11 +771,10 @@ function uploadPurchasePhoto(medId, phId) {
             if (!med.purchaseHistory.find((p) => p.id === phId)) {
                 med.purchaseHistory.push(ph);
             }
-            await fetch('/api/data/inventory', {
+            await fetchInventory({
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(meds),
-                credentials: 'same-origin',
             });
             loadPharmacy();
         };
@@ -504,33 +784,31 @@ function uploadPurchasePhoto(medId, phId) {
 }
 
 async function removePurchasePhoto(medId, phId, idx) {
-    const data = await (await fetch('/api/data/inventory', { credentials: 'same-origin' })).json();
+    const data = await (await fetchInventory()).json();
     const meds = Array.isArray(data) ? data.map(ensurePharmacyDefaults) : [];
     const med = meds.find((m) => m.id === medId);
     if (!med) return;
     const ph = med.purchaseHistory.find((p) => p.id === phId);
     if (!ph) return;
     ph.photos = (ph.photos || []).filter((_, i) => i !== idx);
-    await fetch('/api/data/inventory', {
+    await fetchInventory({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(meds),
-        credentials: 'same-origin',
     });
     loadPharmacy();
 }
 
 async function removeMedicationPhoto(medId, idx) {
-    const data = await (await fetch('/api/data/inventory', { credentials: 'same-origin' })).json();
+    const data = await (await fetchInventory()).json();
     const meds = Array.isArray(data) ? data.map(ensurePharmacyDefaults) : [];
     const med = meds.find((m) => m.id === medId);
     if (!med) return;
     med.photos = (med.photos || []).filter((_, i) => i !== idx);
-    await fetch('/api/data/inventory', {
+    await fetchInventory({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(meds),
-        credentials: 'same-origin',
     });
     loadPharmacy();
 }
@@ -569,3 +847,6 @@ window.togglePurchaseNotes = function(el) {
     if (photos) photos.style.display = isHidden ? 'flex' : 'none';
     el.textContent = isHidden ? '▾' : '▸';
 };
+window.addWhoMeds = addWhoMeds;
+window.openWhoListFilePicker = openWhoListFilePicker;
+window.handleWhoListFileImport = handleWhoListFileImport;

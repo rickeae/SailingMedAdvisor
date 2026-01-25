@@ -11,18 +11,30 @@ const DEFAULT_SETTINGS = {
     in_p: 0.95,
     mission_context: "Isolated Medical Station offshore.",
     rep_penalty: 1.1,
-    user_mode: "user"
+    user_mode: "user",
+    med_photo_model: "qwen",
+    med_photo_prompt: "You are a pharmacy intake assistant on a sailing vessel. Look at the medication photo and return JSON only with keys: generic_name, brand_name, form, strength, expiry_date, batch_lot, storage_location, manufacturer, indication, allergy_warnings, dosage, notes."
 };
 
 let settingsDirty = false;
 let settingsLoaded = false;
 let settingsAutoSaveTimer = null;
+let workspaceListLoaded = false;
+let offlineStatusCache = null;
 
 function setUserMode(mode) {
     const body = document.body;
     const normalized = ['advanced', 'developer'].includes((mode || '').toLowerCase()) ? mode.toLowerCase() : 'user';
     body.classList.remove('mode-user', 'mode-advanced', 'mode-developer');
     body.classList.add(`mode-${normalized}`);
+    document.documentElement.classList.remove('mode-user', 'mode-advanced', 'mode-developer');
+    document.documentElement.classList.add(`mode-${normalized}`);
+    document.querySelectorAll('.dev-tag').forEach(el => {
+        el.style.display = normalized === 'developer' ? 'inline-block' : '';
+    });
+    try {
+        localStorage.setItem('user_mode', normalized);
+    } catch (err) { /* ignore */ }
 }
 
 function applySettingsToUI(data = {}) {
@@ -34,16 +46,21 @@ function applySettingsToUI(data = {}) {
         }
     });
     setUserMode(merged.user_mode);
+    try { localStorage.setItem('user_mode', merged.user_mode || 'user'); } catch (err) { /* ignore */ }
     settingsDirty = false;
     settingsLoaded = true;
 }
 
 if (document.readyState !== 'loading') {
+    applyStoredUserMode();
     loadSettingsUI().catch(() => {});
+    loadWorkspaceSwitcher().catch(() => {});
     bindSettingsDirtyTracking();
 } else {
     document.addEventListener('DOMContentLoaded', () => {
+        applyStoredUserMode();
         loadSettingsUI().catch(() => {});
+        loadWorkspaceSwitcher().catch(() => {});
         bindSettingsDirtyTracking();
     }, { once: true });
 }
@@ -58,6 +75,8 @@ function bindSettingsDirtyTracking() {
             scheduleAutoSave('input-change');
             if (el.id === 'user_mode') {
                 setUserMode(el.value);
+                // Persist immediately to avoid losing mode if navigation happens quickly
+                saveSettings(false, 'user-mode-change').catch(() => {});
             }
         });
         el.addEventListener('change', () => {
@@ -65,6 +84,7 @@ function bindSettingsDirtyTracking() {
             scheduleAutoSave('input-change');
             if (el.id === 'user_mode') {
                 setUserMode(el.value);
+                saveSettings(false, 'user-mode-change').catch(() => {});
             }
         });
     });
@@ -73,17 +93,29 @@ function bindSettingsDirtyTracking() {
 async function loadSettingsUI() {
     console.log('[settings] loadSettingsUI called');
     try {
-        const res = await fetch('/api/data/settings', { credentials: 'same-origin' });
+        const workspaceLabel = window.WORKSPACE_LABEL || localStorage.getItem('workspace_label') || '';
+        const url = workspaceLabel ? `/api/data/settings?workspace=${encodeURIComponent(workspaceLabel)}` : '/api/data/settings';
+        const res = await fetch(url, {
+            credentials: 'same-origin',
+            headers: workspaceLabel ? { 'x-workspace': workspaceLabel, 'x-workspace-slug': workspaceLabel } : {},
+        });
         console.log('[settings] fetch response status:', res.status);
         if (!res.ok) throw new Error(`Settings load failed (${res.status})`);
         const s = await res.json();
         console.log('[settings] loaded settings:', s);
         applySettingsToUI(s);
         console.log('[settings] settings applied to UI');
+        try { localStorage.setItem('user_mode', s.user_mode || 'user'); } catch (err) { /* ignore */ }
     } catch (err) {
         console.error('[settings] load error', err);
         alert(`Unable to load settings: ${err.message}`);
-        applySettingsToUI(DEFAULT_SETTINGS);
+        const localMode = (() => {
+            try { return localStorage.getItem('user_mode') || 'user'; } catch (e) { return 'user'; }
+        })();
+        applySettingsToUI({ ...DEFAULT_SETTINGS, user_mode: localMode });
+        if (String(err.message || '').toLowerCase().includes('workspace')) {
+            window.location.href = '/workspace';
+        }
     }
 }
 
@@ -94,6 +126,13 @@ function updateSettingsStatus(message, isError = false) {
     el.style.color = isError ? 'var(--red)' : '#2c3e50';
 }
 
+function applyStoredUserMode() {
+    try {
+        const stored = localStorage.getItem('user_mode') || 'user';
+        setUserMode(stored);
+    } catch (err) { /* ignore */ }
+}
+
 function scheduleAutoSave(reason = 'auto') {
     if (settingsAutoSaveTimer) clearTimeout(settingsAutoSaveTimer);
     settingsAutoSaveTimer = setTimeout(() => saveSettings(false, reason), 800);
@@ -101,9 +140,10 @@ function scheduleAutoSave(reason = 'auto') {
 
 async function saveSettings(showAlert = true, reason = 'manual') {
     try {
+        const workspaceLabel = window.WORKSPACE_LABEL || localStorage.getItem('workspace_label') || '';
         const s = {};
         const numeric = new Set(['tr_temp','tr_tok','tr_p','in_temp','in_tok','in_p','rep_penalty']);
-        ['triage_instruction','inquiry_instruction','tr_temp','tr_tok','tr_p','in_temp','in_tok','in_p','mission_context','rep_penalty','user_mode'].forEach(k => {
+        ['triage_instruction','inquiry_instruction','tr_temp','tr_tok','tr_p','in_temp','in_tok','in_p','mission_context','rep_penalty','user_mode','med_photo_model','med_photo_prompt'].forEach(k => {
             const el = document.getElementById(k);
             if (!el) return;
             const val = el.value;
@@ -116,9 +156,14 @@ async function saveSettings(showAlert = true, reason = 'manual') {
         });
         console.log('[settings] saving', { reason, payload: s });
         updateSettingsStatus('Saving…', false);
-        const res = await fetch('/api/data/settings', {
+        const headers = { 'Content-Type': 'application/json' };
+        if (workspaceLabel) {
+            headers['x-workspace'] = workspaceLabel;
+        }
+        const url = workspaceLabel ? `/api/data/settings?workspace=${encodeURIComponent(workspaceLabel)}` : '/api/data/settings';
+        const res = await fetch(url, {
             method:'POST',
-            headers:{'Content-Type':'application/json'},
+            headers,
             body:JSON.stringify(s),
             credentials:'same-origin'
         });
@@ -132,7 +177,10 @@ async function saveSettings(showAlert = true, reason = 'manual') {
         }
         const updated = await res.json();
         console.log('[settings] save response', updated);
-        applySettingsToUI(updated);
+        // Preserve the locally selected user_mode to avoid flicker if the server echoes stale data
+        const merged = { ...updated, user_mode: s.user_mode || updated.user_mode };
+        applySettingsToUI(merged);
+        try { localStorage.setItem('user_mode', updated.user_mode || 'user'); } catch (err) { /* ignore */ }
         settingsDirty = false;
         updateSettingsStatus(`Saved at ${new Date().toLocaleTimeString()}`);
         if (showAlert) {
@@ -167,6 +215,9 @@ function resetSection(section) {
         document.getElementById('in_p').value = DEFAULT_SETTINGS.in_p;
     } else if (section === 'mission') {
         document.getElementById('mission_context').value = DEFAULT_SETTINGS.mission_context;
+    } else if (section === 'med_photo') {
+        const el = document.getElementById('med_photo_prompt');
+        if (el) el.value = DEFAULT_SETTINGS.med_photo_prompt;
     }
     saveSettings();
 }
@@ -178,27 +229,6 @@ function renderOfflineStatus(msg, isError = false) {
     box.innerHTML = msg;
 }
 
-async function runOfflineCheck() {
-    renderOfflineStatus('Checking offline requirements…');
-    try {
-        const res = await fetch('/api/offline/check', { credentials: 'same-origin' });
-        const data = await res.json();
-        if (!res.ok || data.error) throw new Error(data.error || `Status ${res.status}`);
-        const modelLines = (data.models || []).map(m => {
-            return `${m.model}: ${m.cached ? 'Cached ✅' : 'Missing ❌'}`;
-        }).join('<br>');
-        const env = data.env || {};
-        const envLines = Object.entries(env).map(([k,v]) => `${k}: ${v || 'unset'}`).join('<br>');
-        renderOfflineStatus(
-            `<strong>Models</strong><br>${modelLines || 'None'}<br><br>` +
-            `<strong>Env</strong><br>${envLines}<br><br>` +
-            `<strong>Cache</strong><br>${data.cache_dir || ''}`
-        );
-    } catch (err) {
-        renderOfflineStatus(`Error: ${err.message}`, true);
-    }
-}
-
 async function createOfflineBackup() {
     renderOfflineStatus('Creating offline backup…');
     try {
@@ -208,6 +238,187 @@ async function createOfflineBackup() {
         renderOfflineStatus(`Backup created: ${data.backup}`);
     } catch (err) {
         renderOfflineStatus(`Backup failed: ${err.message}`, true);
+    }
+}
+
+async function restoreOfflineBackup() {
+    renderOfflineStatus('Restoring latest backup…');
+    try {
+        const res = await fetch('/api/offline/restore', { method: 'POST', credentials: 'same-origin' });
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(data.error || `Status ${res.status}`);
+        renderOfflineStatus(`Restored backup: ${data.restored}`);
+        alert('Cache restored. Please reload the app.');
+    } catch (err) {
+        renderOfflineStatus(`Restore failed: ${err.message}`, true);
+    }
+}
+
+function formatOfflineStatus(data) {
+    const models = data.models || [];
+    const missing = data.missing || models.filter((m) => !m.cached);
+    const offline = data.offline_mode;
+    const env = data.env || {};
+    const disk = data.disk || {};
+    const modelLines = models
+        .map((m) => `${m.model}: ${m.cached ? 'Cached ✅' : 'Missing ❌'}${m.downloaded ? ' (downloaded)' : ''}${m.error ? ` (err: ${m.error})` : ''}`)
+        .join('<br>');
+    const envLines = Object.entries(env)
+        .map(([k, v]) => `${k}: ${v || 'unset'}`)
+        .join('<br>');
+    let note = '';
+    if (missing.length) {
+        note = `<div style="color:var(--red); margin-top:6px;">Missing ${missing.length} model(s). Click “Download missing models” while online.</div>`;
+    } else {
+        note = `<div style="color:var(--green); margin-top:6px;">All required models cached.</div>`;
+    }
+    if (offline) {
+        note += `<div style="margin-top:6px;">Offline mode flags detected.</div>`;
+    } else {
+        note += `<div style="margin-top:6px; color:#b26a00;">Offline flags not set; set HF_HUB_OFFLINE=1 and TRANSFORMERS_OFFLINE=1 before going offline.</div>`;
+    }
+    const diskLine = disk.total_gb ? `<div style="margin-top:6px; font-size:12px;">Cache disk (${disk.path || ''}): ${disk.free_gb || '?'}GB free / ${disk.total_gb || '?'}GB total.</div>` : '';
+    const howTo = `<div style="margin-top:8px; font-size:12px; color:#333;">
+<strong>Steps:</strong> 1) While online, click “Download missing models”. 2) Then click “Backup cache”. 3) Before sailing, set offline env flags and rerun “Check cache status”.<br>
+<strong>Required models:</strong> medgemma-1.5-4b-it, medgemma-27b-text-it, Qwen2.5-VL-7B-Instruct.
+</div>`;
+    return (
+        `<strong>Models</strong><br>${modelLines || 'None'}<br><br>` +
+        `<strong>Env</strong><br>${envLines}<br><br>` +
+        `<strong>Cache</strong><br>${data.cache_dir || ''}` +
+        note +
+        diskLine +
+        howTo
+    );
+}
+
+function updateOfflineFlagButton() {
+    const btn = document.getElementById('offline-flag-btn');
+    if (!btn) return;
+    const offline = offlineStatusCache ? !!offlineStatusCache.offline_mode : false;
+    btn.textContent = offline ? 'Disable offline flags' : 'Enable offline flags';
+    btn.style.background = offline ? '#555' : '#b26a00';
+}
+
+async function runOfflineCheck(downloadMissing = false) {
+    renderOfflineStatus(downloadMissing ? 'Checking and downloading missing models…' : 'Checking offline requirements…');
+    try {
+        const endpoint = downloadMissing ? '/api/offline/ensure' : '/api/offline/check';
+        const res = await fetch(endpoint, { credentials: 'same-origin', method: downloadMissing ? 'POST' : 'GET' });
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(data.error || `Status ${res.status}`);
+        offlineStatusCache = data;
+        renderOfflineStatus(formatOfflineStatus(data));
+        updateOfflineFlagButton();
+    } catch (err) {
+        renderOfflineStatus(`Error: ${err.message}. If missing models persist, stay online and click “Download missing models”.`, true);
+    }
+}
+
+async function toggleOfflineFlags(forceEnable) {
+    const desired = typeof forceEnable === 'boolean'
+        ? forceEnable
+        : !(offlineStatusCache ? !!offlineStatusCache.offline_mode : false);
+    renderOfflineStatus(desired ? 'Enabling offline flags…' : 'Disabling offline flags…');
+    try {
+        const res = await fetch('/api/offline/flags', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enable: desired })
+        });
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(data.error || `Status ${res.status}`);
+        offlineStatusCache = data;
+        renderOfflineStatus(formatOfflineStatus(data));
+        updateOfflineFlagButton();
+    } catch (err) {
+        renderOfflineStatus(`Unable to set offline flags: ${err.message}`, true);
+    }
+}
+
+async function loadWorkspaceSwitcher() {
+    const row = document.getElementById('workspace-switch-row');
+    if (!row) return;
+    row.textContent = 'Loading workspaces…';
+    const status = document.getElementById('workspace-switch-status');
+    try {
+        const res = await fetch('/api/workspaces', { credentials: 'same-origin' });
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(data.error || `Status ${res.status}`);
+        const names = (data.workspaces || []).slice().sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+        const current = data.current || '';
+        if (!names.length) {
+            row.innerHTML = '<div style="color:#666;">No workspaces configured.</div>';
+            return;
+        }
+        const select = document.createElement('select');
+        select.id = 'workspace-select';
+        select.style.padding = '10px';
+        select.style.minWidth = '200px';
+        names.forEach(n => {
+            const opt = document.createElement('option');
+            opt.value = n;
+            opt.textContent = n;
+            if (n === current) opt.selected = true;
+        select.appendChild(opt);
+        });
+        const pwd = document.createElement('input');
+        pwd.type = 'password';
+        pwd.id = 'workspace-switch-pwd';
+        pwd.placeholder = 'Workspace password';
+        pwd.style.padding = '10px';
+        pwd.style.minWidth = '180px';
+        pwd.value = 'Aphrodite';
+        const btn = document.createElement('button');
+        btn.className = 'btn btn-sm';
+        btn.style.background = 'var(--inquiry)';
+        btn.textContent = 'Switch workspace';
+        btn.onclick = switchWorkspaceFromSettings;
+        row.innerHTML = '';
+        row.appendChild(select);
+        row.appendChild(pwd);
+        row.appendChild(btn);
+        workspaceListLoaded = true;
+    } catch (err) {
+        row.innerHTML = `<div style="color:var(--red);">Unable to load workspaces: ${err.message}</div>`;
+        if (status) {
+            status.textContent = 'Refresh the Settings tab to retry.';
+            status.style.color = 'var(--red)';
+        }
+        console.error('[settings] workspace load error', err);
+    }
+}
+
+async function switchWorkspaceFromSettings() {
+    const select = document.getElementById('workspace-select');
+    const pwdInput = document.getElementById('workspace-switch-pwd');
+    const status = document.getElementById('workspace-switch-status');
+    if (!select) return;
+    const chosen = select.value;
+    const pwdVal = (pwdInput?.value || '').trim() || 'Aphrodite';
+    status.textContent = '';
+    if (status) status.style.color = '#555';
+    const btn = select.nextElementSibling;
+    if (btn) btn.disabled = true;
+    try {
+        const res = await fetch('/workspace', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ workspace: chosen, password: pwdVal })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.error) {
+            throw new Error(data.error || `Status ${res.status}`);
+        }
+        status.textContent = 'Switching workspace…';
+        window.location.href = '/login';
+    } catch (err) {
+        status.textContent = `Unable to switch: ${err.message}`;
+        status.style.color = 'var(--red)';
+        if (btn) btn.disabled = false;
+        console.error('[settings] switch workspace error', err);
     }
 }
 
@@ -275,3 +486,4 @@ window.saveCrewCredential = saveCrewCredential;
 window.setUserMode = setUserMode;
 window.runOfflineCheck = runOfflineCheck;
 window.createOfflineBackup = createOfflineBackup;
+window.restoreOfflineBackup = restoreOfflineBackup;

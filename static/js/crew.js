@@ -2,6 +2,15 @@
 
 // Reuse the chat dropdown storage key without redefining the global constant
 const CREW_LAST_PATIENT_KEY = typeof LAST_PATIENT_KEY !== 'undefined' ? LAST_PATIENT_KEY : 'sailingmed:lastPatient';
+
+function escapeHtml(str) {
+    return (str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
 let historyStore = [];
 let historyStoreById = {};
 
@@ -225,11 +234,29 @@ function loadCrewData(data, history = []) {
     // Update patient select dropdown
     const pSelect = document.getElementById('p-select');
     if (pSelect) {
-        const previousSelection = pSelect.value || localStorage.getItem(CREW_LAST_PATIENT_KEY) || 'Unnamed Crew';
-        pSelect.innerHTML = `<option>Unnamed Crew</option>` + data.map(p=> `<option>${getCrewFullName(p)}</option>`).join('');
-        const hasPrev = Array.from(pSelect.options).some(opt => opt.value === previousSelection);
-        pSelect.value = hasPrev ? previousSelection : 'Unnamed Crew';
-        console.log('[DEBUG] p-select options', pSelect.options.length, 'prev', previousSelection, 'hasPrev', hasPrev);
+        const storedValue = localStorage.getItem(CREW_LAST_PATIENT_KEY);
+        const options = data
+            .map((p) => {
+                const fullName = escapeHtml(getCrewFullName(p) || 'Unnamed Crew');
+                const value = escapeHtml(p.id || '');
+                return `<option value="${value}">${fullName}</option>`;
+            })
+            .join('');
+        pSelect.innerHTML = `<option value="">Unnamed Crew</option>` + options;
+        const hasPrevId = storedValue && Array.from(pSelect.options).some(opt => opt.value === storedValue);
+        if (hasPrevId) {
+            pSelect.value = storedValue;
+        } else if (storedValue) {
+            const matchingByText = Array.from(pSelect.options).find(opt => opt.textContent === storedValue);
+            if (matchingByText) {
+                pSelect.value = matchingByText.value || '';
+            } else {
+                pSelect.value = '';
+            }
+        } else {
+            pSelect.value = '';
+        }
+        console.log('[DEBUG] p-select options', pSelect.options.length, 'stored', storedValue, 'selected', pSelect.value);
         pSelect.onchange = (e) => {
             try { localStorage.setItem(CREW_LAST_PATIENT_KEY, e.target.value); } catch (err) { /* ignore */ }
             console.log('[DEBUG] p-select changed to', e.target.value);
@@ -238,7 +265,7 @@ function loadCrewData(data, history = []) {
             }
         };
         if (typeof refreshPromptPreview === 'function') {
-            refreshPromptPreview();
+            refreshPromptPreview(true);
         }
     }
     
@@ -331,8 +358,9 @@ function loadCrewData(data, history = []) {
                         <option value="Passenger" ${p.position === 'Passenger' ? 'selected' : ''}>Passenger</option>
                     </select>
                 </div>
-                <div style="display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap:8px; margin-bottom:8px; font-size:13px;">
+                <div style="display:grid; grid-template-columns: 1fr 1fr 1fr 1fr 1fr; gap:8px; margin-bottom:8px; font-size:13px;">
                     <input type="text" id="cit-${p.id}" value="${p.citizenship || ''}" placeholder="Citizenship" onchange="autoSaveProfile('${p.id}')" style="padding:5px; width:100%;">
+                    <input type="text" id="bp-${p.id}" value="${p.birthplace || ''}" placeholder="Birthplace" onchange="autoSaveProfile('${p.id}')" style="padding:5px; width:100%;">
                     <input type="text" id="pass-${p.id}" value="${p.passportNumber || ''}" placeholder="Passport #" onchange="autoSaveProfile('${p.id}')" style="padding:5px; width:100%;">
                     <input type="date" id="piss-${p.id}" value="${p.passportIssue || ''}" title="Issue date" onchange="autoSaveProfile('${p.id}')" style="padding:5px; width:100%;">
                     <input type="date" id="pexp-${p.id}" value="${p.passportExpiry || ''}" title="Expiry date" onchange="autoSaveProfile('${p.id}')" style="padding:5px; width:100%;">
@@ -398,6 +426,7 @@ async function addCrew() {
     const birthdate = document.getElementById('cn-birthdate').value;
     const position = document.getElementById('cn-position').value;
     const citizenship = document.getElementById('cn-citizenship').value.trim();
+    const birthplace = document.getElementById('cn-birthplace').value.trim();
     const passportNumber = document.getElementById('cn-passport').value.trim();
     const passportIssue = document.getElementById('cn-pass-issue').value;
     const passportExpiry = document.getElementById('cn-pass-expiry').value;
@@ -409,30 +438,11 @@ async function addCrew() {
     const phoneNumber = document.getElementById('cn-phone').value.trim();
     
     // Validate required fields
-    if (!firstName || !lastName) { 
-        alert('Please enter first name and last name'); 
-        return; 
-    }
-    if (!sex) {
-        alert('Please select sex');
+    if (!firstName || !lastName) {
+        alert('Please enter first name and last name');
         return;
     }
-    if (!birthdate) {
-        alert('Please enter birthdate');
-        return;
-    }
-    if (!position) {
-        alert('Please select position');
-        return;
-    }
-    if (!citizenship) {
-        alert('Please enter citizenship');
-        return;
-    }
-    if (!passportNumber) {
-        alert('Please enter passport number');
-        return;
-    }
+    // All other fields are optional
     
     const data = await (await fetch('/api/data/patients', {credentials:'same-origin'})).json();
     data.push({ 
@@ -444,6 +454,7 @@ async function addCrew() {
         birthdate: birthdate,
         position: position,
         citizenship: citizenship,
+        birthplace: birthplace,
         passportNumber: passportNumber,
         passportIssue: passportIssue,
         passportExpiry: passportExpiry,
@@ -467,6 +478,7 @@ async function addCrew() {
     document.getElementById('cn-birthdate').value = '';
     document.getElementById('cn-position').value = '';
     document.getElementById('cn-citizenship').value = '';
+    document.getElementById('cn-birthplace').value = '';
     document.getElementById('cn-passport').value = '';
     document.getElementById('cn-pass-issue').value = '';
     document.getElementById('cn-pass-expiry').value = '';
@@ -507,6 +519,7 @@ async function autoSaveProfile(id) {
                 birthdate: val('bd-'),
                 position: val('pos-'),
                 citizenship: val('cit-'),
+                birthplace: val('bp-'),
                 passportNumber: val('pass-'),
                 passportIssue: val('piss-'),
                 passportExpiry: val('pexp-'),
@@ -524,6 +537,20 @@ async function autoSaveProfile(id) {
             
             await fetch('/api/data/patients', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data), credentials:'same-origin'});
             console.log(`Auto-saved profile for ${patient.firstName || ''} ${patient.lastName || ''}`);
+            const pSelect = document.getElementById('p-select');
+            if (pSelect) {
+                const option = pSelect.querySelector(`option[value="${id}"]`);
+                if (option) {
+                    const displayName = getCrewFullName(patient) || 'Unnamed Crew';
+                    option.textContent = displayName;
+                    if (pSelect.value === id) {
+                        try { localStorage.setItem(CREW_LAST_PATIENT_KEY, id); } catch (err) { /* ignore */ }
+                    }
+                }
+            }
+            if (typeof refreshPromptPreview === 'function') {
+                refreshPromptPreview(true);
+            }
         }
     }, 1000);
 }
@@ -757,18 +784,19 @@ async function exportCrewList() {
     let csv = `CREW LIST\n`;
     csv += `Vessel: ${vesselName}\n`;
     csv += `Date: ${date}\n\n`;
-    csv += `No.,Name,Birth Date,Position,Citizenship,Passport No.,Issue Date,Expiry Date\n`;
+    csv += `No.,Name,Birth Date,Position,Citizenship,Birthplace,Passport No.,Issue Date,Expiry Date\n`;
     
     data.forEach((crew, index) => {
         const name = getCrewFullName(crew);
         const bd = crew.birthdate || '';
         const pos = crew.position || '';
         const cit = crew.citizenship || '';
+        const birth = crew.birthplace || '';
         const pass = crew.passportNumber || '';
         const issue = crew.passportIssue || '';
         const expiry = crew.passportExpiry || '';
         
-        csv += `${index + 1},${name},${bd},${pos},${cit},${pass},${issue},${expiry}\n`;
+        csv += `${index + 1},${name},${bd},${pos},${cit},${birth},${pass},${issue},${expiry}\n`;
     });
     
     csv += `\n\nCaptain: ${captainName}\n`;
@@ -796,7 +824,8 @@ async function loadVesselInfo() {
     setVal('vessel-homeport', v.homePort);
     setVal('vessel-callsign', v.callSign);
     setVal('vessel-tonnage', v.tonnage);
-    setVal('vessel-crewcap', v.crewCapacity);
+    setVal('vessel-net-tonnage', v.netTonnage);
+    setVal('vessel-mmsi', v.mmsi);
 }
 
 async function saveVesselInfo() {
@@ -807,7 +836,8 @@ async function saveVesselInfo() {
         homePort: document.getElementById('vessel-homeport')?.value || '',
         callSign: document.getElementById('vessel-callsign')?.value || '',
         tonnage: document.getElementById('vessel-tonnage')?.value || '',
-        crewCapacity: document.getElementById('vessel-crewcap')?.value || ''
+        netTonnage: document.getElementById('vessel-net-tonnage')?.value || '',
+        mmsi: document.getElementById('vessel-mmsi')?.value || ''
     };
     await fetch('/api/data/vessel', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(v), credentials:'same-origin'});
     alert('Vessel information saved.');

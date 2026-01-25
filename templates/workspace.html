@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Select Workspace - SailingMedAdvisor</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: radial-gradient(circle at 10% 20%, #dfe9ff 0, #f4f6fb 40%, #eef2f7 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            color: #1f2d3d;
+        }
+        .shell {
+            background: #fff;
+            border-radius: 14px;
+            box-shadow: 0 16px 48px rgba(26, 84, 144, 0.18);
+            padding: 26px;
+            width: min(760px, 100%);
+            border: 1px solid #e4eaf5;
+        }
+        h1 {
+            font-size: 26px;
+            margin-bottom: 6px;
+            color: #1a5490;
+            letter-spacing: -0.3px;
+        }
+        .lead { color: #4a5568; margin-bottom: 18px; line-height: 1.5; }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 12px;
+            margin: 16px 0 10px;
+        }
+        .divider {
+            height: 1px;
+            background: #e4eaf5;
+            margin: 12px 0;
+            border: none;
+        }
+        .card {
+            border: 2px solid #e4eaf5;
+            border-radius: 10px;
+            padding: 14px;
+            cursor: pointer;
+            background: #fafbff;
+            transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .card.demo {
+            border: 2px solid #9c27b0;
+            box-shadow: 0 10px 28px rgba(156, 39, 176, 0.25);
+            background: linear-gradient(135deg, #fdf5ff 0%, #f7edff 100%);
+            position: relative;
+        }
+        .card.demo::after {
+            content: "Recommended";
+            position: absolute;
+            top: 8px;
+            right: 10px;
+            background: #9c27b0;
+            color: #fff;
+            border-radius: 999px;
+            padding: 4px 10px;
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: 0.2px;
+        }
+        .card input { accent-color: #1a5490; width: 18px; height: 18px; }
+        .card:hover { border-color: #cbd5f5; box-shadow: 0 6px 20px rgba(26, 84, 144, 0.1); transform: translateY(-1px); }
+        .card.selected { border-color: #1a5490; background: #eef3ff; box-shadow: 0 8px 24px rgba(26, 84, 144, 0.18); }
+        .actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 18px; }
+        button {
+            padding: 12px 20px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 700;
+            font-size: 15px;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #fff;
+            box-shadow: 0 8px 24px rgba(102, 126, 234, 0.35);
+        }
+        .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; box-shadow: none; }
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 10px;
+            background: #f4f6fb;
+            border-radius: 999px;
+            border: 1px solid #e4eaf5;
+            font-size: 12px;
+            color: #1a5490;
+            font-weight: 700;
+        }
+    </style>
+</head>
+<body>
+    <div class="shell">
+        <div style="font-weight:700; color:#1a5490; font-size:14px; margin-bottom:6px;">SailingMedGemma</div>
+        <div style="font-size:13px; color:#4a5568; margin-bottom:14px;">Thank you to our testers for helping us refine the application.</div>
+        <div class="pill">Step 1 of 2 · Choose Workspace</div>
+        <h1>Select your workspace</h1>
+        <p class="lead">Data, uploads, and history will stay isolated per workspace. Choose the correct one to continue to login.</p>
+        <div id="workspace-error" style="display:none; margin-bottom:10px; padding:10px; border-radius:8px; border:1px solid #e53935; background:#ffebee; color:#c62828; font-weight:700;"></div>
+
+        <form method="POST" action="/workspace" id="workspaceForm">
+            <div class="grid">
+                {% set demo = 'Demo Workspace Pre-Loaded with Sample Data' %}
+                {% for name in workspaces if name == demo %}
+                <label class="card demo {% if selected == name %}selected{% endif %}">
+                    <input type="radio" name="workspace" value="{{ name }}" {% if selected == name %}checked{% endif %} required>
+                    <span>{{ name }}</span>
+                </label>
+                {% endfor %}
+            </div>
+            <hr class="divider">
+            <div class="grid">
+                {% for name in workspaces if name != demo %}
+                <label class="card {% if selected == name %}selected{% endif %}">
+                    <input type="radio" name="workspace" value="{{ name }}" {% if selected == name %}checked{% endif %} required>
+                    <span>{{ name }}</span>
+                </label>
+                {% endfor %}
+            </div>
+            <div style="margin-top:12px;">
+                <label for="workspace-password" style="font-weight:700; color:#1f2d3d;">Workspace Access Password</label>
+                <input type="password" id="workspace-password" name="password" placeholder="Enter password" required style="padding:12px; width:100%; border:1px solid #d7def0; border-radius:8px; margin-top:6px;">
+                <div style="margin-top:6px; font-size:12px; color:#666;">All workspace users must enter the shared password to continue.</div>
+            </div>
+            <div class="actions">
+                <button type="submit" class="btn-primary" id="continueBtn" {% if not selected %}disabled{% endif %}>Continue to Login</button>
+            </div>
+        </form>
+    </div>
+
+    <script>
+        const form = document.getElementById('workspaceForm');
+        const btn = document.getElementById('continueBtn');
+        const pwd = document.getElementById('workspace-password');
+        const errBox = document.getElementById('workspace-error');
+        form.addEventListener('change', (e) => {
+            if (e.target.name === 'workspace') {
+                document.querySelectorAll('.card').forEach(c => c.classList.remove('selected'));
+                e.target.closest('.card').classList.add('selected');
+                btn.disabled = false;
+            }
+        });
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            errBox.style.display = 'none';
+            const selected = form.querySelector('input[name="workspace"]:checked');
+            if (!selected) {
+                errBox.textContent = 'Please select a workspace.';
+                errBox.style.display = 'block';
+                return;
+            }
+            if (!pwd.value) {
+                errBox.textContent = 'Please enter the workspace password.';
+                errBox.style.display = 'block';
+                return;
+            }
+            btn.disabled = true;
+            try {
+                const fd = new FormData(form);
+                const res = await fetch('/workspace', { method: 'POST', body: fd, credentials: 'same-origin', headers: { 'Accept': 'application/json' } });
+                if (res.redirected) {
+                    window.location = res.url;
+                    return;
+                }
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || data.error) {
+                    throw new Error(data.error || `Status ${res.status}`);
+                }
+                try { localStorage.setItem('workspace_label', selected.value); } catch (e) { /* ignore */ }
+                await handleWorkspaceAction(selected.value);
+            } catch (err) {
+                errBox.textContent = err.message || 'Unable to set workspace.';
+                errBox.style.display = 'block';
+                btn.disabled = false;
+            }
+        });
+
+        function buildActionModal(workspaceName) {
+            const overlay = document.createElement('div');
+            overlay.style.position = 'fixed';
+            overlay.style.inset = '0';
+            overlay.style.background = 'rgba(0,0,0,0.35)';
+            overlay.style.display = 'flex';
+            overlay.style.alignItems = 'center';
+            overlay.style.justifyContent = 'center';
+            overlay.style.zIndex = '9999';
+
+            const box = document.createElement('div');
+            box.style.background = '#fff';
+            box.style.padding = '20px';
+            box.style.borderRadius = '10px';
+            box.style.width = '400px';
+            box.style.maxWidth = '90vw';
+            box.style.boxShadow = '0 8px 30px rgba(0,0,0,0.2)';
+
+            box.innerHTML = `
+                <div style="font-weight:800; color:#1f2d3d; font-size:16px; margin-bottom:8px;">Workspace Ready</div>
+                <div style="font-size:13px; color:#37474f; margin-bottom:14px;">You selected <b>${workspaceName}</b>. Choose what to do with its data:</div>
+                <div style="display:flex; flex-direction:column; gap:8px;">
+                    <button id="ws-clear" class="btn-primary" style="background:#c62828;">1) Clear all data and start fresh</button>
+                    <button id="ws-sample" class="btn-primary" style="background:#1565c0;">2) Populate with sample data</button>
+                    <button id="ws-keep" class="btn-primary" style="background:#2e7d32;">3) Leave data unchanged</button>
+                </div>
+            `;
+            overlay.appendChild(box);
+            document.body.appendChild(overlay);
+            return overlay;
+        }
+
+        async function handleWorkspaceAction(workspaceName) {
+            btn.disabled = false;
+            const modal = buildActionModal(workspaceName);
+            const closeAndGo = (url) => {
+                modal.remove();
+                window.location.href = url;
+            };
+            modal.querySelector('#ws-clear').onclick = async () => {
+                const confirmed = confirm('Are you sure you want to CLEAR all data in this workspace? This cannot be undone.');
+                if (!confirmed) return;
+                try {
+                    const res = await fetch('/api/workspace/reset', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                        credentials: 'same-origin',
+                        body: JSON.stringify({ action: 'clear' })
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok || data.error) throw new Error(data.error || `Status ${res.status}`);
+                    alert('Workspace data cleared.');
+                } catch (err) {
+                    alert(`Unable to clear workspace: ${err.message}`);
+                } finally {
+                    closeAndGo('/login');
+                }
+            };
+            modal.querySelector('#ws-sample').onclick = async () => {
+                try {
+                    const res = await fetch('/api/workspace/reset', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                        credentials: 'same-origin',
+                        body: JSON.stringify({ action: 'sample' })
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok || data.error) throw new Error(data.error || `Status ${res.status}`);
+                    alert('Workspace ready for sample data. (Awaiting provided files.)');
+                } catch (err) {
+                    alert(`Unable to mark workspace for sample data: ${err.message}`);
+                } finally {
+                    closeAndGo('/login');
+                }
+            };
+            modal.querySelector('#ws-keep').onclick = async () => {
+                try {
+                    await fetch('/api/workspace/reset', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                        credentials: 'same-origin',
+                        body: JSON.stringify({ action: 'keep' })
+                    });
+                } catch (err) { /* no-op */ }
+                closeAndGo('/login');
+            };
+        }
+    </script>
+</body>
+</html>

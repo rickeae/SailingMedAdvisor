@@ -32,6 +32,9 @@ function setUserMode(mode) {
     document.querySelectorAll('.dev-tag').forEach(el => {
         el.style.display = normalized === 'developer' ? 'inline-block' : '';
     });
+    document.querySelectorAll('.developer-only').forEach(el => {
+        el.style.display = normalized === 'developer' ? '' : 'none';
+    });
     try {
         localStorage.setItem('user_mode', normalized);
     } catch (err) { /* ignore */ }
@@ -78,6 +81,10 @@ function bindSettingsDirtyTracking() {
                 // Persist immediately to avoid losing mode if navigation happens quickly
                 saveSettings(false, 'user-mode-change').catch(() => {});
             }
+            if (el.classList.contains('developer-only')) {
+                // Keep developer-only components in sync
+                setUserMode(document.getElementById('user_mode')?.value || 'user');
+            }
         });
         el.addEventListener('change', () => {
             settingsDirty = true;
@@ -85,6 +92,9 @@ function bindSettingsDirtyTracking() {
             if (el.id === 'user_mode') {
                 setUserMode(el.value);
                 saveSettings(false, 'user-mode-change').catch(() => {});
+            }
+            if (el.classList.contains('developer-only')) {
+                setUserMode(document.getElementById('user_mode')?.value || 'user');
             }
         });
     });
@@ -419,6 +429,37 @@ async function switchWorkspaceFromSettings() {
         status.style.color = 'var(--red)';
         if (btn) btn.disabled = false;
         console.error('[settings] switch workspace error', err);
+    }
+}
+
+async function exportDefaultDataset() {
+    const status = document.getElementById('default-export-status');
+    if (status) {
+        status.textContent = 'Exporting default dataset…';
+        status.style.color = '#2c3e50';
+    }
+    try {
+        const res = await fetch('/api/default/export', {
+            method: 'POST',
+            credentials: 'same-origin'
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.error) {
+            throw new Error(data.error || `Status ${res.status}`);
+        }
+        if (status) {
+            status.textContent = `Exported: ${Array.isArray(data.written) ? data.written.join(', ') : 'default data'}`;
+            status.style.color = '#2e7d32';
+        } else {
+            alert('Default dataset exported.');
+        }
+    } catch (err) {
+        if (status) {
+            status.textContent = `Export failed: ${err.message}`;
+            status.style.color = 'var(--red)';
+        } else {
+            alert(`Export failed: ${err.message}`);
+        }
     }
 }
 

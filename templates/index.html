@@ -849,6 +849,16 @@
                             <div style="font-size:12px; color:#555;">Ensures all required models are cached and lets you back up/restore the cache before going offline.</div>
                         </div>
                     </div>
+                    <div class="collapsible developer-only" style="margin-bottom:12px; display:none;">
+                        <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                            <span class="dev-tag">dev:settings-default-export</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Export Default Dataset (Dev)</span>
+                        </div>
+                        <div class="col-body" style="padding:12px; background:#f8f9fa;">
+                            <div style="margin-bottom:8px; font-size:12px; color:#555;">Exports the current workspace data as default JSON files into <code>data/default/</code>.</div>
+                            <button class="btn btn-sm" style="background:#0b8457;" onclick="exportDefaultDataset()">Export JSON Defaults</button>
+                            <div id="default-export-status" style="margin-top:8px; font-size:12px; color:#555;"></div>
+                        </div>
+                    </div>
                     <div class="collapsible" style="margin-bottom:12px;">
                         <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
                             <span class="dev-tag">dev:settings-usermode</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">User Mode</span>

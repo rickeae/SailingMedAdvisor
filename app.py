@@ -412,27 +412,34 @@ def build_prompt(settings, mode, msg, p_name, workspace):
             "rep_penalty": rep_penalty,
         }
     else:
-        pharma_items = []
-        equip_items = []
-        consumable_items = []
+        pharma_items = {}
+        equip_items = {}
+        consumable_items = {}
         for m in db_op("inventory", workspace=workspace):
             item_name = m.get("name") or m.get("genericName") or m.get("brandName")
             if _is_resource_excluded(m):
                 continue
             if not item_name:
                 continue
-            item_type = (m.get("type") or "").lower()
-            if item_type == "medication":
-                pharma_items.append(item_name)
-            elif item_type == "consumable":
-                consumable_items.append(item_name)
+            cat = (m.get("type") or "").strip().lower()
+            key = (item_name or "").strip().lower()
+            if not key:
+                continue
+            if cat == "medication":
+                pharma_items[key] = item_name
+            elif cat == "consumable":
+                consumable_items[key] = item_name
+            elif cat == "equipment":
+                equip_items[key] = item_name
             else:
-                equip_items.append(item_name)
-        for lst in (pharma_items, equip_items, consumable_items):
-            lst.sort(key=lambda s: (s or "").lower())
-        pharma_str = ", ".join(pharma_items)
-        equip_str = ", ".join(equip_items)
-        consumable_str = ", ".join(consumable_items)
+                # If no recognizable category, skip to avoid polluting lists
+                continue
+        pharma_list = [pharma_items[k] for k in sorted(pharma_items)]
+        equip_list = [equip_items[k] for k in sorted(equip_items)]
+        consumable_list = [consumable_items[k] for k in sorted(consumable_items)]
+        pharma_str = ", ".join(pharma_list)
+        equip_str = ", ".join(equip_list)
+        consumable_str = ", ".join(consumable_list)
 
         tool_items = []
         for t in db_op("tools", workspace=workspace):
@@ -882,6 +889,60 @@ async def set_workspace(request: Request):
         return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
     except Exception as e:
         return JSONResponse({"error": f"Unable to set workspace: {e}"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.post("/api/workspace/reset")
+async def reset_workspace(request: Request):
+    try:
+        workspace = _get_workspace(request, required=False)
+        if not workspace:
+            return JSONResponse({"error": "Workspace not set"}, status_code=status.HTTP_400_BAD_REQUEST)
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        action = (payload.get("action") or "").lower()
+        if action == "clear":
+            _clear_workspace_data(workspace)
+            return {"status": "cleared"}
+        if action == "sample":
+            # Placeholder: waiting for provided sample data to load
+            _clear_workspace_data(workspace)
+            _apply_default_dataset(workspace)
+            return {"status": "sample_loaded"}
+        if action == "keep":
+            return {"status": "kept"}
+        return JSONResponse({"error": "Invalid action"}, status_code=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        return JSONResponse({"error": f"Unable to reset workspace: {e}"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.post("/api/default/export")
+async def export_default_dataset(request: Request, _=Depends(require_auth)):
+    try:
+        workspace = request.state.workspace
+        if not workspace:
+            return JSONResponse({"error": "Workspace not set"}, status_code=status.HTTP_400_BAD_REQUEST)
+        default_root = DATA_ROOT / "default"
+        default_root.mkdir(parents=True, exist_ok=True)
+        default_uploads = default_root / "uploads" / "medicines"
+        default_uploads.mkdir(parents=True, exist_ok=True)
+        categories = ["settings", "patients", "inventory", "tools", "history", "vessel", "chats", "med_photo_queue", "med_photo_jobs", "context"]
+        written = []
+        for cat in categories:
+            data = db_op(cat, workspace=workspace)
+            dest = default_root / f"{cat}.json"
+            dest.write_text(json.dumps(data, indent=4))
+            written.append(dest.name)
+        # Copy medicine uploads
+        src_med = workspace["uploads"] / "medicines"
+        if src_med.exists():
+            for item in src_med.iterdir():
+                if item.is_file():
+                    shutil.copy2(item, default_uploads / item.name)
+        return {"status": "ok", "written": written}
+    except Exception as e:
+        return JSONResponse({"error": f"Unable to export default dataset: {e}"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -1759,3 +1820,61 @@ if __name__ == "__main__":
     print("=" * 50)
 
     uvicorn.run("app:app", host="0.0.0.0", port=5000, reload=False)
+def _clear_workspace_data(workspace):
+    """Remove data and uploads for a workspace to start fresh."""
+    if not workspace:
+        return
+    # Clear data directory
+    for path in workspace["data"].iterdir():
+        try:
+            if path.is_file() or path.is_symlink():
+                path.unlink()
+            elif path.is_dir():
+                shutil.rmtree(path)
+        except Exception:
+            continue
+    # Clear uploads (including medicine photos)
+    for path in workspace["uploads"].iterdir():
+        try:
+            if path.is_file() or path.is_symlink():
+                path.unlink()
+            elif path.is_dir():
+                shutil.rmtree(path)
+        except Exception:
+            continue
+    # Recreate expected files with defaults
+    db_op("settings", get_defaults(), workspace=workspace)
+    db_op("patients", [], workspace=workspace)
+    db_op("inventory", [], workspace=workspace)
+    db_op("tools", [], workspace=workspace)
+    db_op("history", [], workspace=workspace)
+    db_op("vessel", {}, workspace=workspace)
+    db_op("med_photo_queue", [], workspace=workspace)
+    db_op("med_photo_jobs", [], workspace=workspace)
+    db_op("chats", [], workspace=workspace)
+    db_op("context", {}, workspace=workspace)
+
+
+def _apply_default_dataset(workspace):
+    """Copy default data + uploads into the given workspace."""
+    if not workspace:
+        return
+    default_root = DATA_ROOT / "default"
+    default_uploads = default_root / "uploads"
+    default_root.mkdir(parents=True, exist_ok=True)
+    default_uploads.mkdir(parents=True, exist_ok=True)
+    (default_uploads / "medicines").mkdir(parents=True, exist_ok=True)
+    # Copy data files
+    for name in ["settings", "patients", "inventory", "tools", "history", "vessel", "chats", "med_photo_queue", "med_photo_jobs", "context"]:
+        src = default_root / f"{name}.json"
+        dest = workspace["data"] / f"{name}.json"
+        if src.exists():
+            dest.write_text(src.read_text())
+    # Copy uploads (medicines)
+    src_med = default_uploads / "medicines"
+    dest_med = workspace["uploads"] / "medicines"
+    if src_med.exists():
+        dest_med.mkdir(parents=True, exist_ok=True)
+        for item in src_med.iterdir():
+            if item.is_file():
+                shutil.copy2(item, dest_med / item.name)

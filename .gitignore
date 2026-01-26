@@ -32,3 +32,7 @@ data/*
 !data/default/uploads/medicines/
 # Local secrets (keep out of version control)
 templates/sidebars/SailingMedAdvisorDeloy\ token\ Huggingface
+
+# Local virtualenvs
+.venv/
+venv/

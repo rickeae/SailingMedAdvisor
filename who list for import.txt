@@ -1,0 +1,55 @@
+Generic name	Also known as	Dosage form, strength
+Acetylsalicylic acid	Aspirin®, Aspro®	tablet 300 mg
+Aciclovir	Zovirax®, acyclovir	tablet 400 mg
+Adrenaline	epinephrine, adrenaline 1:1000	ampoule 1 ml = 1 mg
+Amethocaine 0.5% eye drops	tetracaine	single-use vial 1 ml
+Amoxicillin + clavulanate	Augmentin®, co-amoxyclav	tablet 875 mg/125 mg
+Artemether	Larither®	ampoule 1 ml (= 80 mg)
+Artemether + Lumefantrine	Riamet ®	tablets 20 mg + 120 mg
+Atropine	Not Determined	ampoule 1.2 mg/ml
+Azithromycin	Zithromax®	tablet 500 mg
+Ceftriaxone	Rocephin®	ampoule 1 g powder for injection (dissolve in water for injection)
+Cetirizine	Zyrtec®	tablet 10 mg
+Charcoal, activated	Not Determined	50 g in 300 ml purifi ed water
+Ciprofloxacin	Ciproxin®, Cipro®	tablet 250 mg
+Cloves, oil of	Syzygium aromaticum	oil
+Dexamethasone	Decadron®	ampoule 4mg/ml
+Diazepam	Valium®	tablet 5 mg
+Docusate with Senna (or equivalent)	Coloxyl®	tablet 50 mg + 8 mg
+Doxycycline	Neo-Dagracycline®, Unidox®, Vibra-S®, Vibramycine®, Doryx®	tablet 100 mg
+Ethanol 70%, hand cleanser gel	Not Determined	gel
+Ethanol 70%, liquid	Not Determined	liquid
+Fluorescein 1%, strips	Not Determined	Not Determined
+Frusemide	Lasix®, furosemide	ampoule 4 ml = 40 mg
+Glucagon, ready to use	Gulcagen®	ampoule 1 mg
+Haloperidol	Haldol®	ampoule 1 ml = 5 mg
+Hydrocortisone 1% cream	Not Determined	cream
+Ibuprofen	Advil®, Actifen®, Nerofen®, Genpril®, Haltran®, Medipren®, Brufen®	coated tablet 400 mg
+Isosorbide dinitrate	Cedocard®, Isordil®	tablet 5 mg
+Lignocaine 1% (without adrenaline)	Xylocaine®, lidocaine	ampoule 5 ml
+Loperamide	Imodium®, Diacure®	tablet 2 mg
+Mebendazole	Vermox®	tablet 100 mg
+Metoprolol	Selokeen®, Lopresor®, Toprol XL®, Betaloc®	tablet 100 mg
+Metronidazole	Flagyl®	tablet 500 mg
+Miconazole 2% cream	Daktarin®, Dermacure®, Monistat®	cream
+Midazolam	Hypnovel®	ampoule 1 ml (= 5 mg)
+Misoprostol	Cytotec®	tablet 200 μg
+Morphine (injectable)	Not Determined	ampoule 1 ml = 10 mg
+Morphine (oral)	Not Determined	liquid 1 mg/ml
+Naloxone	Narcan®	ampoule 1 ml (= 0.4 mg)
+Omeprazole	Losec®, Prilosec®	tablet 20 mg
+Ondansetron	Zofran®	tablet 4 mg
+Oral rehydration salts	Repolyte®, Gastrolyte®, Dioralyte®	sachets of powder for reconstitution
+Oxymetazoline 0.5% (or equivalent)	Drixine®	drops
+Paracetamol	acetaminophen, Tylenol®, Panadol®	tablet 500 mg
+Permethrin 1% lotion	Loxazol®, Elimite®, Nix®	lotion
+Permethrin 5% lotion	Lyclear®	lotion
+Povidone iodine ointment 10% and solution 10%	Betadine®, Povidine®	ointment, liquid
+Prednisone	prednisolone	tablet 25 mg
+Salbutamol aerosol	albuterol, Ventolin®, Proventil®	inhaler 0.1 mg/dose with volume spacer
+Sodium chloride 0.9% infusion	NaCl 0.9%, saline solution	plastic bottle, 1 litre
+Tetracycline 1% ointment	Not Determined	ointment
+Vitamin K	Konakion®, phytomenadione	ampoule 1 ml = 10 mg
+Water for injection	Not Determined	ampoule 5 ml
+Zidovudine plus Lamivudine	Combivir®	tablet, 300 mg + 150 mg
+Zinc oxide	Not Determined	paste or ointment, 20%

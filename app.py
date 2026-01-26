@@ -31,7 +31,7 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 # Allow online downloads by default (HF Spaces first run needs this). You can set these to "1" after caches are warm.
 os.environ.setdefault("HF_HUB_OFFLINE", "0")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "0")
-AUTO_DOWNLOAD_MODELS = os.environ.get("AUTO_DOWNLOAD_MODELS", "1") == "1"
+AUTO_DOWNLOAD_MODELS = os.environ.get("AUTO_DOWNLOAD_MODELS", "0") == "1"
 VERIFY_MODELS_ON_START = os.environ.get("VERIFY_MODELS_ON_START", "1") == "1"
 
 import torch
@@ -78,7 +78,6 @@ BACKUP_ROOT = APP_HOME / "backups"
 BACKUP_ROOT.mkdir(parents=True, exist_ok=True)
 REQUIRED_MODELS = [
     "google/medgemma-1.5-4b-it",
-    "google/medgemma-27b-text-it",
     "Qwen/Qwen2.5-VL-7B-Instruct",
 ]
 

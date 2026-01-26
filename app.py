@@ -134,16 +134,25 @@ BACKUP_ROOT.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_ROOT / "app.db"
 LEGACY_DB = APP_HOME / "data" / "app.db"
 SEED_DB_LOCAL = APP_HOME / "seed" / "app.db"
-SEED_DB_URL = os.environ.get("SEED_DB_URL") or "https://huggingface.co/spaces/rickescher/SailingMedAdvisor/resolve/main/app.db"
+SEED_DB_URL = os.environ.get("SEED_DB_URL") or "https://huggingface.co/spaces/rickescher/SailingMedAdvisor/resolve/main/seed/app.db"
+
+
+def _is_valid_sqlite(path: Path) -> bool:
+    try:
+        with open(path, "rb") as f:
+            header = f.read(16)
+        return header.startswith(b"SQLite format 3")
+    except Exception:
+        return False
 
 
 def _bootstrap_db():
     """Ensure /data/app.db exists; try legacy, bundled seed, then remote seed."""
-    if DB_PATH.exists() and DB_PATH.stat().st_size > 0:
+    if DB_PATH.exists() and DB_PATH.stat().st_size > 0 and _is_valid_sqlite(DB_PATH):
         return
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     # 1) migrate legacy packaged DB
-    if LEGACY_DB.exists() and LEGACY_DB.stat().st_size > 0:
+    if LEGACY_DB.exists() and LEGACY_DB.stat().st_size > 0 and _is_valid_sqlite(LEGACY_DB):
         try:
             shutil.copy2(LEGACY_DB, DB_PATH)
             print(f"[startup] migrated legacy DB from {LEGACY_DB}")
@@ -151,7 +160,7 @@ def _bootstrap_db():
         except Exception as exc:
             print(f"[startup] failed legacy DB copy: {exc}")
     # 2) bundled seed
-    if SEED_DB_LOCAL.exists() and SEED_DB_LOCAL.stat().st_size > 0:
+    if SEED_DB_LOCAL.exists() and SEED_DB_LOCAL.stat().st_size > 0 and _is_valid_sqlite(SEED_DB_LOCAL):
         try:
             shutil.copy2(SEED_DB_LOCAL, DB_PATH)
             print(f"[startup] seeded DB from {SEED_DB_LOCAL}")

@@ -55,13 +55,19 @@ os.environ.setdefault("HF_HUB_OFFLINE", "0")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "0")
 AUTO_DOWNLOAD_MODELS = os.environ.get("AUTO_DOWNLOAD_MODELS", "1" if os.environ.get("HUGGINGFACE_SPACE_ID") else "0") == "1"
 VERIFY_MODELS_ON_START = os.environ.get("VERIFY_MODELS_ON_START", "1") == "1"
-# On HF Spaces we avoid local inference; edge/offline installs keep it enabled.
-DISABLE_LOCAL_INFERENCE = os.environ.get("DISABLE_LOCAL_INFERENCE") == "1" or bool(os.environ.get("HUGGINGFACE_SPACE_ID"))
+# On HF Spaces, avoid local inference; edge/offline installs keep it enabled.
+IS_HF_SPACE = bool(os.environ.get("HUGGINGFACE_SPACE_ID"))
+DISABLE_LOCAL_INFERENCE = os.environ.get("DISABLE_LOCAL_INFERENCE") == "1" or IS_HF_SPACE
 
-# Remote inference fallback (used when local is disabled, e.g., on HF Space)
-HF_REMOTE_TOKEN = os.environ.get("HF_REMOTE_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN") or ""
-# Default remote text model; when a MedGemma option is selected we will pass that through instead.
-REMOTE_MODEL = os.environ.get("REMOTE_MODEL") or "meta-llama/Meta-Llama-3-8B-Instruct"
+# Remote inference (used when local is disabled, e.g., on HF Space)
+HF_REMOTE_TOKEN = (
+    os.environ.get("HF_REMOTE_TOKEN")
+    or os.environ.get("HUGGINGFACE_TOKEN")
+    or os.environ.get("MEDGEMMA_TOKEN")
+    or ""
+)
+# Default remote text model; when MedGemma 4B/27B is selected we pass that through instead.
+REMOTE_MODEL = os.environ.get("REMOTE_MODEL") or "google/medgemma-1.5-4b-it"
 
 import torch
 
@@ -1809,7 +1815,7 @@ def _generate_response(model_choice: str, force_cpu_slow: bool, prompt: str, cfg
     # If local inference is disabled (HF Space), fall back to HF Inference API
     if DISABLE_LOCAL_INFERENCE:
         if not HF_REMOTE_TOKEN:
-            raise RuntimeError("LOCAL_INFERENCE_DISABLED")
+            raise RuntimeError("REMOTE_TOKEN_MISSING")
         client = InferenceClient(token=HF_REMOTE_TOKEN)
         # Use requested model when provided (e.g., MedGemma) else default
         model_name = model_choice or REMOTE_MODEL
@@ -1923,7 +1929,7 @@ async def chat(request: Request, _=Depends(require_auth)):
                     },
                     status_code=status.HTTP_400_BAD_REQUEST,
                 )
-            if "Missing model cache" in str(e):
+            if "Missing model cache" in str(e) or str(e) in {"REMOTE_TOKEN_MISSING", "LOCAL_INFERENCE_DISABLED"}:
                 return JSONResponse(
                     {"error": str(e), "offline_missing": True},
                     status_code=status.HTTP_400_BAD_REQUEST,

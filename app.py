@@ -193,7 +193,7 @@ def _get_workspace(request: Request, required: bool = True):
 
 
 def _startup_model_check():
-    if not VERIFY_MODELS_ON_START:
+    if not VERIFY_MODELS_ON_START or DISABLE_LOCAL_INFERENCE:
         return
     print("[offline] Verifying required model cache...")
     results = verify_required_models(download_missing=AUTO_DOWNLOAD_MODELS and not is_offline_mode())
@@ -258,6 +258,8 @@ def _is_blank(val):
 
 def load_model(model_name: str, allow_cpu_large: bool = False):
     """Lazy-load and cache the selected model."""
+    if DISABLE_LOCAL_INFERENCE:
+        raise RuntimeError("LOCAL_INFERENCE_DISABLED")
     if models["active_name"] == model_name:
         return
     local_dir = _resolve_local_model_dir(model_name)

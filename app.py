@@ -9,9 +9,22 @@ import threading
 import base64
 import time
 import re
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
+
+
+# Temporary startup cleanup to reclaim space and report usage on HF Spaces
+def _cleanup_and_report():
+    try:
+        import subprocess as _sp
+        _sp.run("rm -rf ~/.cache/huggingface ~/.cache/torch ~/.cache/pip ~/.cache/*", shell=True, check=False)
+        _sp.run("df -h && du -sh /home/user /home/user/* ~/.cache 2>/dev/null | sort -hr | head -30", shell=True, check=False)
+    except Exception as exc:
+        print(f"[startup-cleanup] failed: {exc}")
+
+_cleanup_and_report()
 
 # Encourage less fragmentation on GPUs with limited VRAM (e.g., RTX 5000)
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")

@@ -6,10 +6,11 @@
     <title>Select Workspace - SailingMedAdvisor</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <style>
+        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Manrope:wght@500;600&display=swap');
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: radial-gradient(circle at 10% 20%, #dfe9ff 0, #f4f6fb 40%, #eef2f7 100%);
+            font-family: 'Space Grotesk', 'Manrope', 'Inter', system-ui, -apple-system, sans-serif;
+            background: radial-gradient(circle at 10% 20%, #d7e8ff 0, #f3f7ff 40%, #e7ecf7 100%);
             min-height: 100vh;
             display: flex;
             align-items: center;
@@ -18,25 +19,54 @@
             color: #1f2d3d;
         }
         .shell {
-            background: #fff;
+            background: linear-gradient(160deg, #ffffff 0%, #f8fbff 60%, #f1f5ff 100%);
+            border-radius: 18px;
+            box-shadow: 0 18px 48px rgba(26, 84, 144, 0.16);
+            padding: 30px;
+            width: min(860px, 100%);
+            border: 1px solid #e1e9f7;
+            position: relative;
+            overflow: hidden;
+        }
+        .shell::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(circle at 120% -20%, rgba(102,126,234,0.15), transparent 50%),
+                        radial-gradient(circle at -10% 120%, rgba(118,75,162,0.12), transparent 40%);
+            pointer-events: none;
+        }
+        h1 { font-size: 28px; margin-bottom: 6px; color: #123f77; letter-spacing: -0.3px; }
+        h2 { font-size: 20px; margin: 14px 0 6px; color: #1f2d3d; letter-spacing: -0.2px; }
+        .lead { color: #42526b; margin-bottom: 18px; line-height: 1.6; font-size: 15px; }
+        .banner {
+            padding: 18px;
             border-radius: 14px;
-            box-shadow: 0 16px 48px rgba(26, 84, 144, 0.18);
-            padding: 26px;
-            width: min(760px, 100%);
-            border: 1px solid #e4eaf5;
+            background: linear-gradient(120deg, #0a6ff0 0%, #0b94d9 55%, #0cb8c2 100%);
+            color: #f7fbff;
+            margin-bottom: 18px;
+            box-shadow: 0 10px 28px rgba(12, 136, 213, 0.28);
         }
-        h1 {
-            font-size: 26px;
-            margin-bottom: 6px;
-            color: #1a5490;
-            letter-spacing: -0.3px;
+        .banner h1 { color: #f7fbff; margin: 0 0 8px; font-size: 30px; }
+        .banner p { margin: 0; font-size: 14px; opacity: 0.9; }
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: 999px;
+            background: rgba(255,255,255,0.14);
+            color: #e8f5ff;
+            font-weight: 700;
+            letter-spacing: 0.2px;
+            font-size: 12px;
+            margin-bottom: 10px;
         }
-        .lead { color: #4a5568; margin-bottom: 18px; line-height: 1.5; }
         .grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 12px;
-            margin: 16px 0 10px;
+            gap: 14px;
+            margin: 12px 0 10px;
         }
         .divider {
             height: 1px;
@@ -45,38 +75,19 @@
             border: none;
         }
         .card {
-            border: 2px solid #e4eaf5;
-            border-radius: 10px;
-            padding: 14px;
+            border: 1px solid #d9e3f5;
+            border-radius: 12px;
+            padding: 16px;
             cursor: pointer;
-            background: #fafbff;
+            background: #ffffff;
             transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
             display: flex;
             align-items: center;
             gap: 10px;
         }
-        .card.demo {
-            border: 2px solid #9c27b0;
-            box-shadow: 0 10px 28px rgba(156, 39, 176, 0.25);
-            background: linear-gradient(135deg, #fdf5ff 0%, #f7edff 100%);
-            position: relative;
-        }
-        .card.demo::after {
-            content: "Recommended";
-            position: absolute;
-            top: 8px;
-            right: 10px;
-            background: #9c27b0;
-            color: #fff;
-            border-radius: 999px;
-            padding: 4px 10px;
-            font-size: 11px;
-            font-weight: 800;
-            letter-spacing: 0.2px;
-        }
         .card input { accent-color: #1a5490; width: 18px; height: 18px; }
-        .card:hover { border-color: #cbd5f5; box-shadow: 0 6px 20px rgba(26, 84, 144, 0.1); transform: translateY(-1px); }
-        .card.selected { border-color: #1a5490; background: #eef3ff; box-shadow: 0 8px 24px rgba(26, 84, 144, 0.18); }
+        .card:hover { border-color: #b8ccf5; box-shadow: 0 10px 26px rgba(26, 84, 144, 0.12); transform: translateY(-1px); }
+        .card.selected { border-color: #1250a5; background: linear-gradient(140deg, #f1f6ff 0%, #e6edff 100%); box-shadow: 0 12px 28px rgba(18, 80, 165, 0.22); }
         .actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 18px; }
         button {
             padding: 12px 20px;
@@ -87,47 +98,43 @@
             font-size: 15px;
         }
         .btn-primary {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #1250a5 0%, #0c8bd1 100%);
             color: #fff;
-            box-shadow: 0 8px 24px rgba(102, 126, 234, 0.35);
+            box-shadow: 0 12px 26px rgba(18, 80, 165, 0.35);
         }
         .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; box-shadow: none; }
-        .pill {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 6px 10px;
-            background: #f4f6fb;
-            border-radius: 999px;
-            border: 1px solid #e4eaf5;
+        label[for="workspace-password"] { font-weight: 700; color: #1f2d3d; }
+        #workspace-password {
+            padding: 12px;
+            width: 100%;
+            border: 1px solid #d7def0;
+            border-radius: 10px;
+            margin-top: 6px;
+            background: #f8faff;
+            font-size: 15px;
+        }
+        .subtle {
+            margin-top: 6px;
             font-size: 12px;
-            color: #1a5490;
-            font-weight: 700;
+            color: #566172;
         }
     </style>
 </head>
 <body>
     <div class="shell">
-        <div style="font-weight:700; color:#1a5490; font-size:14px; margin-bottom:6px;">SailingMedGemma</div>
-        <div style="font-size:13px; color:#4a5568; margin-bottom:14px;">Thank you to our testers for helping us refine the application.</div>
-        <div class="pill">Step 1 of 2 · Choose Workspace</div>
-        <h1>Select your workspace</h1>
-        <p class="lead">Data, uploads, and history will stay isolated per workspace. Choose the correct one to continue to login.</p>
+        <div class="banner">
+            <div class="badge">SailingMedAdvisor · Beta Test</div>
+            <h1>SailingMedAdvisor Beta Test</h1>
+            <p>Thank you for taking a look at the app and providing feedback.</p>
+        </div>
+
+        <h2>Choose your workspace</h2>
+        <p class="lead">Workspaces keep data, uploads, and history isolated. Pick the one you need, then continue to login.</p>
         <div id="workspace-error" style="display:none; margin-bottom:10px; padding:10px; border-radius:8px; border:1px solid #e53935; background:#ffebee; color:#c62828; font-weight:700;"></div>
 
         <form method="POST" action="/workspace" id="workspaceForm">
             <div class="grid">
-                {% set demo = 'Demo Workspace Pre-Loaded with Sample Data' %}
-                {% for name in workspaces if name == demo %}
-                <label class="card demo {% if selected == name %}selected{% endif %}">
-                    <input type="radio" name="workspace" value="{{ name }}" {% if selected == name %}checked{% endif %} required>
-                    <span>{{ name }}</span>
-                </label>
-                {% endfor %}
-            </div>
-            <hr class="divider">
-            <div class="grid">
-                {% for name in workspaces if name != demo %}
+                {% for name in workspaces %}
                 <label class="card {% if selected == name %}selected{% endif %}">
                     <input type="radio" name="workspace" value="{{ name }}" {% if selected == name %}checked{% endif %} required>
                     <span>{{ name }}</span>
@@ -135,9 +142,9 @@
                 {% endfor %}
             </div>
             <div style="margin-top:12px;">
-                <label for="workspace-password" style="font-weight:700; color:#1f2d3d;">Workspace Access Password</label>
-                <input type="password" id="workspace-password" name="password" placeholder="Enter password" required style="padding:12px; width:100%; border:1px solid #d7def0; border-radius:8px; margin-top:6px;">
-                <div style="margin-top:6px; font-size:12px; color:#666;">All workspace users must enter the shared password to continue.</div>
+                <label for="workspace-password">Workspace Access Password</label>
+                <input type="password" id="workspace-password" name="password" placeholder="Enter password" required>
+                <div class="subtle">All workspace users must enter the shared password to continue.</div>
             </div>
             <div class="actions">
                 <button type="submit" class="btn-primary" id="continueBtn" {% if not selected %}disabled{% endif %}>Continue to Login</button>
@@ -212,11 +219,11 @@
 
             box.innerHTML = `
                 <div style="font-weight:800; color:#1f2d3d; font-size:16px; margin-bottom:8px;">Workspace Ready</div>
-                <div style="font-size:13px; color:#37474f; margin-bottom:14px;">You selected <b>${workspaceName}</b>. Choose what to do with its data:</div>
+                <div style="font-size:13px; color:#37474f; margin-bottom:14px;">You selected <b>${workspaceName}</b>. Choose what to do with your data:</div>
                 <div style="display:flex; flex-direction:column; gap:8px;">
-                    <button id="ws-clear" class="btn-primary" style="background:#c62828;">1) Clear all data and start fresh</button>
-                    <button id="ws-sample" class="btn-primary" style="background:#1565c0;">2) Populate with sample data</button>
-                    <button id="ws-keep" class="btn-primary" style="background:#2e7d32;">3) Leave data unchanged</button>
+                    <button id="ws-keep" class="btn-primary" style="background:#2e7d32;">Leave data unchanged</button>
+                    <button id="ws-sample" class="btn-primary" style="background:#1565c0;">Replace all data with sample data</button>
+                    <button id="ws-clear" class="btn-primary" style="background:#c62828;">Clear all data and start from scratch</button>
                 </div>
             `;
             overlay.appendChild(box);

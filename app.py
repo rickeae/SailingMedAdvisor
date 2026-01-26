@@ -13,6 +13,25 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
+from db_store import configure_db, init_workspaces, ensure_workspace, get_doc, set_doc
+
+# Temporary startup cleanup to reclaim space and report usage on HF Spaces
+def _cleanup_and_report():
+    try:
+        subprocess.run(
+            "rm -rf ~/.cache/huggingface ~/.cache/torch ~/.cache/pip ~/.cache/*",
+            shell=True,
+            check=False,
+        )
+        subprocess.run(
+            "df -h && du -sh /home/user /home/user/* ~/.cache 2>/dev/null | sort -hr | head -30",
+            shell=True,
+            check=False,
+        )
+    except Exception as exc:
+        print(f"[startup-cleanup] failed: {exc}")
+
+_cleanup_and_report()
 
 
 # Temporary startup cleanup to reclaim space and report usage on HF Spaces
@@ -33,6 +52,7 @@ os.environ.setdefault("HF_HUB_OFFLINE", "0")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "0")
 AUTO_DOWNLOAD_MODELS = os.environ.get("AUTO_DOWNLOAD_MODELS", "0") == "1"
 VERIFY_MODELS_ON_START = os.environ.get("VERIFY_MODELS_ON_START", "1") == "1"
+DISABLE_LOCAL_INFERENCE = os.environ.get("DISABLE_LOCAL_INFERENCE") == "1" or bool(os.environ.get("HUGGINGFACE_SPACE_ID"))
 
 import torch
 
@@ -76,6 +96,8 @@ os.environ["HUGGINGFACE_HUB_CACHE"] = str(CACHE_DIR / "hub")
 
 BACKUP_ROOT = APP_HOME / "backups"
 BACKUP_ROOT.mkdir(parents=True, exist_ok=True)
+DB_PATH = DATA_ROOT / "app.db"
+configure_db(DB_PATH)
 REQUIRED_MODELS = [
     "google/medgemma-1.5-4b-it",
     "Qwen/Qwen2.5-VL-7B-Instruct",
@@ -83,20 +105,21 @@ REQUIRED_MODELS = [
 
 WORKSPACE_NAMES = sorted(
     [
-        "Demo Workspace Pre-Loaded with Sample Data",
+        "Darlene&Neal",
         "Rick",
         "Lorraine",
         "Wayne",
         "DaveG",
         "Dave&Nathalie",
         "Tracy&John",
-        "Jeff&Julia",
+        "Julia&Jeff",
         "Carl",
         "Jeremy",
         "Pamela",
     ],
     key=lambda s: s.lower(),
 )
+init_workspaces(WORKSPACE_NAMES)
 
 IS_HF_SPACE = bool(os.environ.get("SPACE_ID") or os.environ.get("HF_SPACE") or os.environ.get("HUGGINGFACE_SPACE"))
 PHOTO_JOB_WORKER_STARTED = False
@@ -157,13 +180,22 @@ def _label_from_slug(slug: str) -> str:
 
 def _workspace_dirs(workspace_label: str):
     slug = _sanitize_workspace(workspace_label)
+    ws_rec = ensure_workspace(workspace_label, slug)
     data_dir = DATA_ROOT / slug
     uploads_dir = UPLOAD_ROOT / slug
     med_dir = uploads_dir / "medicines"
     backup_dir = BACKUP_ROOT / slug
     for path in [data_dir, uploads_dir, med_dir, backup_dir]:
         path.mkdir(parents=True, exist_ok=True)
-    return {"label": workspace_label, "slug": slug, "data": data_dir, "uploads": uploads_dir, "med_uploads": med_dir, "backup": backup_dir}
+    return {
+        "label": workspace_label,
+        "slug": slug,
+        "data": data_dir,
+        "uploads": uploads_dir,
+        "med_uploads": med_dir,
+        "backup": backup_dir,
+        "db_id": ws_rec["id"],
+    }
 
 
 def _get_workspace(request: Request, required: bool = True):
@@ -345,17 +377,29 @@ def get_defaults():
 def db_op(cat, data=None, workspace=None):
     if workspace is None:
         raise ValueError("Workspace is required for data operations.")
-    # Input validation to prevent path traversal
-    allowed_categories = ["settings", "patients", "inventory", "tools", "history", "chats", "vessel", "med_photo_queue"]
+    allowed_categories = [
+        "settings",
+        "patients",
+        "inventory",
+        "tools",
+        "history",
+        "chats",
+        "vessel",
+        "med_photo_queue",
+        "med_photo_jobs",
+    ]
     if cat not in allowed_categories:
         raise ValueError(f"Invalid category: {cat}")
 
-    path = workspace["data"] / f"{cat}.json"
-    if not path.exists() or path.stat().st_size == 0:
-        if cat == "settings":
-            content = get_defaults()
-        elif cat == "vessel":
-            content = {
+    workspace_id = workspace.get("db_id")
+    if not workspace_id:
+        raise ValueError("Workspace database id missing")
+
+    def default_for(category):
+        if category == "settings":
+            return get_defaults()
+        if category == "vessel":
+            return {
                 "vesselName": "",
                 "registrationNumber": "",
                 "flagCountry": "",
@@ -372,27 +416,34 @@ def db_op(cat, data=None, workspace=None):
                 "ribSn": "",
                 "crewCapacity": "",
             }
-        else:
-            content = []
-        path.write_text(json.dumps(content, indent=4))
+        return []
+
+    def load_legacy(category):
+        legacy_path = workspace["data"] / f"{category}.json"
+        if legacy_path.exists():
+            try:
+                return json.loads(legacy_path.read_text() or "[]")
+            except Exception:
+                return None
+        return None
 
     if data is not None:
         if cat == "settings":
             if not isinstance(data, dict):
                 raise ValueError("Settings payload must be a JSON object.")
-            try:
-                existing = json.loads(path.read_text() or "{}")
-                if not isinstance(existing, dict):
-                    existing = {}
-            except Exception:
-                existing = {}
+            existing = get_doc(workspace_id, cat) or {}
             merged = {**get_defaults(), **existing, **data}
-            path.write_text(json.dumps(merged, indent=4))
+            set_doc(workspace_id, cat, merged)
             return merged
-        path.write_text(json.dumps(data, indent=4))
+        set_doc(workspace_id, cat, data)
         return data
 
-    loaded = json.loads(path.read_text() or "[]")
+    loaded = get_doc(workspace_id, cat)
+    if loaded is None:
+        legacy = load_legacy(cat)
+        loaded = legacy if legacy is not None else default_for(cat)
+        set_doc(workspace_id, cat, loaded)
+
     if cat == "settings":
         if not isinstance(loaded, dict):
             loaded = {}
@@ -654,21 +705,14 @@ def _merge_inventory_record(med_record: dict, photo_urls: List[str], workspace):
 
 
 def _load_photo_jobs(workspace):
-    path = workspace["data"] / "med_photo_jobs.json"
-    if not path.exists():
-        path.write_text("[]")
-    try:
-        jobs = json.loads(path.read_text() or "[]")
-        if not isinstance(jobs, list):
-            jobs = []
-    except Exception:
+    jobs = db_op("med_photo_jobs", workspace=workspace)
+    if not isinstance(jobs, list):
         jobs = []
     return jobs
 
 
 def _save_photo_jobs(workspace, jobs):
-    path = workspace["data"] / "med_photo_jobs.json"
-    path.write_text(json.dumps(jobs, indent=4))
+    db_op("med_photo_jobs", jobs, workspace=workspace)
     log_job(f"[{workspace['label']}] saved {len(jobs)} job(s)")
 
 

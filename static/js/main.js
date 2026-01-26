@@ -163,11 +163,13 @@ async function loadData() {
         } catch (err) {
             console.warn('Settings parse failed, using defaults.', err);
         }
+        window.CACHED_SETTINGS = settings || {};
         console.log('[DEBUG] loadData: patients length', Array.isArray(data) ? data.length : 'n/a');
         if (!Array.isArray(data)) throw new Error('Unexpected patients data format');
         loadCrewData(data, Array.isArray(history) ? history : [], settings || {});
     } catch (err) {
         console.error('[DEBUG] Failed to load crew data', err);
+        window.CACHED_SETTINGS = window.CACHED_SETTINGS || {};
         // Gracefully clear UI to avoid JS errors
         const pSelect = document.getElementById('p-select');
         if (pSelect) pSelect.innerHTML = '<option>Unnamed Crew</option>';

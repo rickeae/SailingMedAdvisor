@@ -397,10 +397,6 @@ function loadCrewData(data, history = [], settings = {}) {
                     <button onclick="event.stopPropagation(); exportCrew('${p.id}', '${getCrewFullName(p).replace(/'/g, "\\'")}')" class="btn btn-sm history-action-btn" style="background:var(--inquiry); visibility:hidden;">📤 Export</button>
                 </div>
                 <div class="col-body" style="padding:12px; background:#e8f4ff; border:1px solid #c7ddff; border-radius:6px;">
-                    <div style="display:flex; align-items:center; gap:6px; margin-bottom:6px;">
-                        <span class="dev-tag">dev:crew-history-text</span>
-                    </div>
-                    <textarea id="h-${p.id}" class="compact-textarea" placeholder="Medical history, conditions, allergies, medications, etc." onchange="autoSaveProfile('${p.id}')">${p.history || ''}</textarea>
                     ${historySection}
                 </div>
             </div>`;
@@ -497,6 +493,11 @@ function loadCrewData(data, history = [], settings = {}) {
                 <div style="margin-bottom:8px; font-size:13px;">
                     <input type="text" id="enotes-${p.id}" value="${p.emergencyContactNotes || ''}" placeholder="Emergency contact notes" onchange="autoSaveProfile('${p.id}')" style="padding:5px; width:100%;">
                 </div>
+                <div style="margin-bottom:10px; font-size:13px;">
+                    <div class="dev-tag">dev:crew-health-notes</div>
+                    <label style="font-weight:bold; margin-bottom:4px; display:block;">Health / Medical Notes</label>
+                    <textarea id="h-${p.id}" class="compact-textarea" placeholder="Medical history, conditions, allergies, medications, etc." onchange="autoSaveProfile('${p.id}')" style="width:100%; min-height:70px;">${p.history || ''}</textarea>
+                </div>
                 <div style="margin-bottom:10px; font-size:12px; border-top:1px solid #ddd; padding-top:8px;">
                     <label style="font-weight:bold; margin-bottom:4px; display:block;">Contact & Documents</label>
                 </div>
@@ -543,8 +544,10 @@ function loadCrewData(data, history = [], settings = {}) {
                                 <div><label style="font-weight:700; font-size:12px;">Clinic/Provider Country</label><input id="vx-provider-country-${p.id}" type="text" style="width:100%; padding:6px;" placeholder="Spain"></div>
                                 <div><label style="font-weight:700; font-size:12px;">Expiration Date (dose)</label><input id="vx-exp-${p.id}" type="text" style="width:100%; padding:6px;" placeholder="e.g., 30-Dec-2026"></div>
                                 <div><label style="font-weight:700; font-size:12px;">Site & Route</label><input id="vx-site-${p.id}" type="text" style="width:100%; padding:6px;" placeholder="Left Arm - IM"></div>
-                                <div style="grid-column: span 1;"><label style="font-weight:700; font-size:12px;">Allergic Reactions</label><textarea id="vx-reactions-${p.id}" style="width:100%; padding:6px; min-height:60px;" placeholder="Redness, fever, swelling..."></textarea></div>
-                                <div style="grid-column: span 1;"><label style="font-weight:700; font-size:12px;">Remarks</label><textarea id="vx-remarks-${p.id}" style="width:100%; padding:6px; min-height:60px;" placeholder="Notes, special handling, country requirements, follow-up instructions..."></textarea></div>
+                                <div style="grid-column: 1 / -1; display:grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap:8px;">
+                                    <div><label style="font-weight:700; font-size:12px;">Allergic Reactions</label><textarea id="vx-reactions-${p.id}" style="width:100%; padding:6px; min-height:60px;" placeholder="Redness, fever, swelling..."></textarea></div>
+                                    <div><label style="font-weight:700; font-size:12px;">Remarks</label><textarea id="vx-remarks-${p.id}" style="width:100%; padding:6px; min-height:60px;" placeholder="Notes, special handling, country requirements, follow-up instructions..."></textarea></div>
+                                </div>
                             </div>
                             <button onclick="addVaccine('${p.id}')" class="btn btn-sm" style="background:var(--dark); width:100%;"><span class="dev-tag">dev:crew-vax-add</span>+ Add Vaccine</button>
                             <div class="dev-tag" style="margin:10px 0 6px;">dev:crew-vax-list</div>

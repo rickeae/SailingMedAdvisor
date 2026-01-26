@@ -162,7 +162,7 @@ function renderMedPhotoJobs() {
         const statusColors = {
             queued: { bg: '#fff7e0', color: '#a66b00', label: 'Queued' },
             processing: { bg: '#e3f2fd', color: '#1565c0', label: 'Processing' },
-            completed: { bg: '#e8f5e9', color: '#1b5e20', label: 'Done' },
+            completed: { bg: 'var(--inquiry)', color: '#fff', label: 'Done' },
             failed: { bg: '#ffebee', color: '#c62828', label: 'Failed' },
         };
         el.innerHTML = medPhotoJobs
@@ -197,7 +197,7 @@ function renderMedPhotoJobs() {
                         <span style="font-size:12px; font-weight:800; padding:2px 8px; border-radius:999px; background:${status.bg}; color:${status.color};">${status.label}</span>
                         <span style="font-size:12px; color:#555;">Mode: ${job.mode || 'single'}</span>
                         ${modelLabel ? `<span style="font-size:12px; color:#555;">Model: ${modelLabel}</span>` : ''}
-                        ${job.inventory_id ? `<span style="font-size:12px; color:#1b5e20;">Added to inventory</span>` : ''}
+                        ${job.inventory_id ? `<span style="font-size:12px; color:var(--inquiry);">Added to inventory</span>` : ''}
                     </div>
                     <div style="display:flex; gap:10px; align-items:flex-start; flex-wrap:wrap;">
                         ${thumbHtml}
@@ -704,14 +704,14 @@ function bindMedPhotoDrop() {
 
     const resetStyle = () => {
         dropZone.style.borderColor = '#ccc';
-        dropZone.style.background = '#fafbff';
+        dropZone.style.background = 'rgba(46, 125, 50, 0.08)';
     };
 
     dropZone.addEventListener('click', () => input.click());
     dropZone.addEventListener('dragover', (e) => {
         e.preventDefault();
         dropZone.style.borderColor = 'var(--inquiry)';
-        dropZone.style.background = '#e8f5e9';
+        dropZone.style.background = 'rgba(46, 125, 50, 0.16)';
     });
     dropZone.addEventListener('dragleave', (e) => {
         e.preventDefault();
@@ -1007,7 +1007,8 @@ async function addMedicationItem() {
     const category = getNewEquipmentVal('med-new-cat') || 'Medication';
     const sortSel = document.getElementById('med-new-sort');
     const sortCustom = document.getElementById('med-new-sort-custom');
-    const sortCategory = sortSel ? (sortSel.value === 'Other' ? (sortCustom?.value || '') : (sortSel.value || '')) : '';
+    const sortCategoryRaw = sortSel ? (sortSel.value === '__custom' ? (sortCustom?.value || '') : (sortSel.value || '')) : '';
+    const sortCategory = (sortCategoryRaw || '').trim();
     const verified = !!document.getElementById('med-new-verified')?.checked;
     const exclude = document.getElementById('med-new-exclude')?.checked || false;
     const newId = `med-${Date.now()}`;

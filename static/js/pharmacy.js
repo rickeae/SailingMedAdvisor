@@ -2,6 +2,8 @@
 
 let pharmacyCache = [];
 const pharmacySaveTimers = {};
+const DEFAULT_USER_LABELS = ['Antibiotic', 'Analgesic', 'Cardiac', 'Respiratory', 'Gastrointestinal', 'Endocrine', 'Emergency'];
+let pharmacyLabelsCache = null;
 let WHO_RECOMMENDED_MEDS = [
     {
         id: 'who-1',
@@ -117,24 +119,115 @@ function getTextareaHeights() {
     return map;
 }
 
+function normalizeUserLabels(list) {
+    if (!Array.isArray(list)) return [...DEFAULT_USER_LABELS];
+    const seen = new Set();
+    return list
+        .map((v) => (typeof v === 'string' ? v.trim() : ''))
+        .filter(Boolean)
+        .filter((v) => {
+            const key = v.toLowerCase();
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+}
+
+async function ensurePharmacyLabels() {
+    if (window.CACHED_SETTINGS && Array.isArray(window.CACHED_SETTINGS.pharmacy_labels)) {
+        const normalized = normalizeUserLabels(window.CACHED_SETTINGS.pharmacy_labels);
+        if (!pharmacyLabelsCache || normalized.join('|') !== pharmacyLabelsCache.join('|')) {
+            pharmacyLabelsCache = normalized;
+        }
+    }
+    if (pharmacyLabelsCache && pharmacyLabelsCache.length) return pharmacyLabelsCache;
+    try {
+        const res = await fetch('/api/data/settings', { credentials: 'same-origin' });
+        if (res.ok) {
+            const s = await res.json();
+            pharmacyLabelsCache = normalizeUserLabels(s.pharmacy_labels);
+        }
+    } catch (err) {
+        console.warn('[pharmacy] failed to load user labels, using defaults', err);
+    }
+    if (!pharmacyLabelsCache || !pharmacyLabelsCache.length) {
+        pharmacyLabelsCache = [...DEFAULT_USER_LABELS];
+    }
+    return pharmacyLabelsCache;
+}
+
+function getPharmacyLabels() {
+    return pharmacyLabelsCache && pharmacyLabelsCache.length ? [...pharmacyLabelsCache] : [...DEFAULT_USER_LABELS];
+}
+
+function renderUserLabelOptions(selectedValue = '') {
+    const selected = (selectedValue || '').trim();
+    const labels = getPharmacyLabels();
+    const isCustom = !!selected && !labels.includes(selected);
+    const options = [
+        '<option value="">Select...</option>',
+        ...labels.map((label) => `<option value="${label}"${label === selected ? ' selected' : ''}>${label}</option>`),
+        `<option value="__custom"${isCustom ? ' selected' : ''}>Custom...</option>`,
+    ];
+    return {
+        optionsHtml: options.join(''),
+        showCustom: isCustom,
+        customValue: isCustom ? selected : '',
+    };
+}
+
+function populateNewMedUserLabelSelect() {
+    const select = document.getElementById('med-new-sort');
+    const custom = document.getElementById('med-new-sort-custom');
+    if (!select || !custom) return;
+    const labels = getPharmacyLabels();
+    const selectVal = select.value;
+    const customVal = custom.value;
+    const current = selectVal === '__custom' ? customVal : selectVal;
+    const isCustom = !!current && !labels.includes(current);
+    const opts = [
+        '<option value="">Select...</option>',
+        ...labels.map((label) => `<option value="${label}">${label}</option>`),
+        '<option value="__custom">Custom...</option>',
+    ];
+    select.innerHTML = opts.join('');
+    select.value = isCustom ? '__custom' : (labels.includes(current) ? current : '');
+    custom.style.display = isCustom ? 'block' : 'none';
+    if (isCustom) custom.value = current;
+    else if (select.value !== '__custom') custom.value = '';
+}
+
+function refreshPharmacyLabelsFromSettings(list) {
+    const normalized = normalizeUserLabels(Array.isArray(list) ? list : pharmacyLabelsCache || DEFAULT_USER_LABELS);
+    pharmacyLabelsCache = normalized;
+    populateNewMedUserLabelSelect();
+    const listEl = document.getElementById('pharmacy-list');
+    if (listEl && pharmacyCache && pharmacyCache.length) {
+        const openIds = getOpenMedIds();
+        const textHeights = getTextareaHeights();
+        renderPharmacy(pharmacyCache, openIds, textHeights);
+    }
+}
+
 function handleSortCategoryChange(id) {
     const select = document.getElementById(`sort-${id}`);
     const custom = document.getElementById(`sort-custom-${id}`);
     if (!select || !custom) return;
     const val = select.value;
-    const isCustom = val === 'Other';
+    const isCustom = val === '__custom';
     custom.style.display = isCustom ? 'block' : 'none';
     if (!isCustom) {
         custom.value = '';
     }
-    scheduleSaveMedication(id, true);
+    // Avoid rerender when switching to custom so the input stays visible while typing
+    scheduleSaveMedication(id, !isCustom);
 }
 
 function toggleCustomSortField() {
     const sel = document.getElementById('med-new-sort');
     const custom = document.getElementById('med-new-sort-custom');
     if (!sel || !custom) return;
-    const isCustom = sel.value === 'Other';
+    const isCustom = sel.value === '__custom';
     custom.style.display = isCustom ? 'block' : 'none';
     if (!isCustom) custom.value = '';
 }
@@ -212,8 +305,14 @@ function sortPharmacyItems(items) {
     };
     list.sort((a, b) => {
         if (mode === 'sortCategory') {
-            const cat = byText(a, b, a.sortCategory || '', b.sortCategory || '');
-            if (cat !== 0) return cat;
+            const hasA = !!(a.sortCategory || '').trim();
+            const hasB = !!(b.sortCategory || '').trim();
+            if (hasA && !hasB) return -1;
+            if (!hasA && hasB) return 1;
+            if (hasA && hasB) {
+                const cat = byText(a, b, a.sortCategory, b.sortCategory);
+                if (cat !== 0) return cat;
+            }
         }
         if (mode === 'brand') {
             return byText(a, b, a.brandName || '', b.brandName || '');
@@ -233,6 +332,8 @@ function sortPharmacyItems(items) {
 async function loadPharmacy() {
     const list = document.getElementById('pharmacy-list');
     if (!list) return;
+    await ensurePharmacyLabels();
+    populateNewMedUserLabelSelect();
     observePharmacyList();
     list.innerHTML = '<div style="color:#666;">Loading inventory...</div>';
     try {
@@ -282,6 +383,7 @@ function renderPharmacy(items, openIds = [], textHeights = {}) {
     if (typeof requestAnimationFrame === 'function') {
         requestAnimationFrame(() => syncPharmacyCountFromDOM());
     }
+    populateNewMedUserLabelSelect();
 }
 
 function renderPurchaseRows(med) {
@@ -330,7 +432,10 @@ function renderMedicationCard(med, isOpen = true, textHeights = {}) {
     const headerNote = [lowStock ? 'Low Stock' : null, expirySoon ? 'Expiring Soon' : null].filter(Boolean).join(' · ');
     const displayName = getMedicationDisplayName(med);
     const strength = (med.strength || '').trim();
-    const sortLabel = med.sortCategory ? `<span style="font-size:11px; color:#455a64; margin-right:8px;">${med.sortCategory}</span>` : '';
+    const userLabelRender = renderUserLabelOptions(med.sortCategory || '');
+    const labelChip = med.sortCategory && med.sortCategory.trim()
+        ? `<span style="margin-left:8px; padding:2px 8px; border-radius:999px; background:rgba(46,125,50,0.12); color:var(--inquiry); font-size:11px; white-space:nowrap;">${escapeHtml(med.sortCategory.trim())}</span>`
+        : '';
     const bodyDisplay = isOpen ? 'display:block;' : 'display:none;';
     const arrow = isOpen ? '▾' : '▸';
     const headerBg = med.excludeFromResources ? '#ffecef' : '#eef7ff';
@@ -341,8 +446,8 @@ function renderMedicationCard(med, isOpen = true, textHeights = {}) {
     const badgeText = med.excludeFromResources ? 'Resource Currently Unavailable' : 'Resource Available';
     const availabilityBadge = `<span style="padding:2px 10px; border-radius:999px; background:${badgeColor}; color:#fff; font-size:11px; white-space:nowrap;">${badgeText}</span>`;
     const verifiedBadge = med.verified
-        ? `<span style="padding:2px 10px; border-radius:999px; background:#1b5e20; color:#fff; font-size:11px; white-space:nowrap;">Verified</span>`
-        : `<span style="padding:2px 10px; border-radius:999px; background:transparent; color:#1b5e20; font-size:11px; white-space:nowrap; border:1px dashed #b2c7b5;">Not verified</span>`;
+        ? `<span style="padding:2px 10px; border-radius:999px; background:var(--inquiry); color:#fff; font-size:11px; white-space:nowrap;">Verified</span>`
+        : `<span style="padding:2px 10px; border-radius:999px; background:transparent; color:var(--inquiry); font-size:11px; white-space:nowrap; border:1px dashed #b2c7b5;">Not Verified</span>`;
     const doseHeight = textHeights[`dose-${med.id}`] ? `height:${textHeights[`dose-${med.id}`]};` : '';
     const photoThumbs = (med.photos || []).map(
         (src, idx) => `
@@ -360,14 +465,10 @@ function renderMedicationCard(med, isOpen = true, textHeights = {}) {
             <span style="flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:700;">
                 ${displayName}${strength ? ' — ' + strength : ''}
             </span>
-            ${sortLabel}
+            ${labelChip}
             ${headerNote ? `<span class="sidebar-pill" style="margin-right:8px; background:${lowStock ? '#ffebee' : '#fff7e0'}; color:${lowStock ? '#c62828' : '#b26a00'};">${headerNote}</span>` : ''}
             <button onclick="event.stopPropagation(); deleteMedication('${med.id}')" class="btn btn-sm history-action-btn" style="background:var(--red); visibility:hidden;">🗑 Delete Medication</button>
             <div style="display:flex; align-items:center; gap:6px; margin-left:8px;">${verifiedBadge}${availabilityBadge}</div>
-            <label style="display:flex; align-items:center; gap:4px; font-size:11px; margin-left:8px; padding:4px 8px; border:1px solid #c7ddff; border-radius:6px; background:#fff;" onclick="event.stopPropagation();">
-                <input id="ver-${med.id}" type="checkbox" ${med.verified ? 'checked' : ''} onchange="scheduleSaveMedication('${med.id}', true); event.stopPropagation();">
-                Verified
-            </label>
         </div>
         <div class="col-body" data-med-id="${med.id}" style="padding:12px; background:${bodyBg}; border:1px solid ${bodyBorderColor}; border-radius:6px; ${bodyDisplay}">
             <div class="collapsible" style="margin-bottom:10px;">
@@ -377,10 +478,23 @@ function renderMedicationCard(med, isOpen = true, textHeights = {}) {
                     <span style="font-weight:700;">Medication Details</span>
                 </div>
             <div class="col-body" style="padding:10px; display:block;" id="details-${med.id}">
-                <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
-                            <input id="exclude-${med.id}" type="checkbox" ${med.excludeFromResources ? 'checked' : ''} onchange="scheduleSaveMedication('${med.id}', true)">
-                            <label style="font-size:12px; line-height:1.2; margin:0;">Resource Currently Unavailable</label>
-                        </div>
+                <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px; flex-wrap:wrap;">
+                    <label style="display:flex; align-items:center; gap:6px; font-size:12px; padding:6px 10px; border:1px solid #ffcfe0; border-radius:6px; background:#fff; margin:0;">
+                        <input id="exclude-${med.id}" type="checkbox" ${med.excludeFromResources ? 'checked' : ''} onchange="scheduleSaveMedication('${med.id}', true)">
+                        Resource Currently Unavailable
+                    </label>
+                    <label style="display:flex; align-items:center; gap:6px; font-size:12px; padding:6px 10px; border:1px solid #c7ddff; border-radius:6px; background:#fff; margin:0;">
+                        <input id="ver-${med.id}" type="checkbox" ${med.verified ? 'checked' : ''} onchange="scheduleSaveMedication('${med.id}', true); event.stopPropagation();">
+                        Verified
+                    </label>
+                    <label style="display:flex; align-items:center; gap:6px; font-size:12px; padding:6px 10px; border:1px solid #c7ddff; border-radius:6px; background:#fff; margin:0;">
+                        <span style="font-weight:700;">User Label</span>
+                        <select id="sort-${med.id}" style="padding:6px 8px;" onchange="handleSortCategoryChange('${med.id}')">
+                            ${userLabelRender.optionsHtml}
+                        </select>
+                        <input id="sort-custom-${med.id}" type="text" value="${userLabelRender.customValue}" placeholder="Custom label" style="width:160px; padding:6px; margin-left:6px; ${userLabelRender.showCustom ? '' : 'display:none;'}" oninput="scheduleSaveMedication('${med.id}', false)">
+                    </label>
+                </div>
                         <div style="display:grid; grid-template-columns: repeat(2, minmax(240px, 1fr)); gap:10px; margin-bottom:10px;">
                         <div>
                             <label style="font-weight:700; font-size:12px;">Generic Name</label>
@@ -431,21 +545,6 @@ function renderMedicationCard(med, isOpen = true, textHeights = {}) {
                                 <option value="false" ${!med.controlled ? 'selected' : ''}>No</option>
                                 <option value="true" ${med.controlled ? 'selected' : ''}>Yes</option>
                             </select>
-                        </div>
-                        <div>
-                            <label style="font-weight:700; font-size:12px;">Sort Category</label>
-                            <select id="sort-${med.id}" style="width:100%; padding:8px;" onchange="handleSortCategoryChange('${med.id}')">
-                                <option value="">Select...</option>
-                                <option value="Antibiotic" ${med.sortCategory === 'Antibiotic' ? 'selected' : ''}>Antibiotic</option>
-                                <option value="Analgesic" ${med.sortCategory === 'Analgesic' ? 'selected' : ''}>Analgesic</option>
-                                <option value="Cardiac" ${med.sortCategory === 'Cardiac' ? 'selected' : ''}>Cardiac</option>
-                                <option value="Respiratory" ${med.sortCategory === 'Respiratory' ? 'selected' : ''}>Respiratory</option>
-                                <option value="Gastrointestinal" ${med.sortCategory === 'Gastrointestinal' ? 'selected' : ''}>Gastrointestinal</option>
-                                <option value="Endocrine" ${med.sortCategory === 'Endocrine' ? 'selected' : ''}>Endocrine</option>
-                                <option value="Emergency" ${med.sortCategory === 'Emergency' ? 'selected' : ''}>Emergency</option>
-                                <option value="Other" ${med.sortCategory && !['Antibiotic','Analgesic','Cardiac','Respiratory','Gastrointestinal','Endocrine','Emergency'].includes(med.sortCategory) ? 'selected' : ''}>Custom...</option>
-                            </select>
-                            <input id="sort-custom-${med.id}" type="text" value="${(['Antibiotic','Analgesic','Cardiac','Respiratory','Gastrointestinal','Endocrine','Emergency'].includes(med.sortCategory) ? '' : med.sortCategory) || ''}" placeholder="Custom category" style="width:100%; padding:6px; margin-top:6px; ${med.sortCategory && !['Antibiotic','Analgesic','Cardiac','Respiratory','Gastrointestinal','Endocrine','Emergency'].includes(med.sortCategory) ? '' : 'display:none;'}" oninput="scheduleSaveMedication('${med.id}', true)">
                         </div>
                         <div>
                             <label style="font-weight:700; font-size:12px;">Manufacturer</label>
@@ -713,7 +812,9 @@ async function saveMedication(id, rerender = false) {
     med.allergyWarnings = document.getElementById(`alg-${id}`)?.value || '';
     med.standardDosage = document.getElementById(`dose-${id}`)?.value || '';
     med.excludeFromResources = !!document.getElementById(`exclude-${id}`)?.checked;
-    med.sortCategory = document.getElementById(`sort-${id}`)?.value || document.getElementById(`sort-custom-${id}`)?.value || '';
+    const sortVal = document.getElementById(`sort-${id}`)?.value || '';
+    const sortCustom = document.getElementById(`sort-custom-${id}`)?.value || '';
+    med.sortCategory = sortVal === '__custom' ? sortCustom : sortVal || sortCustom || '';
     med.verified = !!document.getElementById(`ver-${id}`)?.checked;
     med.purchaseHistory = collectPurchaseEntries(id);
 
@@ -885,6 +986,7 @@ window.uploadPurchasePhoto = uploadPurchasePhoto;
 window.removePurchasePhoto = removePurchasePhoto;
 window.removeMedicationPhoto = removeMedicationPhoto;
 window.scheduleSaveMedication = scheduleSaveMedication;
+window.refreshPharmacyLabelsFromSettings = refreshPharmacyLabelsFromSettings;
 window.sortPharmacyList = function(mode) {
     const openMedIds = getOpenMedIds();
     const textHeights = getTextareaHeights();

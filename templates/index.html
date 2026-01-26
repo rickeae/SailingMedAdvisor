@@ -90,6 +90,8 @@
         .btn:disabled { opacity: 0.5; cursor: not-allowed; }
         #priv-btn { border: 1px solid #222; color: white; }
         #priv-btn.is-private { border: 2px solid #fff; }
+        /* Align green button text to the selected-tab palette */
+        .btn[style*="var(--inquiry)"], .btn-sm[style*="var(--inquiry)"] { color: #ffd54f !important; }
         .config-card { background: white; padding: 25px; border-radius: 8px; border: 1px solid #ddd; margin-bottom: 20px; }
         label { font-weight: bold; display: block; margin-bottom: 5px; color: var(--dark); }
         textarea { width: 100%; border: 1px solid #ccc; border-radius: 4px; padding: 10px; box-sizing: border-box; font-family: inherit; }
@@ -241,7 +243,7 @@
 
 <div class="nav">
     <button class="tab tab-triage active" onclick="showTab(event, 'Chat')">MEDGEMMA CHAT</button>
-    <button class="tab tab-nowrap" onclick="showTab(event, 'CrewMedical')">CREW HEALTH & LOG</button>
+    <button class="tab tab-nowrap" onclick="showTab(event, 'CrewMedical')">CREW HEALTH LOG</button>
     <button class="tab" onclick="showTab(event, 'OnboardEquipment')">MEDICAL CHEST</button>
     <button class="tab" onclick="showTab(event, 'VesselCrewInfo')">VESSEL & CREW</button>
     <button class="tab tab-config" onclick="showTab(event, 'Settings')">SETTINGS</button>
@@ -523,19 +525,12 @@
                                                 </select>
                                             </div>
                                             <div>
-                                                <label style="font-weight:700; font-size:12px;">Sort Category</label>
+                                                <label style="font-weight:700; font-size:12px;">User Label</label>
                                                 <select id="med-new-sort" style="width:100%; padding:8px;" onchange="toggleCustomSortField()">
                                                     <option value="">Select...</option>
-                                                    <option value="Antibiotic">Antibiotic</option>
-                                                    <option value="Analgesic">Analgesic</option>
-                                                    <option value="Cardiac">Cardiac</option>
-                                                    <option value="Respiratory">Respiratory</option>
-                                                    <option value="Gastrointestinal">Gastrointestinal</option>
-                                                    <option value="Endocrine">Endocrine</option>
-                                                    <option value="Emergency">Emergency</option>
-                                                    <option value="Other">Custom...</option>
+                                                    <option value="__custom">Custom...</option>
                                                 </select>
-                                                <input id="med-new-sort-custom" type="text" placeholder="Custom category" style="margin-top:6px; width:100%; padding:8px; display:none;">
+                                                <input id="med-new-sort-custom" type="text" placeholder="Custom label" style="margin-top:6px; width:100%; padding:8px; display:none;">
                                             </div>
                                             <div style="display:flex; align-items:center; gap:6px;">
                                                 <input id="med-new-verified" type="checkbox">
@@ -639,12 +634,13 @@
                                         <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
                                             <label style="font-size:12px; font-weight:700;">Sort by:</label>
                                             <select id="pharmacy-sort" style="padding:8px; min-width:180px;" onchange="handlePharmacySortChange()">
-                                                <option value="sortCategory">Sort Category</option>
+                                                <option value="sortCategory">User Label</option>
                                                 <option value="generic">Generic Name</option>
                                                 <option value="brand">Brand Name</option>
                                                 <option value="strength">Strength</option>
                                                 <option value="expiry">Expiry Date</option>
                                             </select>
+                                            <span style="font-size:12px; color:#555;">User Labels are defined in Settings.</span>
                                         </div>
                                         <div class="dev-tag" style="margin-bottom:6px;">dev:pharmacy-list</div>
                                         <div id="pharmacy-list"></div>
@@ -968,6 +964,21 @@
                             <div class="dev-tag" style="margin-bottom:6px;">dev:settings-vax-list</div>
                             <div id="vaccine-types-list"></div>
                             <div id="vaccine-types-status" style="margin-top:8px; font-size:12px; color:#555;">Saved with workspace settings.</div>
+                        </div>
+                    </div>
+                    <div class="collapsible" style="margin-bottom:12px;">
+                        <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                            <span class="dev-tag">dev:settings-pharmacy-labels</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Pharmaceutical User Labels</span>
+                        </div>
+                        <div class="col-body" style="padding:12px; background:#f8f9fa; display:none;">
+                            <div style="margin-bottom:8px; font-size:12px; color:#2c3e50;">Define the User Labels used on Pharmaceuticals. These power the dropdown next to Verified in the Medical Chest.</div>
+                            <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
+                                <input id="pharmacy-label-input" type="text" style="padding:8px; min-width:220px; flex:1;" placeholder="e.g., Analgesic, Cardiac, Emergency">
+                                <button class="btn btn-sm" style="background:var(--inquiry);" onclick="addPharmacyLabel()">Add Label</button>
+                            </div>
+                            <div class="dev-tag" style="margin-bottom:6px;">dev:settings-pharmacy-label-list</div>
+                            <div id="pharmacy-labels-list"></div>
+                            <div id="pharmacy-labels-status" style="margin-top:8px; font-size:12px; color:#555;">Saved with workspace settings.</div>
                         </div>
                     </div>
                     <div class="collapsible developer-only" style="margin-bottom:12px; display:none;">

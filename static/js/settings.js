@@ -14,7 +14,8 @@ const DEFAULT_SETTINGS = {
     user_mode: "user",
     med_photo_model: "qwen",
     med_photo_prompt: "You are a pharmacy intake assistant on a sailing vessel. Look at the medication photo and return JSON only with keys: generic_name, brand_name, form, strength, expiry_date, batch_lot, storage_location, manufacturer, indication, allergy_warnings, dosage, notes.",
-    vaccine_types: ["MMR", "DTaP", "HepB", "HepA", "Td/Tdap", "Influenza", "COVID-19"]
+    vaccine_types: ["MMR", "DTaP", "HepB", "HepA", "Td/Tdap", "Influenza", "COVID-19"],
+    pharmacy_labels: ["Antibiotic", "Analgesic", "Cardiac", "Respiratory", "Gastrointestinal", "Endocrine", "Emergency"]
 };
 
 let settingsDirty = false;
@@ -23,6 +24,7 @@ let settingsAutoSaveTimer = null;
 let workspaceListLoaded = false;
 let offlineStatusCache = null;
 let vaccineTypeList = [...DEFAULT_SETTINGS.vaccine_types];
+let pharmacyLabelList = [...DEFAULT_SETTINGS.pharmacy_labels];
 
 function setUserMode(mode) {
     const body = document.body;
@@ -45,7 +47,9 @@ function setUserMode(mode) {
 function applySettingsToUI(data = {}) {
     const merged = { ...DEFAULT_SETTINGS, ...(data || {}) };
     vaccineTypeList = normalizeVaccineTypes(merged.vaccine_types);
+    pharmacyLabelList = normalizePharmacyLabels(merged.pharmacy_labels);
     renderVaccineTypes();
+    renderPharmacyLabels();
     Object.keys(merged).forEach(k => {
         const el = document.getElementById(k);
         if (el) {
@@ -54,6 +58,7 @@ function applySettingsToUI(data = {}) {
     });
     setUserMode(merged.user_mode);
     try { localStorage.setItem('user_mode', merged.user_mode || 'user'); } catch (err) { /* ignore */ }
+    window.CACHED_SETTINGS = merged;
     settingsDirty = false;
     settingsLoaded = true;
 }
@@ -169,6 +174,7 @@ async function saveSettings(showAlert = true, reason = 'manual') {
             }
         });
         s.vaccine_types = normalizeVaccineTypes(vaccineTypeList);
+        s.pharmacy_labels = normalizePharmacyLabels(pharmacyLabelList);
         console.log('[settings] saving', { reason, payload: s });
         updateSettingsStatus('Saving…', false);
         const headers = { 'Content-Type': 'application/json' };
@@ -306,6 +312,82 @@ function moveVaccineType(idx, delta) {
     renderVaccineTypes();
     settingsDirty = true;
     scheduleAutoSave('vaccine-type-reorder');
+}
+
+function normalizePharmacyLabels(list) {
+    if (!Array.isArray(list)) return [...DEFAULT_SETTINGS.pharmacy_labels];
+    const seen = new Set();
+    return list
+        .map((v) => (typeof v === 'string' ? v.trim() : ''))
+        .filter((v) => !!v)
+        .filter((v) => {
+            const key = v.toLowerCase();
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+}
+
+function renderPharmacyLabels() {
+    const container = document.getElementById('pharmacy-labels-list');
+    if (!container) return;
+    if (!pharmacyLabelList.length) {
+        container.innerHTML = '<div style="color:#666; font-size:12px;">No user labels defined. Add at least one to enable the dropdown.</div>';
+        return;
+    }
+    container.innerHTML = pharmacyLabelList
+        .map((v, idx) => `
+            <div style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid #eee;">
+                <div style="width:28px; text-align:right; font-weight:700; color:#666;">${idx + 1}.</div>
+                <div style="flex:1; font-weight:600;">${v}</div>
+                <div style="display:flex; gap:6px; align-items:center;">
+                    <button class="btn btn-sm" style="background:#607d8b;" ${idx === 0 ? 'disabled' : ''} onclick="movePharmacyLabel(${idx}, -1)">↑</button>
+                    <button class="btn btn-sm" style="background:#607d8b;" ${idx === pharmacyLabelList.length - 1 ? 'disabled' : ''} onclick="movePharmacyLabel(${idx}, 1)">↓</button>
+                    <button class="btn btn-sm" style="background:var(--red);" onclick="removePharmacyLabel(${idx})">🗑 Remove</button>
+                </div>
+            </div>
+        `).join('');
+    window.CACHED_SETTINGS = window.CACHED_SETTINGS || {};
+    window.CACHED_SETTINGS.pharmacy_labels = [...pharmacyLabelList];
+    if (typeof window.refreshPharmacyLabelsFromSettings === 'function') {
+        window.refreshPharmacyLabelsFromSettings(pharmacyLabelList);
+    }
+}
+
+function addPharmacyLabel() {
+    const input = document.getElementById('pharmacy-label-input');
+    if (!input) return;
+    const val = input.value.trim();
+    if (!val) {
+        alert('Enter a label before adding.');
+        return;
+    }
+    pharmacyLabelList = normalizePharmacyLabels([...pharmacyLabelList, val]);
+    input.value = '';
+    renderPharmacyLabels();
+    settingsDirty = true;
+    scheduleAutoSave('pharmacy-label-add');
+}
+
+function removePharmacyLabel(idx) {
+    if (idx < 0 || idx >= pharmacyLabelList.length) return;
+    pharmacyLabelList.splice(idx, 1);
+    pharmacyLabelList = normalizePharmacyLabels(pharmacyLabelList);
+    renderPharmacyLabels();
+    settingsDirty = true;
+    scheduleAutoSave('pharmacy-label-remove');
+}
+
+function movePharmacyLabel(idx, delta) {
+    const newIndex = idx + delta;
+    if (newIndex < 0 || newIndex >= pharmacyLabelList.length) return;
+    const nextList = [...pharmacyLabelList];
+    const [item] = nextList.splice(idx, 1);
+    nextList.splice(newIndex, 0, item);
+    pharmacyLabelList = normalizePharmacyLabels(nextList);
+    renderPharmacyLabels();
+    settingsDirty = true;
+    scheduleAutoSave('pharmacy-label-reorder');
 }
 
 function renderOfflineStatus(msg, isError = false) {
@@ -607,3 +689,6 @@ window.restoreOfflineBackup = restoreOfflineBackup;
 window.addVaccineType = addVaccineType;
 window.removeVaccineType = removeVaccineType;
 window.moveVaccineType = moveVaccineType;
+window.addPharmacyLabel = addPharmacyLabel;
+window.removePharmacyLabel = removePharmacyLabel;
+window.movePharmacyLabel = movePharmacyLabel;

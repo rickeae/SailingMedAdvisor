@@ -1179,6 +1179,7 @@ async def db_status():
         size = DB_PATH.stat().st_size if exists else 0
         workspaces = 0
         documents = 0
+        rick_patients = 0
         if exists and size > 0:
             try:
                 with sqlite3.connect(DB_PATH) as conn:
@@ -1191,9 +1192,31 @@ async def db_status():
                     if cur.fetchone():
                         cur.execute("SELECT COUNT(*) FROM documents")
                         documents = cur.fetchone()[0] or 0
+                        cur.execute("SELECT id FROM workspaces WHERE lower(label)=?", ("rick",))
+                        row = cur.fetchone()
+                        if row:
+                            wid = row[0]
+                            cur.execute(
+                                "SELECT payload FROM documents WHERE workspace_id=? AND category='patients'",
+                                (wid,),
+                            )
+                            prow = cur.fetchone()
+                            if prow and prow[0]:
+                                try:
+                                    pdata = json.loads(prow[0])
+                                    if isinstance(pdata, list):
+                                        rick_patients = len(pdata)
+                                except Exception:
+                                    pass
             except Exception:
                 pass
-        return {"exists": bool(exists and size > 0), "size": size, "workspaces": workspaces, "documents": documents}
+        return {
+            "exists": bool(exists and size > 0),
+            "size": size,
+            "workspaces": workspaces,
+            "documents": documents,
+            "rick_patients": rick_patients,
+        }
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 

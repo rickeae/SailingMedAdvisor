@@ -387,13 +387,16 @@ function loadCrewData(data, history = [], settings = {}) {
         const medicalBlocks = data.map(p => {
             const displayName = getCrewDisplayName(p);
             const crewHistory = getHistoryForCrew(p, historyMap);
+            const historyCount = Array.isArray(crewHistory) ? crewHistory.length : 0;
             const historySection = renderHistorySection(`${displayName} Log`, crewHistory, true);
             return `
             <div class="collapsible history-item">
                 <div class="col-header crew-med-header" onclick="toggleCrewSection(this)" style="justify-content:flex-start;">
                     <span class="dev-tag">dev:crew-entry</span>
                     <span class="toggle-label history-arrow" style="font-size:18px; margin-right:8px;">▸</span>
-                    <span style="flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:700;">${displayName}</span>
+                    <span style="flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:700;">
+                        ${displayName}${historyCount ? ` (${historyCount})` : ''}
+                    </span>
                     <button onclick="event.stopPropagation(); exportCrew('${p.id}', '${getCrewFullName(p).replace(/'/g, "\\'")}')" class="btn btn-sm history-action-btn" style="background:var(--inquiry); visibility:hidden;">📤 Export</button>
                 </div>
                 <div class="col-body" style="padding:12px; background:#e8f4ff; border:1px solid #c7ddff; border-radius:6px;">

@@ -268,6 +268,7 @@ function ensurePharmacyDefaults(item) {
             : [ensurePurchaseDefaults({})],
         source: item.source || '',
         photoImported: !!item.photoImported,
+        photoDataUrls: Array.isArray(item.photoDataUrls) ? item.photoDataUrls : [],
         excludeFromResources: Boolean(item.excludeFromResources),
     };
 }
@@ -394,7 +395,7 @@ function renderPurchaseRows(med) {
                 (src, idx) => `
                     <div style="display:flex; flex-direction:column; gap:4px; align-items:flex-start; border:1px solid #e0e0e0; padding:6px; border-radius:4px; background:#f9fbff;">
                         <div style="font-size:12px; font-weight:600;">Photo ${idx + 1}</div>
-                        <img src="${src}" alt="Photo ${idx + 1}" style="max-width:120px; max-height:120px; border:1px solid #ccc; border-radius:4px; cursor:pointer;" onclick="window.open('${src}','_blank')">
+                        <img src="${src}" data-src="${src}" alt="Photo ${idx + 1}" loading="lazy" style="max-width:120px; max-height:120px; border:1px solid #ccc; border-radius:4px; cursor:pointer;" onclick="window.open('${src}','_blank')" onerror="pharmacyPhotoFallback(this, '${med.id}', ${idx}, '${src}')">
                         <button class="btn btn-sm" style="background:var(--red);" onclick="removePurchasePhoto('${med.id}', '${p.id}', ${idx}); return false;">🗑 Delete</button>
                     </div>`
             );
@@ -453,7 +454,7 @@ function renderMedicationCard(med, isOpen = true, textHeights = {}) {
         (src, idx) => `
             <div style="display:flex; flex-direction:column; gap:4px; align-items:flex-start; border:1px solid #e0e0e0; padding:6px; border-radius:4px; background:#f9fbff;">
                 <div style="font-size:12px; font-weight:600;">Photo ${idx + 1}</div>
-                <img src="${src}" alt="Photo ${idx + 1}" style="max-width:120px; max-height:120px; border:1px solid #ccc; border-radius:4px; cursor:pointer;" onclick="window.open('${src}','_blank')">
+                <img src="${src}" data-src="${src}" alt="Photo ${idx + 1}" loading="lazy" style="max-width:120px; max-height:120px; border:1px solid #ccc; border-radius:4px; cursor:pointer;" onclick="window.open('${src}','_blank')" onerror="pharmacyPhotoFallback(this, '${med.id}', ${idx}, '${src}')">
                 <button class="btn btn-sm" style="background:var(--red);" onclick="removeMedicationPhoto('${med.id}', ${idx}); return false;">🗑 Delete</button>
             </div>`
     );
@@ -968,12 +969,33 @@ async function removeMedicationPhoto(medId, idx) {
     const med = meds.find((m) => m.id === medId);
     if (!med) return;
     med.photos = (med.photos || []).filter((_, i) => i !== idx);
+    if (Array.isArray(med.photoDataUrls)) {
+        med.photoDataUrls = med.photoDataUrls.filter((_, i) => i !== idx);
+    }
     await fetchInventory({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(meds),
     });
     loadPharmacy();
+}
+
+function pharmacyPhotoFallback(img, medId, idx = -1, originalSrc = '') {
+    const med = pharmacyCache.find((m) => m.id === medId);
+    if (!med || !Array.isArray(med.photoDataUrls)) return;
+    const photos = Array.isArray(med.photos) ? med.photos : [];
+    let targetIdx = Number.isFinite(idx) ? Number(idx) : -1;
+    const resolvedSrc = originalSrc || (img ? img.getAttribute('data-src') || img.src : '');
+    if (targetIdx < 0 && resolvedSrc) {
+        targetIdx = photos.findIndex((p) => p === resolvedSrc);
+    }
+    if (targetIdx < 0 || targetIdx >= med.photoDataUrls.length) return;
+    const dataUrl = med.photoDataUrls[targetIdx];
+    if (!dataUrl) return;
+    if (img) {
+        img.onerror = null;
+        img.src = dataUrl;
+    }
 }
 
 // Expose for inline handlers
@@ -985,6 +1007,7 @@ window.addPurchaseEntry = addPurchaseEntry;
 window.uploadPurchasePhoto = uploadPurchasePhoto;
 window.removePurchasePhoto = removePurchasePhoto;
 window.removeMedicationPhoto = removeMedicationPhoto;
+window.pharmacyPhotoFallback = pharmacyPhotoFallback;
 window.scheduleSaveMedication = scheduleSaveMedication;
 window.refreshPharmacyLabelsFromSettings = refreshPharmacyLabelsFromSettings;
 window.sortPharmacyList = function(mode) {

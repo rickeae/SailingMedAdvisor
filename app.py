@@ -11,6 +11,7 @@ import base64
 import time
 import re
 import subprocess
+import io
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
@@ -78,11 +79,27 @@ from huggingface_hub import snapshot_download
 # Core config
 BASE_DIR = Path(__file__).parent.resolve()
 APP_HOME = Path("/home/user/app").resolve()
+PERSIST_ROOT = Path(os.environ.get("PERSIST_ROOT", "/data")).resolve()
 
-# Data + uploads live inside app home (HF Spaces non-root safe)
-DATA_ROOT = APP_HOME / "data"
+
+def _choose_root(preferred: Path, fallback: Path) -> Path:
+    """Pick a writable root, preferring a persistent mount when available."""
+    try:
+        preferred.mkdir(parents=True, exist_ok=True)
+        test = preferred / ".write_test"
+        test.write_text("ok", encoding="utf-8")
+        test.unlink(missing_ok=True)
+        return preferred
+    except Exception:
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
+
+
+BASE_STORE = _choose_root(PERSIST_ROOT, APP_HOME / ".localdata")
+# Data + uploads live inside persistent storage when available
+DATA_ROOT = BASE_STORE / "data"
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
-UPLOAD_ROOT = APP_HOME / "uploads"
+UPLOAD_ROOT = BASE_STORE / "uploads"
 UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
 SECRET_KEY = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
 
@@ -96,9 +113,18 @@ os.environ["HF_HOME"] = str(CACHE_DIR)
 os.environ["HUGGINGFACE_HUB_CACHE"] = str(CACHE_DIR / "hub")
 (CACHE_DIR / "hub").mkdir(parents=True, exist_ok=True)
 
-BACKUP_ROOT = APP_HOME / "backups"
+BACKUP_ROOT = BASE_STORE / "backups"
 BACKUP_ROOT.mkdir(parents=True, exist_ok=True)
+# Prefer persisted DB; migrate legacy DB if it exists
 DB_PATH = DATA_ROOT / "app.db"
+LEGACY_DB = APP_HOME / "data" / "app.db"
+if not DB_PATH.exists() and LEGACY_DB.exists():
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.copy2(LEGACY_DB, DB_PATH)
+        print(f"[startup] migrated legacy DB from {LEGACY_DB} to {DB_PATH}")
+    except Exception as exc:
+        print(f"[startup] failed to migrate legacy DB: {exc}")
 configure_db(DB_PATH)
 REQUIRED_MODELS = [
     "google/medgemma-1.5-4b-it",
@@ -126,6 +152,28 @@ PHOTO_JOB_WORKER_STARTED = False
 PHOTO_JOB_LOCK = threading.Lock()
 
 
+def _abs_upload_path(path_str: str) -> Path:
+    """Resolve a stored /uploads/... path to an absolute path under UPLOAD_ROOT."""
+    rel = path_str.lstrip("/")
+    if rel.startswith("uploads/"):
+        rel = rel[len("uploads/") :]
+    return UPLOAD_ROOT / rel
+
+
+def _encode_photo_data_url(image_path: Path, max_dim: int = 900, quality: int = 80) -> Optional[str]:
+    """Downsample an image and return a base64 data URL for DB embedding."""
+    try:
+        img = Image.open(image_path).convert("RGB")
+        img.thumbnail((max_dim, max_dim))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=quality, optimize=True)
+        b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+        return f"data:image/jpeg;base64,{b64}"
+    except Exception as exc:
+        print(f"[photo-encode] failed for {image_path}: {exc}")
+        return None
+
+
 def _restore_inventory_photos():
     """Ensure photo files exist by rehydrating from embedded data URLs."""
     try:
@@ -148,7 +196,7 @@ def _restore_inventory_photos():
                         data_url = embeds[idx]
                         if not path or not data_url:
                             continue
-                        dest = APP_HOME / path.lstrip("/")
+                        dest = _abs_upload_path(path)
                         if dest.exists():
                             continue
                         try:
@@ -193,7 +241,7 @@ def _rehydrate_inventory_photos(workspaces=None):
                 if len(embeds) < len(photos):
                     embeds = (embeds or []) + [None] * (len(photos) - len(embeds or []))
                 for idx, p in enumerate(photos):
-                    dest = APP_HOME / p.lstrip("/")
+                    dest = _abs_upload_path(p)
                     if dest.exists():
                         continue
                     missing += 1
@@ -772,14 +820,24 @@ def _resolve_med_model(workspace):
 def _merge_inventory_record(med_record: dict, photo_urls: List[str], workspace):
     inventory = db_op("inventory", workspace=workspace)
     existing = next((m for m in inventory if _same_med(m, med_record)), None)
+    new_data_urls = med_record.get("photoDataUrls") or []
     entry = {"status": "completed", "urls": photo_urls}
     if existing:
         existing.setdefault("photos", [])
-        all_urls = photo_urls or []
-        if all_urls:
-            merged_photos = existing["photos"] + all_urls
-            seen = set()
-            existing["photos"] = [p for p in merged_photos if not (p in seen or seen.add(p))]
+        existing.setdefault("photoDataUrls", [])
+        while len(existing["photoDataUrls"]) < len(existing["photos"]):
+            existing["photoDataUrls"].append(None)
+        for idx, url in enumerate(photo_urls or []):
+            data_url = new_data_urls[idx] if idx < len(new_data_urls) else None
+            if url in existing["photos"]:
+                pos = existing["photos"].index(url)
+                if pos >= len(existing["photoDataUrls"]):
+                    existing["photoDataUrls"].extend([None] * (pos + 1 - len(existing["photoDataUrls"])))
+                if data_url and not existing["photoDataUrls"][pos]:
+                    existing["photoDataUrls"][pos] = data_url
+            else:
+                existing["photos"].append(url)
+                existing["photoDataUrls"].append(data_url)
         existing.setdefault("purchaseHistory", [])
         med_record_ph = med_record.get("purchaseHistory") or []
         if med_record_ph:
@@ -791,6 +849,10 @@ def _merge_inventory_record(med_record: dict, photo_urls: List[str], workspace):
                 existing[key] = val
         entry["inventory_id"] = existing.get("id")
     else:
+        med_record.setdefault("photoDataUrls", new_data_urls)
+        if len(med_record.get("photoDataUrls", [])) < len(med_record.get("photos") or []):
+            padding = len(med_record.get("photos", [])) - len(med_record.get("photoDataUrls", []))
+            med_record["photoDataUrls"].extend([None] * padding)
         inventory.append(med_record)
         entry["inventory_id"] = med_record["id"]
     db_op("inventory", inventory, workspace=workspace)
@@ -1352,7 +1414,9 @@ async def db_upload(file: UploadFile = File(...)):
         shutil.move(tmp.name, DB_PATH)
         configure_db(DB_PATH)
         init_workspaces(WORKSPACE_NAMES)
-        return {"status": "uploaded"}
+        restore_results = _rehydrate_inventory_photos()
+        restored_total = sum(r.get("restored", 0) for r in restore_results)
+        return {"status": "uploaded", "restored_photos": restored_total, "details": restore_results}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -1444,7 +1508,15 @@ async def _process_photo_group(photo_paths: List[Path], photo_urls: List[str], w
     except Exception as e:
         raise RuntimeError(f"Photo inference failed for {primary_model}: {e}") from e
 
+    photo_data_urls = []
+    for p in photo_paths:
+        data_url = _encode_photo_data_url(p)
+        if data_url:
+            photo_data_urls.append(data_url)
+
     med_record = build_inventory_record(result, photo_urls)
+    if photo_data_urls:
+        med_record["photoDataUrls"] = photo_data_urls
     entry = _merge_inventory_record(med_record, photo_urls, workspace)
     entry.update({"result": result, "used_model": used_model})
     return entry

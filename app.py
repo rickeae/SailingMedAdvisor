@@ -53,9 +53,9 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 # Allow online downloads by default (HF Spaces first run needs this). You can set these to "1" after caches are warm.
 os.environ.setdefault("HF_HUB_OFFLINE", "0")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "0")
-AUTO_DOWNLOAD_MODELS = os.environ.get("AUTO_DOWNLOAD_MODELS", "0") == "1"
+AUTO_DOWNLOAD_MODELS = os.environ.get("AUTO_DOWNLOAD_MODELS", "1" if os.environ.get("HUGGINGFACE_SPACE_ID") else "0") == "1"
 VERIFY_MODELS_ON_START = os.environ.get("VERIFY_MODELS_ON_START", "1") == "1"
-DISABLE_LOCAL_INFERENCE = os.environ.get("DISABLE_LOCAL_INFERENCE") == "1" or bool(os.environ.get("HUGGINGFACE_SPACE_ID"))
+DISABLE_LOCAL_INFERENCE = os.environ.get("DISABLE_LOCAL_INFERENCE") == "1"
 
 import torch
 
@@ -106,12 +106,20 @@ SECRET_KEY = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
 OFFLOAD_DIR = APP_HOME / "offload"
 OFFLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-CACHE_DIR = APP_HOME / "models_cache"
+CACHE_DIR = BASE_STORE / "models_cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 # Point Hugging Face cache to a local directory to avoid network dependency
 os.environ["HF_HOME"] = str(CACHE_DIR)
 os.environ["HUGGINGFACE_HUB_CACHE"] = str(CACHE_DIR / "hub")
 (CACHE_DIR / "hub").mkdir(parents=True, exist_ok=True)
+LEGACY_CACHE = APP_HOME / "models_cache"
+if LEGACY_CACHE.exists() and not (CACHE_DIR / ".migrated").exists():
+    try:
+        shutil.copytree(LEGACY_CACHE, CACHE_DIR, dirs_exist_ok=True)
+        (CACHE_DIR / ".migrated").write_text("ok", encoding="utf-8")
+        print(f"[startup] migrated legacy model cache from {LEGACY_CACHE} to {CACHE_DIR}")
+    except Exception as exc:
+        print(f"[startup] legacy model cache migration failed: {exc}")
 
 BACKUP_ROOT = BASE_STORE / "backups"
 BACKUP_ROOT.mkdir(parents=True, exist_ok=True)

@@ -128,39 +128,46 @@ PHOTO_JOB_LOCK = threading.Lock()
 
 def _restore_inventory_photos():
     """Ensure photo files exist by rehydrating from embedded data URLs."""
-    for label in WORKSPACE_NAMES:
-        try:
-            ws = _workspace_dirs(label)
-            inv = get_doc(ws["db_id"], "inventory") or []
-            changed = False
-            for item in inv:
-                if not isinstance(item, dict):
-                    continue
-                photos = item.get("photos") or []
-                embeds = item.get("photoDataUrls") or []
-                if not embeds or not photos:
-                    continue
-                for idx, path in enumerate(photos):
-                    if idx >= len(embeds):
-                        break
-                    data_url = embeds[idx]
-                    if not path or not data_url:
+    try:
+        total_restored = 0
+        for label in WORKSPACE_NAMES:
+            try:
+                ws = _workspace_dirs(label)
+                inv = get_doc(ws["db_id"], "inventory") or []
+                for item in inv:
+                    if not isinstance(item, dict):
                         continue
-                    dest = APP_HOME / path.lstrip("/")
-                    if dest.exists():
+                    photos = item.get("photos") or []
+                    embeds = item.get("photoDataUrls") or []
+                    if not photos or not embeds:
                         continue
-                    try:
-                        header, b64data = data_url.split(",", 1)
-                        raw = base64.b64decode(b64data)
-                        dest.parent.mkdir(parents=True, exist_ok=True)
-                        with open(dest, "wb") as f:
-                            f.write(raw)
-                    except Exception:
-                        continue
-            if changed:
-                set_doc(ws["db_id"], "inventory", inv)
-        except Exception:
-            continue
+                    for idx, path in enumerate(photos):
+                        if idx >= len(embeds):
+                            break
+                        data_url = embeds[idx]
+                        if not path or not data_url:
+                            continue
+                        dest = APP_HOME / path.lstrip("/")
+                        if dest.exists():
+                            continue
+                        try:
+                            if "," in data_url:
+                                _, b64data = data_url.split(",", 1)
+                            else:
+                                b64data = data_url
+                            raw = base64.b64decode(b64data)
+                            dest.parent.mkdir(parents=True, exist_ok=True)
+                            with open(dest, "wb") as f:
+                                f.write(raw)
+                            total_restored += 1
+                        except Exception:
+                            continue
+            except Exception:
+                continue
+        if total_restored:
+            print(f"[photo-restore] restored {total_restored} inventory photos")
+    except Exception as exc:
+        print(f"[photo-restore] failed: {exc}")
 
 IS_HF_SPACE = bool(os.environ.get("SPACE_ID") or os.environ.get("HF_SPACE") or os.environ.get("HUGGINGFACE_SPACE"))
 PHOTO_JOB_WORKER_STARTED = False

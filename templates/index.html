@@ -1195,7 +1195,7 @@
             const res = await fetch('/api/db/status', { credentials: 'same-origin' });
             if (!res.ok) throw new Error(`Status ${res.status}`);
             const data = await res.json();
-            if (!data.exists || (data.workspaces || 0) === 0) {
+            if (!data.exists || (data.documents || 0) === 0) {
                 showDbModal();
             }
         } catch (err) {

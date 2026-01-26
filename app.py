@@ -1178,6 +1178,7 @@ async def db_status():
         exists = DB_PATH.exists()
         size = DB_PATH.stat().st_size if exists else 0
         workspaces = 0
+        documents = 0
         if exists and size > 0:
             try:
                 with sqlite3.connect(DB_PATH) as conn:
@@ -1186,9 +1187,13 @@ async def db_status():
                     if cur.fetchone():
                         cur.execute("SELECT COUNT(*) FROM workspaces")
                         workspaces = cur.fetchone()[0] or 0
+                    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='documents'")
+                    if cur.fetchone():
+                        cur.execute("SELECT COUNT(*) FROM documents")
+                        documents = cur.fetchone()[0] or 0
             except Exception:
                 pass
-        return {"exists": bool(exists and size > 0), "size": size, "workspaces": workspaces}
+        return {"exists": bool(exists and size > 0), "size": size, "workspaces": workspaces, "documents": documents}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 

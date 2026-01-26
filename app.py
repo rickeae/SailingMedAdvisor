@@ -152,10 +152,33 @@ def _is_valid_sqlite(path: Path) -> bool:
         return False
 
 
-def _bootstrap_db():
+def _db_is_populated(path: Path) -> bool:
+    try:
+        conn = sqlite3.connect(path)
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM documents")
+        docs = cur.fetchone()[0]
+        conn.close()
+        return docs > 0
+    except Exception:
+        return False
+
+
+def _bootstrap_db(force: bool = False):
     """Ensure /data/app.db exists; try legacy, bundled seed, then remote seed."""
-    if DB_PATH.exists() and DB_PATH.stat().st_size > 0 and _is_valid_sqlite(DB_PATH):
-        return
+    if DB_PATH.exists():
+        if (
+            not force
+            and DB_PATH.stat().st_size > 0
+            and _is_valid_sqlite(DB_PATH)
+            and _db_is_populated(DB_PATH)
+        ):
+            return
+        # drop the stale/empty DB before seeding
+        try:
+            DB_PATH.unlink()
+        except Exception:
+            pass
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     # 1) migrate legacy packaged DB
     if LEGACY_DB.exists() and LEGACY_DB.stat().st_size > 0 and _is_valid_sqlite(LEGACY_DB):
@@ -1441,6 +1464,19 @@ async def db_status():
             "documents": documents,
             "rick_patients": rick_patients,
         }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.post("/api/db/seed")
+async def db_seed():
+    """Force reseed from bundled/remote seed DB and rehydrate photos."""
+    try:
+        _bootstrap_db(force=True)
+        init_workspaces(WORKSPACE_NAMES)
+        restore = _rehydrate_inventory_photos()
+        restored = sum(r.get("restored", 0) for r in restore)
+        return {"status": "seeded", "restored_photos": restored, "details": restore}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 

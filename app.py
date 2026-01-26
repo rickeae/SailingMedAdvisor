@@ -2366,7 +2366,7 @@ async def photo_status():
                 photos = item.get("photos") or []
                 for p in photos:
                     total += 1
-                    dest = APP_HOME / p.lstrip("/")
+                    dest = _abs_upload_path(p)
                     if not dest.exists():
                         missing += 1
             reports.append({"workspace": label, "total": total, "missing": missing})

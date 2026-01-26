@@ -134,6 +134,7 @@ def _restore_inventory_photos():
             try:
                 ws = _workspace_dirs(label)
                 inv = get_doc(ws["db_id"], "inventory") or []
+                restored_ws = 0
                 for item in inv:
                     if not isinstance(item, dict):
                         continue
@@ -160,14 +161,58 @@ def _restore_inventory_photos():
                             with open(dest, "wb") as f:
                                 f.write(raw)
                             total_restored += 1
+                            restored_ws += 1
                         except Exception:
                             continue
             except Exception:
                 continue
-        if total_restored:
-            print(f"[photo-restore] restored {total_restored} inventory photos")
+            if restored_ws:
+                print(f"[photo-restore] {label}: restored {restored_ws} photos")
+        print(f"[photo-restore] total restored: {total_restored}")
     except Exception as exc:
         print(f"[photo-restore] failed: {exc}")
+
+
+def _rehydrate_inventory_photos(workspaces=None):
+    """Restores missing photo files for selected workspaces and reports stats."""
+    results = []
+    labels = workspaces or WORKSPACE_NAMES
+    for label in labels:
+        restored = 0
+        missing = 0
+        try:
+            ws = _workspace_dirs(label)
+            inv = get_doc(ws["db_id"], "inventory") or []
+            for item in inv:
+                if not isinstance(item, dict):
+                    continue
+                photos = item.get("photos") or []
+                embeds = item.get("photoDataUrls") or []
+                if not photos:
+                    continue
+                if len(embeds) < len(photos):
+                    embeds = (embeds or []) + [None] * (len(photos) - len(embeds or []))
+                for idx, p in enumerate(photos):
+                    dest = APP_HOME / p.lstrip("/")
+                    if dest.exists():
+                        continue
+                    missing += 1
+                    data_url = embeds[idx] if idx < len(embeds) else None
+                    if not data_url:
+                        continue
+                    try:
+                        b64data = data_url.split(",", 1)[1] if "," in data_url else data_url
+                        raw = base64.b64decode(b64data)
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        with open(dest, "wb") as f:
+                            f.write(raw)
+                        restored += 1
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        results.append({"workspace": label, "restored": restored, "missing_after": max(missing - restored, 0)})
+    return results
 
 IS_HF_SPACE = bool(os.environ.get("SPACE_ID") or os.environ.get("HF_SPACE") or os.environ.get("HUGGINGFACE_SPACE"))
 PHOTO_JOB_WORKER_STARTED = False
@@ -2098,6 +2143,43 @@ async def offline_ensure(_=Depends(require_auth)):
         }
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.post("/api/photos/restore")
+async def restore_photos():
+    """Manually trigger inventory photo restore from embedded data URLs."""
+    try:
+        results = _rehydrate_inventory_photos()
+        total = sum(r.get("restored", 0) for r in results)
+        return {"restored": total, "details": results}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.get("/api/photos/status")
+async def photo_status():
+    """Report photo file presence for inventories."""
+    try:
+        reports = []
+        for label in WORKSPACE_NAMES:
+            ws = _workspace_dirs(label)
+            inv = get_doc(ws["db_id"], "inventory") or []
+            missing = 0
+            total = 0
+            for item in inv:
+                if not isinstance(item, dict):
+                    continue
+                photos = item.get("photos") or []
+                for p in photos:
+                    total += 1
+                    dest = APP_HOME / p.lstrip("/")
+                    if not dest.exists():
+                        missing += 1
+            reports.append({"workspace": label, "total": total, "missing": missing})
+        return {"reports": reports}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 _restore_inventory_photos()
 _startup_model_check()

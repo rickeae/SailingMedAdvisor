@@ -1,6 +1,7 @@
 import os
 import json
 import uuid
+import sqlite3
 import secrets
 import shutil
 import zipfile
@@ -1168,6 +1169,72 @@ async def workspace_meta(request: Request):
     """Return available workspaces and current selection (no auth required)."""
     current = request.session.get("workspace_label") or ""
     return {"workspaces": WORKSPACE_NAMES, "current": current}
+
+
+@app.get("/api/db/status")
+async def db_status():
+    """Report whether the primary SQLite DB exists and has workspaces."""
+    try:
+        exists = DB_PATH.exists()
+        size = DB_PATH.stat().st_size if exists else 0
+        workspaces = 0
+        if exists and size > 0:
+            try:
+                with sqlite3.connect(DB_PATH) as conn:
+                    cur = conn.cursor()
+                    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='workspaces'")
+                    if cur.fetchone():
+                        cur.execute("SELECT COUNT(*) FROM workspaces")
+                        workspaces = cur.fetchone()[0] or 0
+            except Exception:
+                pass
+        return {"exists": bool(exists and size > 0), "size": size, "workspaces": workspaces}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.post("/api/db/create")
+async def db_create():
+    """Create a fresh database and seed workspaces."""
+    try:
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if DB_PATH.exists():
+            DB_PATH.unlink()
+        configure_db(DB_PATH)
+        init_workspaces(WORKSPACE_NAMES)
+        return {"status": "created"}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.post("/api/db/upload")
+async def db_upload(file: UploadFile = File(...)):
+    """Upload a SQLite DB to replace the current one."""
+    import tempfile
+
+    try:
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = tempfile.NamedTemporaryFile(delete=False)
+        try:
+            head = await file.read(100)
+            if not head.startswith(b"SQLite format 3"):
+                tmp.close()
+                Path(tmp.name).unlink(missing_ok=True)
+                return JSONResponse({"error": "Invalid SQLite file"}, status_code=status.HTTP_400_BAD_REQUEST)
+            tmp.write(head)
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                tmp.write(chunk)
+        finally:
+            tmp.close()
+        shutil.move(tmp.name, DB_PATH)
+        configure_db(DB_PATH)
+        init_workspaces(WORKSPACE_NAMES)
+        return {"status": "uploaded"}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @app.api_route("/api/data/{cat}", methods=["GET", "POST"])

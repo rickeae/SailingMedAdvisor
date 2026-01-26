@@ -130,16 +130,56 @@ if LEGACY_CACHE.exists() and not (CACHE_DIR / ".migrated").exists():
 
 BACKUP_ROOT = BASE_STORE / "backups"
 BACKUP_ROOT.mkdir(parents=True, exist_ok=True)
-# Prefer persisted DB; migrate legacy DB if it exists
+# Prefer persisted DB; migrate/seed if missing
 DB_PATH = DATA_ROOT / "app.db"
 LEGACY_DB = APP_HOME / "data" / "app.db"
-if not DB_PATH.exists() and LEGACY_DB.exists():
+SEED_DB_LOCAL = APP_HOME / "seed" / "app.db"
+SEED_DB_URL = os.environ.get("SEED_DB_URL") or "https://huggingface.co/spaces/rickescher/SailingMedAdvisor/resolve/main/app.db"
+
+
+def _bootstrap_db():
+    """Ensure /data/app.db exists; try legacy, bundled seed, then remote seed."""
+    if DB_PATH.exists() and DB_PATH.stat().st_size > 0:
+        return
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        shutil.copy2(LEGACY_DB, DB_PATH)
-        print(f"[startup] migrated legacy DB from {LEGACY_DB} to {DB_PATH}")
-    except Exception as exc:
-        print(f"[startup] failed to migrate legacy DB: {exc}")
+    # 1) migrate legacy packaged DB
+    if LEGACY_DB.exists() and LEGACY_DB.stat().st_size > 0:
+        try:
+            shutil.copy2(LEGACY_DB, DB_PATH)
+            print(f"[startup] migrated legacy DB from {LEGACY_DB}")
+            return
+        except Exception as exc:
+            print(f"[startup] failed legacy DB copy: {exc}")
+    # 2) bundled seed
+    if SEED_DB_LOCAL.exists() and SEED_DB_LOCAL.stat().st_size > 0:
+        try:
+            shutil.copy2(SEED_DB_LOCAL, DB_PATH)
+            print(f"[startup] seeded DB from {SEED_DB_LOCAL}")
+            return
+        except Exception as exc:
+            print(f"[startup] failed local seed DB copy: {exc}")
+    # 3) remote seed (requires internet)
+    if SEED_DB_URL:
+        try:
+            import requests
+
+            resp = requests.get(SEED_DB_URL, timeout=30, stream=True)
+            if resp.ok:
+                with open(DB_PATH, "wb") as f:
+                    for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                        if chunk:
+                            f.write(chunk)
+                if DB_PATH.stat().st_size > 0:
+                    print(f"[startup] downloaded seed DB from {SEED_DB_URL}")
+                    return
+            else:
+                print(f"[startup] seed DB download failed: status {resp.status_code}")
+        except Exception as exc:
+            print(f"[startup] seed DB download error: {exc}")
+    print("[startup] no seed DB found; creating new empty DB")
+
+
+_bootstrap_db()
 configure_db(DB_PATH)
 REQUIRED_MODELS = [
     "google/medgemma-1.5-4b-it",

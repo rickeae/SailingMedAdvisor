@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 from db_store import configure_db, init_workspaces, ensure_workspace, get_doc, set_doc
+import base64
 
 # Temporary startup cleanup to reclaim space and report usage on HF Spaces
 def _cleanup_and_report():
@@ -121,6 +122,45 @@ WORKSPACE_NAMES = sorted(
     key=lambda s: s.lower(),
 )
 init_workspaces(WORKSPACE_NAMES)
+PHOTO_JOB_WORKER_STARTED = False
+PHOTO_JOB_LOCK = threading.Lock()
+
+
+def _restore_inventory_photos():
+    """Ensure photo files exist by rehydrating from embedded data URLs."""
+    for label in WORKSPACE_NAMES:
+        try:
+            ws = _workspace_dirs(label)
+            inv = get_doc(ws["db_id"], "inventory") or []
+            changed = False
+            for item in inv:
+                if not isinstance(item, dict):
+                    continue
+                photos = item.get("photos") or []
+                embeds = item.get("photoDataUrls") or []
+                if not embeds or not photos:
+                    continue
+                for idx, path in enumerate(photos):
+                    if idx >= len(embeds):
+                        break
+                    data_url = embeds[idx]
+                    if not path or not data_url:
+                        continue
+                    dest = APP_HOME / path.lstrip("/")
+                    if dest.exists():
+                        continue
+                    try:
+                        header, b64data = data_url.split(",", 1)
+                        raw = base64.b64decode(b64data)
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        with open(dest, "wb") as f:
+                            f.write(raw)
+                    except Exception:
+                        continue
+            if changed:
+                set_doc(ws["db_id"], "inventory", inv)
+        except Exception:
+            continue
 
 IS_HF_SPACE = bool(os.environ.get("SPACE_ID") or os.environ.get("HF_SPACE") or os.environ.get("HUGGINGFACE_SPACE"))
 PHOTO_JOB_WORKER_STARTED = False
@@ -2052,6 +2092,7 @@ async def offline_ensure(_=Depends(require_auth)):
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+_restore_inventory_photos()
 _startup_model_check()
 _start_photo_worker()
 

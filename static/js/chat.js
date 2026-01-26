@@ -6,9 +6,73 @@ let isProcessing = false;
 let currentMode = 'triage';
 const LAST_PROMPT_KEY = 'sailingmed:lastPrompt';
 const LAST_PATIENT_KEY = 'sailingmed:lastPatient';
+const LAST_CHAT_MODE_KEY = 'sailingmed:lastChatMode';
+const LOGGING_MODE_KEY = 'sailingmed:loggingOff';
 const PROMPT_PREVIEW_STATE_KEY = 'sailingmed:promptPreviewOpen';
 const PROMPT_PREVIEW_CONTENT_KEY = 'sailingmed:promptPreviewContent';
 const CHAT_STATE_KEY = 'sailingmed:chatState';
+let triageSamples = [];
+
+function escapeHtml(str) {
+    return (str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+async function loadTriageSamples() {
+    if (triageSamples.length) return triageSamples;
+    try {
+        const res = await fetch('/static/data/triage_samples.json', { cache: 'no-store' });
+        if (!res.ok) throw new Error(`Status ${res.status}`);
+        triageSamples = await res.json();
+        const select = document.getElementById('triage-sample-select');
+        if (select && Array.isArray(triageSamples)) {
+            triageSamples.forEach((s) => {
+                const opt = document.createElement('option');
+                opt.value = String(s.id);
+                opt.textContent = `${s.id}. ${s.situation}`;
+                select.appendChild(opt);
+            });
+        }
+    } catch (err) {
+        console.warn('Unable to load triage samples', err);
+    }
+    return triageSamples;
+}
+
+function setSelectValue(selectEl, value) {
+    if (!selectEl) return;
+    const match = Array.from(selectEl.options).find(o => o.value === value || o.textContent === value);
+    if (match) {
+        selectEl.value = match.value;
+        return;
+    }
+    const opt = new Option(value, value, true, true);
+    selectEl.add(opt);
+    selectEl.value = value;
+}
+
+function applyTriageSample(sampleId) {
+    if (!sampleId) return;
+    const sample = triageSamples.find((s) => String(s.id) === String(sampleId));
+    if (!sample) return;
+    const msgTextarea = document.getElementById('msg');
+    if (msgTextarea) {
+        msgTextarea.value = sample.chat_text || '';
+        msgTextarea.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    setSelectValue(document.getElementById('triage-consciousness'), sample.responsive || '');
+    setSelectValue(document.getElementById('triage-breathing-status'), sample.breathing || '');
+    setSelectValue(document.getElementById('triage-pain-level'), sample.pain || '');
+    setSelectValue(document.getElementById('triage-main-problem'), sample.main_problem || '');
+    setSelectValue(document.getElementById('triage-temperature'), sample.temp || '');
+    setSelectValue(document.getElementById('triage-circulation'), sample.circulation || '');
+    setSelectValue(document.getElementById('triage-cause'), sample.cause || '');
+    persistChatState();
+}
 
 function setupPromptInjectionPanel() {
     const promptHeader = document.getElementById('prompt-preview-header');
@@ -75,6 +139,21 @@ if (document.readyState !== 'loading') {
     document.addEventListener('DOMContentLoaded', bindTriageMetaRefresh, { once: true });
     document.addEventListener('DOMContentLoaded', () => applyChatState(currentMode), { once: true });
 }
+
+document.addEventListener('DOMContentLoaded', () => {
+    try {
+        const stored = localStorage.getItem(LOGGING_MODE_KEY);
+        if (stored === '1') {
+            isPrivate = true;
+        }
+    } catch (err) { /* ignore */ }
+    const btn = document.getElementById('priv-btn');
+    if (btn) {
+        btn.style.background = isPrivate ? 'var(--triage)' : '#333';
+        btn.style.border = isPrivate ? '2px solid #fff' : '1px solid #222';
+        btn.innerText = isPrivate ? 'LOGGING: OFF' : 'LOGGING: ON';
+    }
+});
 
 function updateUI() {
     const banner = document.getElementById('banner');
@@ -207,6 +286,7 @@ function togglePriv() {
     btn.style.background = isPrivate ? 'var(--triage)' : '#333';
     btn.style.border = isPrivate ? '2px solid #fff' : '1px solid #222';
     btn.innerText = isPrivate ? 'LOGGING: OFF' : 'LOGGING: ON';
+    try { localStorage.setItem(LOGGING_MODE_KEY, isPrivate ? '1' : '0'); } catch (err) { /* ignore */ }
     updateUI();
 }
 
@@ -217,14 +297,16 @@ async function runChat(promptText = null, force28b = false) {
     isProcessing = true;
     lastPrompt = txt;
     const startTime = Date.now();
+    const blocker = document.getElementById('chat-blocker');
+    if (blocker) blocker.style.display = 'flex';
     
-    // Show loading indicator
-    const display = document.getElementById('display');
-    const loadingDiv = document.createElement('div');
-    loadingDiv.id = 'loading-indicator';
-    loadingDiv.className = 'loading-indicator';
-    loadingDiv.innerHTML = '🔄 Analyzing...';
-    display.appendChild(loadingDiv);
+        // Show loading indicator
+        const display = document.getElementById('display');
+        const loadingDiv = document.createElement('div');
+        loadingDiv.id = 'loading-indicator';
+        loadingDiv.className = 'loading-indicator';
+        loadingDiv.innerHTML = '🔄 Analyzing...';
+        display.appendChild(loadingDiv);
     display.scrollTop = display.scrollHeight;
     
     // Disable buttons
@@ -283,30 +365,77 @@ async function runChat(promptText = null, force28b = false) {
                 : (res.response || '').replace(/\n/g, '<br>');
             const meta = res.model ? `[${res.model}${res.duration_ms ? ` · ${Math.round(res.duration_ms)} ms` : ` · ${Math.round(durationMs)} ms`}]` : '';
             display.innerHTML += `<div class="response-block"><b>${meta}</b><br>${parsed}</div>`;
+            if (typeof loadData === 'function') {
+                loadData(); // refresh crew history/logs after a chat completes
+            }
         }
         
-        if (!promptText) {
-            document.getElementById('msg').value = '';
-        }
+        // Keep user-entered text so they can tweak/re-run
         persistChatState();
-        try { localStorage.setItem(LAST_PROMPT_KEY, lastPrompt); } catch (err) { /* ignore storage issues */ }
+        try {
+            localStorage.setItem(LAST_PROMPT_KEY, lastPrompt);
+            localStorage.setItem(LAST_CHAT_MODE_KEY, currentMode);
+        } catch (err) { /* ignore storage issues */ }
         if (display.lastElementChild) display.lastElementChild.scrollIntoView({behavior:'smooth'});
     } catch (error) {
         loadingDiv.remove();
         display.innerHTML += `<div class="response-block" style="border-left-color:var(--red);"><b>ERROR:</b> ${error.message}</div>`;
     } finally {
         isProcessing = false;
+        const blocker = document.getElementById('chat-blocker');
+        if (blocker) blocker.style.display = 'none';
         document.getElementById('run-btn').disabled = false;
         document.getElementById('repeat-btn').disabled = false;
     }
 }
 
-function repeatLast() {
-    if (lastPrompt) {
-        runChat(lastPrompt);
-    } else {
-        alert('No previous prompt to repeat');
+function restoreLast() {
+    // Restore last mode used
+    let modeToRestore = currentMode;
+    try {
+        const storedMode = localStorage.getItem(LAST_CHAT_MODE_KEY);
+        if (storedMode) modeToRestore = storedMode;
+    } catch (_) { /* ignore */ }
+    if (modeToRestore !== currentMode) {
+        setMode(modeToRestore);
     }
+    const state = loadChatState();
+    const modeState = state[modeToRestore] || {};
+    const msgEl = document.getElementById('msg');
+    if (msgEl && typeof modeState.msg === 'string') {
+        msgEl.value = modeState.msg;
+        msgEl.focus();
+    }
+    if (modeToRestore === 'triage' && modeState.fields && typeof modeState.fields === 'object') {
+        Object.entries(modeState.fields).forEach(([id, val]) => {
+            const el = document.getElementById(id);
+            if (el) el.value = val;
+        });
+    }
+    // Restore patient selection
+    const patientSelect = document.getElementById('p-select');
+    if (patientSelect) {
+        const savedPatient = (() => {
+            try { return localStorage.getItem(LAST_PATIENT_KEY) || ''; } catch (_) { return ''; }
+        })();
+        if (savedPatient && Array.from(patientSelect.options).some(o => o.value === savedPatient)) {
+            patientSelect.value = savedPatient;
+        }
+    }
+    // Restore prompt preview if cached
+    const promptBox = document.getElementById('prompt-preview');
+    const promptHeader = document.getElementById('prompt-preview-header');
+    if (promptBox) {
+        try {
+            const cached = localStorage.getItem(PROMPT_PREVIEW_CONTENT_KEY);
+            if (cached) {
+                promptBox.value = cached;
+                promptBox.dataset.autofilled = 'false';
+                if (promptHeader) togglePromptPreviewArrow(promptHeader, true);
+            }
+        } catch (_) { /* ignore */ }
+    }
+    alert('Last chat restored to editor. You can revise and resend.');
 }
 
 // Handle Enter key for submission
@@ -324,6 +453,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     const savedPrompt = localStorage.getItem(LAST_PROMPT_KEY);
     if (savedPrompt) lastPrompt = savedPrompt;
+    loadTriageSamples().catch(() => {});
 
     // Debug current patient select state
     const pSelect = document.getElementById('p-select');
@@ -333,6 +463,109 @@ document.addEventListener('DOMContentLoaded', () => {
         console.warn('[DEBUG] p-select not found on DOMContentLoaded');
     }
 });
+
+async function reactivateChat(historyId) {
+    try {
+        const res = await fetch('/api/data/history', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error(`History load failed (${res.status})`);
+        const data = await res.json();
+        const entry = Array.isArray(data) ? data.find((h) => h.id === historyId) : null;
+        if (!entry) {
+            alert('Unable to reactivate: history entry not found.');
+            return;
+        }
+        const sameThread = Array.isArray(data)
+            ? data
+                .filter((h) => {
+                    const samePatient = (entry.patient_id && h.patient_id === entry.patient_id) || (entry.patient && h.patient === entry.patient);
+                    const sameMode = (entry.mode || 'triage') === (h.mode || 'triage');
+                    return samePatient && sameMode;
+                })
+                .sort((a, b) => (a.date || '').localeCompare(b.date || ''))
+            : [entry];
+        const transcript = sameThread
+            .map((h, idx) => {
+                const title = h.date ? `Entry ${idx + 1} — ${h.date}` : `Entry ${idx + 1}`;
+                return `${title}\nQUERY:\n${h.query || ''}\nRESPONSE:\n${h.response || ''}`;
+            })
+            .join('\n\n----\n\n');
+        // Set mode based on stored value if present
+        if (entry.mode) {
+            setMode(entry.mode);
+        }
+        // Navigate to the correct tab
+        const triageTabBtn = document.querySelector('.tab.tab-triage');
+        if (triageTabBtn) {
+            triageTabBtn.click();
+        }
+        // Attempt to restore patient selection using patient_id first, then name
+        const patientSelect = document.getElementById('p-select');
+        if (patientSelect) {
+            let targetVal = entry.patient_id || '';
+            if (targetVal && Array.from(patientSelect.options).some((o) => o.value === targetVal)) {
+                patientSelect.value = targetVal;
+            } else if (entry.patient) {
+                const matchByName = Array.from(patientSelect.options).find((o) => o.textContent === entry.patient);
+                if (matchByName) patientSelect.value = matchByName.value;
+            }
+            try { localStorage.setItem(LAST_PATIENT_KEY, patientSelect.value || ''); } catch (err) { /* ignore */ }
+        }
+        // Restore chat area with previous exchange
+        const display = document.getElementById('display');
+        if (display) {
+            const queryHtml = escapeHtml(entry.query || '').replace(/\n/g, '<br>');
+            const respHtml = escapeHtml(entry.response || '').replace(/\n/g, '<br>');
+            display.innerHTML = `
+                <div class="response-block" style="border-left-color:var(--inquiry);">
+                    <b>Reactivated Chat</b><br>
+                    <div style="margin-top:6px;"><strong>Query:</strong><br>${queryHtml}</div>
+                    <div style="margin-top:6px;"><strong>Response:</strong><br>${respHtml}</div>
+                </div>`;
+            display.scrollTop = display.scrollHeight;
+        }
+        // Prefill message box with last query so user can continue
+        const msgTextarea = document.getElementById('msg');
+        if (msgTextarea) {
+            msgTextarea.value = entry.query || '';
+            msgTextarea.focus();
+        }
+        // Restore prompt (injected) view if available
+        const promptBox = document.getElementById('prompt-preview');
+        const promptHeader = document.getElementById('prompt-preview-header');
+        if (promptBox && entry.prompt) {
+            promptBox.value = entry.prompt;
+            promptBox.dataset.autofilled = 'false';
+            try { localStorage.setItem(PROMPT_PREVIEW_CONTENT_KEY, entry.prompt); } catch (err) { /* ignore */ }
+            if (promptHeader) {
+                togglePromptPreviewArrow(promptHeader, true);
+            }
+        }
+        // Inject transcript into prompt preview so the model sees prior context
+        if (promptBox) {
+            const transcriptBlock = transcript ? `Previous chat transcript:\n${transcript}` : '';
+            const combined = [transcriptBlock, promptBox.value].filter(Boolean).join('\n\n');
+            promptBox.value = combined;
+            promptBox.dataset.autofilled = 'false';
+            try { localStorage.setItem(PROMPT_PREVIEW_CONTENT_KEY, combined); } catch (err) { /* ignore */ }
+            if (promptHeader) {
+                togglePromptPreviewArrow(promptHeader, true);
+            }
+            const container = document.getElementById('prompt-preview-container');
+            if (container) container.style.display = 'block';
+        }
+        // Persist last prompt locally
+        if (entry.query) {
+            lastPrompt = entry.query;
+            try { localStorage.setItem(LAST_PROMPT_KEY, entry.query); } catch (err) { /* ignore */ }
+        }
+        alert('Chat restored. You can continue the conversation.');
+    } catch (err) {
+        alert(`Unable to reactivate chat: ${err.message}`);
+    }
+}
+
+window.reactivateChat = reactivateChat;
+window.applyTriageSample = applyTriageSample;
 
 function setMode(mode) {
     const target = mode === 'inquiry' ? 'inquiry' : 'triage';

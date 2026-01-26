@@ -184,6 +184,38 @@
         .phone-block { display: block; }
         .phone-import-panel { width: 100%; min-height: 130vh; }
         }
+    /* Blocking modal while GPU chat is running */
+    #chat-blocker {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.65);
+        z-index: 9000;
+        align-items: center;
+        justify-content: center;
+        padding: 16px;
+        box-sizing: border-box;
+    }
+    #chat-blocker .modal {
+        background: #fff;
+        border-radius: 10px;
+        padding: 18px;
+        max-width: 520px;
+        width: 100%;
+        box-shadow: 0 12px 32px rgba(0,0,0,0.2);
+        text-align: center;
+    }
+    #chat-blocker h3 { margin: 0 0 10px 0; color: #1f2d3d; }
+    #chat-blocker p { margin: 8px 0; color: #2c3e50; line-height: 1.5; }
+    #chat-blocker .spinner {
+        width: 40px; height: 40px;
+        border-radius: 50%;
+        border: 4px solid #e0e0e0;
+        border-top-color: var(--inquiry);
+        margin: 14px auto;
+        animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
     </style>
     <script>
         window.WORKSPACE_LABEL = "{{ workspace.label if workspace else '' }}";
@@ -267,6 +299,12 @@
                             </div>
                             <div style="display:flex; align-items:center; gap:6px; margin-bottom:6px;">
                                 <span class="dev-tag">dev:triage-message</span>
+                            </div>
+                            <div style="display:flex; gap:10px; align-items:center; margin-bottom:8px;">
+                                <label for="triage-sample-select" style="font-size:12px; color:#333; font-weight:700;">Load sample case:</label>
+                                <select id="triage-sample-select" style="padding:8px; min-width:240px;" onchange="applyTriageSample(this.value)">
+                                    <option value="">Select a sample…</option>
+                                </select>
                             </div>
                             <textarea id="msg" style="height:105px;" placeholder="Describe what's happening"></textarea>
                             <div id="triage-meta-selects" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:10px; margin-top:10px;">
@@ -368,7 +406,7 @@
                             </div>
                             <div style="display:flex; gap:10px; margin-top:10px; align-items:center; flex-wrap:wrap;">
                                 <button onclick="runChat()" id="run-btn" class="btn" style="flex-grow:1; background:var(--triage); min-width:160px;">SUBMIT FOR TRIAGE</button>
-                                <button onclick="repeatLast()" id="repeat-btn" class="btn user-adv-only" style="background:#555; min-width:120px;">REPEAT LAST</button>
+                                <button onclick="restoreLast()" id="repeat-btn" class="btn user-adv-only" style="background:#555; min-width:120px;">RESTORE LAST</button>
                             </div>
                         </div>
                     </div>
@@ -432,6 +470,10 @@
                                 <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Pharmaceuticals</span><span id="pharmacy-count" style="margin-left:8px; font-weight:700; font-size:12px; color:#1f2d3d;">(0)</span><span class="dev-tag">dev:medicines-shell</span>
                             </div>
                             <div class="col-body" style="padding:12px; display:none; background:#f5f8ff; border:1px solid #d7e2ff; border-top:none;">
+                                <div class="developer-only" style="display:none; margin-bottom:8px; display:flex; gap:8px; flex-wrap:wrap;">
+                                    <button class="btn btn-sm" style="background:#0b8457;" onclick="exportPharmacyJSON()">Export Pharmaceuticals JSON</button>
+                                    <button class="btn btn-sm" style="background:#1b4f72;" onclick="importPharmacyJSON()">Import Pharmaceuticals JSON</button>
+                                </div>
                                 <div class="collapsible" style="margin-bottom:12px;">
                                     <div id="medication-add-header" class="col-header crew-med-header" data-sidebar-id="equipment-medication-add" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
                                         <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Add Pharmaceuticals</span><span class="dev-tag">dev:medication-add</span>
@@ -479,6 +521,25 @@
                                                     <option value="Sterilizing">Sterilizing</option>
                                                     <option value="Damaged/Out of Service">Damaged/Out of Service</option>
                                                 </select>
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Sort Category</label>
+                                                <select id="med-new-sort" style="width:100%; padding:8px;" onchange="toggleCustomSortField()">
+                                                    <option value="">Select...</option>
+                                                    <option value="Antibiotic">Antibiotic</option>
+                                                    <option value="Analgesic">Analgesic</option>
+                                                    <option value="Cardiac">Cardiac</option>
+                                                    <option value="Respiratory">Respiratory</option>
+                                                    <option value="Gastrointestinal">Gastrointestinal</option>
+                                                    <option value="Endocrine">Endocrine</option>
+                                                    <option value="Emergency">Emergency</option>
+                                                    <option value="Other">Custom...</option>
+                                                </select>
+                                                <input id="med-new-sort-custom" type="text" placeholder="Custom category" style="margin-top:6px; width:100%; padding:8px; display:none;">
+                                            </div>
+                                            <div style="display:flex; align-items:center; gap:6px;">
+                                                <input id="med-new-verified" type="checkbox">
+                                                <label style="font-size:12px; margin:0;">Verified</label>
                                             </div>
                                             <div>
                                                 <label style="font-weight:700; font-size:12px;">Expiry Date</label>
@@ -571,10 +632,20 @@
                                     </div>
                                     </div>
                                 </div>
-                                <div class="collapsible" style="margin-bottom:12px;">
+                                        <div class="collapsible" style="margin-bottom:12px;">
                                     <div class="col-body" style="padding:12px; background:#f8f9fa; display:block;">
                                         <div class="dev-tag" style="margin-bottom:6px;">dev:pharmacy-inventory</div>
                                         <div class="dev-tag" style="margin-bottom:6px;">dev:pharmacy-controls</div>
+                                        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
+                                            <label style="font-size:12px; font-weight:700;">Sort by:</label>
+                                            <select id="pharmacy-sort" style="padding:8px; min-width:180px;" onchange="handlePharmacySortChange()">
+                                                <option value="sortCategory">Sort Category</option>
+                                                <option value="generic">Generic Name</option>
+                                                <option value="brand">Brand Name</option>
+                                                <option value="strength">Strength</option>
+                                                <option value="expiry">Expiry Date</option>
+                                            </select>
+                                        </div>
                                         <div class="dev-tag" style="margin-bottom:6px;">dev:pharmacy-list</div>
                                         <div id="pharmacy-list"></div>
                                     </div>
@@ -693,6 +764,7 @@
         <div class="page-body sidebar-open">
             <div class="page-main">
                 <div class="page-shell">
+                    <div class="dev-tag" style="margin-bottom:8px;">dev:vessel-crew-tab</div>
                     <div class="panel-wrapper">
                 <div class="collapsible" style="margin-bottom:15px;">
                     <div class="col-header crew-med-header" data-sidebar-id="vessel-info" onclick="toggleSection(this)" style="background:#e3f2fd; border:1px solid #c5ddf8; justify-content:flex-start;">
@@ -702,39 +774,71 @@
                         <div class="dev-tag" style="margin-bottom:6px;">dev:vessel-fields</div>
                         <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-bottom:12px; font-size:15px;">
                             <div>
+                                <div class="dev-tag">dev:vessel-name</div>
                                 <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">Vessel Name</label>
                                 <input type="text" id="vessel-name" style="padding:8px; width:100%;">
                             </div>
                             <div>
+                                <div class="dev-tag">dev:vessel-registration</div>
                                 <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">Registration Number</label>
                                 <input type="text" id="vessel-registration" style="padding:8px; width:100%;">
                             </div>
                             <div>
+                                <div class="dev-tag">dev:vessel-flag</div>
                                 <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">Flag Country</label>
                                 <input type="text" id="vessel-flag" style="padding:8px; width:100%;">
                             </div>
                             <div>
+                                <div class="dev-tag">dev:vessel-homeport</div>
                                 <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">Home Port</label>
                                 <input type="text" id="vessel-homeport" style="padding:8px; width:100%;">
                             </div>
                             <div>
+                                <div class="dev-tag">dev:vessel-tonnage</div>
                                 <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">Gross Tonnage</label>
                                 <input type="text" id="vessel-tonnage" style="padding:8px; width:100%;">
                             </div>
                             <div>
+                                <div class="dev-tag">dev:vessel-net-tonnage</div>
                                 <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">Net/Register Tonnage</label>
                                 <input type="text" id="vessel-net-tonnage" style="padding:8px; width:100%;">
                             </div>
                             <div>
+                                <div class="dev-tag">dev:vessel-callsign</div>
                                 <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">Call Sign</label>
                                 <input type="text" id="vessel-callsign" style="padding:8px; width:100%;">
                             </div>
                             <div>
+                                <div class="dev-tag">dev:vessel-mmsi</div>
                                 <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">MMSI Number</label>
                                 <input type="text" id="vessel-mmsi" style="padding:8px; width:100%;">
                             </div>
+                            <div>
+                                <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">Vessel Hull Number</label>
+                                <input type="text" id="vessel-hull-number" style="padding:8px; width:100%;">
+                            </div>
+                            <div>
+                                <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">Starboard Engine Brand/Model/Size</label>
+                                <input type="text" id="vessel-starboard-engine" style="padding:8px; width:100%;">
+                            </div>
+                            <div>
+                                <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">Starboard Engine S/N</label>
+                                <input type="text" id="vessel-starboard-sn" style="padding:8px; width:100%;">
+                            </div>
+                            <div>
+                                <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">Port Engine Brand/Model/Size</label>
+                                <input type="text" id="vessel-port-engine" style="padding:8px; width:100%;">
+                            </div>
+                            <div>
+                                <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">Port Engine S/N</label>
+                                <input type="text" id="vessel-port-sn" style="padding:8px; width:100%;">
+                            </div>
+                            <div>
+                                <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">RIB S/N</label>
+                                <input type="text" id="vessel-rib-sn" style="padding:8px; width:100%;">
+                            </div>
                         </div>
-                        <button onclick="saveVesselInfo()" class="btn btn-sm" style="background:var(--inquiry); width:100%;">Save Vessel Info</button>
+                        <button onclick="saveVesselInfo()" class="btn btn-sm" style="background:var(--inquiry); width:100%;"><span class="dev-tag">dev:vessel-save</span>Save Vessel Info</button>
                     </div>
                 </div>
                 <div class="collapsible" style="margin-bottom:15px;">
@@ -749,12 +853,12 @@
                             <div class="col-body" style="padding:15px; background:#f8f9fa;">
                                 <div class="dev-tag" style="margin-bottom:6px;">dev:crew-add-fields</div>
                                 <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:8px; margin-bottom:8px; font-size:15px;">
-                                    <div><label style="font-size:13px; margin-bottom:2px;">First Name *</label><input type="text" id="cn-first" style="padding:6px; width:100%;"></div>
-                                    <div><label style="font-size:13px; margin-bottom:2px;">Middle Name(s)</label><input type="text" id="cn-middle" style="padding:6px; width:100%;"></div>
-                                    <div><label style="font-size:13px; margin-bottom:2px;">Last Name *</label><input type="text" id="cn-last" style="padding:6px; width:100%;"></div>
+                                    <div><div class="dev-tag">dev:crew-add-first</div><label style="font-size:13px; margin-bottom:2px;">First Name *</label><input type="text" id="cn-first" style="padding:6px; width:100%;"></div>
+                                    <div><div class="dev-tag">dev:crew-add-middle</div><label style="font-size:13px; margin-bottom:2px;">Middle Name(s)</label><input type="text" id="cn-middle" style="padding:6px; width:100%;"></div>
+                                    <div><div class="dev-tag">dev:crew-add-last</div><label style="font-size:13px; margin-bottom:2px;">Last Name *</label><input type="text" id="cn-last" style="padding:6px; width:100%;"></div>
                                 </div>
                                 <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:8px; margin-bottom:8px; font-size:15px;">
-                                    <div><label style="font-size:13px; margin-bottom:2px;">Sex</label><select id="cn-sex" style="padding:6px; width:100%;">
+                                    <div><div class="dev-tag">dev:crew-add-sex</div><label style="font-size:13px; margin-bottom:2px;">Sex</label><select id="cn-sex" style="padding:6px; width:100%;">
                                         <option value="">Select...</option>
                                         <option value="Male">Male</option>
                                         <option value="Female">Female</option>
@@ -762,8 +866,8 @@
                                         <option value="Other">Other</option>
                                         <option value="Prefer not to say">Prefer not to say</option>
                                     </select></div>
-                                    <div><label style="font-size:13px; margin-bottom:2px;">Birthdate</label><input type="date" id="cn-birthdate" style="padding:6px; width:100%;"></div>
-                                    <div><label style="font-size:13px; margin-bottom:2px;">Position</label><select id="cn-position" style="padding:6px; width:100%;">
+                                    <div><div class="dev-tag">dev:crew-add-birthdate</div><label style="font-size:13px; margin-bottom:2px;">Birthdate</label><input type="date" id="cn-birthdate" style="padding:6px; width:100%;"></div>
+                                    <div><div class="dev-tag">dev:crew-add-position</div><label style="font-size:13px; margin-bottom:2px;">Position</label><select id="cn-position" style="padding:6px; width:100%;">
                                         <option value="">Select...</option>
                                         <option value="Captain">Captain</option>
                                         <option value="Crew">Crew</option>
@@ -771,36 +875,38 @@
                                     </select></div>
                                 </div>
                                 <div style="display:grid; grid-template-columns: 1fr 1fr 1fr 1fr 1fr; gap:8px; margin-bottom:8px; font-size:15px;">
-                                    <div><label style="font-size:13px; margin-bottom:2px;">Citizenship</label><input type="text" id="cn-citizenship" list="countries" style="padding:6px; width:100%;"></div>
-                                    <div><label style="font-size:13px; margin-bottom:2px;">Birthplace</label><input type="text" id="cn-birthplace" list="countries" style="padding:6px; width:100%;"></div>
-                                    <div><label style="font-size:13px; margin-bottom:2px;">Passport Number</label><input type="text" id="cn-passport" style="padding:6px; width:100%;"></div>
-                                    <div><label style="font-size:13px; margin-bottom:2px;">Issue Date</label><input type="date" id="cn-pass-issue" style="padding:6px; width:100%;"></div>
-                                    <div><label style="font-size:13px; margin-bottom:2px;">Expiry Date</label><input type="date" id="cn-pass-expiry" style="padding:6px; width:100%;"></div>
+                                    <div><div class="dev-tag">dev:crew-add-citizenship</div><label style="font-size:13px; margin-bottom:2px;">Citizenship</label><input type="text" id="cn-citizenship" list="countries" style="padding:6px; width:100%;"></div>
+                                    <div><div class="dev-tag">dev:crew-add-birthplace</div><label style="font-size:13px; margin-bottom:2px;">Birthplace</label><input type="text" id="cn-birthplace" list="countries" style="padding:6px; width:100%;"></div>
+                                    <div><div class="dev-tag">dev:crew-add-passport</div><label style="font-size:13px; margin-bottom:2px;">Passport Number</label><input type="text" id="cn-passport" style="padding:6px; width:100%;"></div>
+                                    <div><div class="dev-tag">dev:crew-add-pass-issue</div><label style="font-size:13px; margin-bottom:2px;">Issue Date</label><input type="date" id="cn-pass-issue" style="padding:6px; width:100%;"></div>
+                                    <div><div class="dev-tag">dev:crew-add-pass-expiry</div><label style="font-size:13px; margin-bottom:2px;">Expiry Date</label><input type="date" id="cn-pass-expiry" style="padding:6px; width:100%;"></div>
                                 </div>
                             <div style="display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap:8px; margin-bottom:8px; font-size:15px;">
-                                <div><label style="font-size:13px; margin-bottom:2px;">Cell/WhatsApp</label><input type="text" id="cn-phone" placeholder="+1234567890" style="padding:6px; width:100%;"></div>
-                                <div><label style="font-size:13px; margin-bottom:2px;">Passport Photo/PDF</label><input type="file" id="cn-passport-photo" accept="image/*,.pdf" style="padding:4px; width:100%; font-size:13px;"></div>
-                                <div><label style="font-size:13px; margin-bottom:2px;">Passport Page Photo/PDF</label><input type="file" id="cn-passport-page" accept="image/*,.pdf" style="padding:4px; width:100%; font-size:13px;"></div>
+                                <div><div class="dev-tag">dev:crew-add-phone</div><label style="font-size:13px; margin-bottom:2px;">Cell/WhatsApp</label><input type="text" id="cn-phone" placeholder="+1234567890" style="padding:6px; width:100%;"></div>
+                                <div><div class="dev-tag">dev:crew-add-passport-photo</div><label style="font-size:13px; margin-bottom:2px;">Passport Photo/PDF</label><input type="file" id="cn-passport-photo" accept="image/*,.pdf" style="padding:4px; width:100%; font-size:13px;"></div>
+                                <div><div class="dev-tag">dev:crew-add-passport-page</div><label style="font-size:13px; margin-bottom:2px;">Passport Page Photo/PDF</label><input type="file" id="cn-passport-page" accept="image/*,.pdf" style="padding:4px; width:100%; font-size:13px;"></div>
                             </div>
                             <div style="margin-bottom:8px;"><label style="font-size:12px; font-weight:bold;">Emergency Contact</label></div>
                             <div class="dev-tag" style="margin-bottom:6px;">dev:crew-add-emergency</div>
                             <div style="display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap:8px; margin-bottom:8px; font-size:15px;">
-                                <div><label style="font-size:13px; margin-bottom:2px;">Name</label><input type="text" id="cn-emerg-name" style="padding:6px; width:100%;"></div>
-                                <div><label style="font-size:13px; margin-bottom:2px;">Relationship</label><input type="text" id="cn-emerg-rel" style="padding:6px; width:100%;"></div>
-                                <div><label style="font-size:13px; margin-bottom:2px;">Phone</label><input type="text" id="cn-emerg-phone" style="padding:6px; width:100%;"></div>
-                                <div><label style="font-size:13px; margin-bottom:2px;">Email</label><input type="email" id="cn-emerg-email" style="padding:6px; width:100%;"></div>
+                                <div><div class="dev-tag">dev:crew-add-emerg-name</div><label style="font-size:13px; margin-bottom:2px;">Name</label><input type="text" id="cn-emerg-name" style="padding:6px; width:100%;"></div>
+                                <div><div class="dev-tag">dev:crew-add-emerg-rel</div><label style="font-size:13px; margin-bottom:2px;">Relationship</label><input type="text" id="cn-emerg-rel" style="padding:6px; width:100%;"></div>
+                                <div><div class="dev-tag">dev:crew-add-emerg-phone</div><label style="font-size:13px; margin-bottom:2px;">Phone</label><input type="text" id="cn-emerg-phone" style="padding:6px; width:100%;"></div>
+                                <div><div class="dev-tag">dev:crew-add-emerg-email</div><label style="font-size:13px; margin-bottom:2px;">Email</label><input type="email" id="cn-emerg-email" style="padding:6px; width:100%;"></div>
                             </div>
                             <div style="margin-bottom:10px; font-size:15px;">
                                 <label style="font-size:13px; margin-bottom:2px;">Emergency Contact Notes</label>
+                                <div class="dev-tag">dev:crew-add-emerg-notes</div>
                                 <input type="text" id="cn-emerg-notes" placeholder="Additional emergency contact information" style="padding:6px; width:100%;">
                             </div>
                             <datalist id="countries">
                                 <option value="USA"><option value="Canada"><option value="UK"><option value="Australia"><option value="New Zealand"><option value="France"><option value="Germany"><option value="Spain"><option value="Italy"><option value="Netherlands"><option value="Singapore"><option value="Malaysia"><option value="Thailand"><option value="Philippines"><option value="Japan"><option value="China"><option value="India">
                             </datalist>
-                            <button onclick="addCrew()" class="btn btn-sm" style="background:var(--dark); width:100%;">+ Add Crew Member</button>
+                            <button onclick="addCrew()" class="btn btn-sm" style="background:var(--dark); width:100%;"><span class="dev-tag">dev:crew-add-submit</span>+ Add Crew Member</button>
                         </div>
                         </div>
 
+                        <div class="dev-tag" style="margin-bottom:6px;">dev:crew-info-anchor</div>
                         <div id="crew-info-list"></div>
                     </div>
                 </div>
@@ -847,6 +953,21 @@
                                 <button id="offline-flag-btn" class="btn btn-sm" style="background:#b26a00;" onclick="toggleOfflineFlags()">Enable offline flags</button>
                             </div>
                             <div style="font-size:12px; color:#555;">Ensures all required models are cached and lets you back up/restore the cache before going offline.</div>
+                        </div>
+                    </div>
+                    <div class="collapsible" style="margin-bottom:12px;">
+                        <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                            <span class="dev-tag">dev:settings-vax-types</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Vaccine Type Dropdown</span>
+                        </div>
+                        <div class="col-body" style="padding:12px; background:#f8f9fa; display:none;">
+                            <div style="margin-bottom:8px; font-size:12px; color:#2c3e50;">Manage the Vaccine Type/Disease options shown in Crew Vaccines. An "Other" option is always available for ad-hoc entries.</div>
+                            <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
+                                <input id="vaccine-type-input" type="text" style="padding:8px; min-width:220px; flex:1;" placeholder="e.g., MMR, DTaP, HepB">
+                                <button class="btn btn-sm" style="background:var(--inquiry);" onclick="addVaccineType()">Add Type</button>
+                            </div>
+                            <div class="dev-tag" style="margin-bottom:6px;">dev:settings-vax-list</div>
+                            <div id="vaccine-types-list"></div>
+                            <div id="vaccine-types-status" style="margin-top:8px; font-size:12px; color:#555;">Saved with workspace settings.</div>
                         </div>
                     </div>
                     <div class="collapsible developer-only" style="margin-bottom:12px; display:none;">
@@ -1017,11 +1138,19 @@
     </div>
 </div>
 
+<div id="chat-blocker">
+    <div class="modal">
+        <div class="spinner"></div>
+        <h3>Processing Triage Chat…</h3>
+        <p>Please wait. Navigation or edits in SailingMedAdvisor are temporarily paused until this response completes.</p>
+    </div>
+</div>
+
 <script src="/static/js/chat.js?v=2017"></script>
-<script src="/static/js/crew.js?v=2024"></script>
+<script src="/static/js/crew.js?v=2025"></script>
 <script src="/static/js/pharmacy.js?v=2026"></script>
 <script src="/static/js/equipment.js?v=2038"></script>
-<script src="/static/js/settings.js?v=2025"></script>
-<script src="/static/js/main.js?v=2019"></script>
+<script src="/static/js/settings.js?v=2026"></script>
+<script src="/static/js/main.js?v=2020"></script>
 </body>
 </html>

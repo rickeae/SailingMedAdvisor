@@ -146,18 +146,26 @@ async function showTab(e, n) {
 async function loadData() {
     console.log('[DEBUG] loadData: start');
     try {
-        const [res, historyRes] = await Promise.all([
+        const [res, historyRes, settingsRes] = await Promise.all([
             fetch('/api/data/patients', { credentials: 'same-origin' }),
             fetch('/api/data/history', { credentials: 'same-origin' }),
+            fetch('/api/data/settings', { credentials: 'same-origin' })
         ]);
-        console.log('[DEBUG] loadData: status patients', res.status, 'history', historyRes.status);
+        console.log('[DEBUG] loadData: status patients', res.status, 'history', historyRes.status, 'settings', settingsRes.status);
         if (!res.ok) throw new Error(`Patients request failed: ${res.status}`);
         if (!historyRes.ok) throw new Error(`History request failed: ${historyRes.status}`);
+        if (!settingsRes.ok) console.warn('Settings request failed:', settingsRes.status);
         const data = await res.json();
         const history = await historyRes.json();
+        let settings = {};
+        try {
+            settings = await settingsRes.json();
+        } catch (err) {
+            console.warn('Settings parse failed, using defaults.', err);
+        }
         console.log('[DEBUG] loadData: patients length', Array.isArray(data) ? data.length : 'n/a');
         if (!Array.isArray(data)) throw new Error('Unexpected patients data format');
-        loadCrewData(data, Array.isArray(history) ? history : []);
+        loadCrewData(data, Array.isArray(history) ? history : [], settings || {});
     } catch (err) {
         console.error('[DEBUG] Failed to load crew data', err);
         // Gracefully clear UI to avoid JS errors

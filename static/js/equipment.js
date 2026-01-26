@@ -1005,6 +1005,10 @@ async function addMedicationItem() {
         return;
     }
     const category = getNewEquipmentVal('med-new-cat') || 'Medication';
+    const sortSel = document.getElementById('med-new-sort');
+    const sortCustom = document.getElementById('med-new-sort-custom');
+    const sortCategory = sortSel ? (sortSel.value === 'Other' ? (sortCustom?.value || '') : (sortSel.value || '')) : '';
+    const verified = !!document.getElementById('med-new-verified')?.checked;
     const exclude = document.getElementById('med-new-exclude')?.checked || false;
     const newId = `med-${Date.now()}`;
     const newMed = {
@@ -1024,6 +1028,8 @@ async function addMedicationItem() {
         primaryIndication: '',
         allergyWarnings: '',
         standardDosage: '',
+        sortCategory,
+        verified,
         photos: [],
         purchaseHistory: [],
         source: 'manual_entry',
@@ -1044,6 +1050,12 @@ async function addMedicationItem() {
 
     ['med-new-name','med-new-cat','med-new-loc','med-new-subloc','med-new-parent','med-new-exp','med-new-inspect','med-new-batt','med-new-cal','med-new-qty','med-new-par','med-new-sup','med-new-notes']
         .forEach((id) => { const el = document.getElementById(id); if (el) el.value = ''; });
+    const sortSelect = document.getElementById('med-new-sort');
+    const sortCustomInput = document.getElementById('med-new-sort-custom');
+    if (sortSelect) sortSelect.value = '';
+    if (sortCustomInput) { sortCustomInput.value = ''; sortCustomInput.style.display = 'none'; }
+    const medVerified = document.getElementById('med-new-verified');
+    if (medVerified) medVerified.checked = false;
     const medExclude = document.getElementById('med-new-exclude');
     if (medExclude) medExclude.checked = false;
     const typeSel = document.getElementById('med-new-type');

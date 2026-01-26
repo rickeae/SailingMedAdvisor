@@ -324,6 +324,7 @@ def get_defaults():
             "generic_name, brand_name, form, strength, expiry_date, batch_lot, "
             "storage_location, manufacturer, indication, allergy_warnings, dosage, notes."
         ),
+        "vaccine_types": ["MMR", "DTaP", "HepB", "HepA", "Td/Tdap", "Influenza", "COVID-19"],
     }
 
 
@@ -347,6 +348,14 @@ def db_op(cat, data=None, workspace=None):
                 "homePort": "",
                 "callSign": "",
                 "tonnage": "",
+                "netTonnage": "",
+                "mmsi": "",
+                "hullNumber": "",
+                "starboardEngine": "",
+                "starboardEngineSn": "",
+                "portEngine": "",
+                "portEngineSn": "",
+                "ribSn": "",
                 "crewCapacity": "",
             }
         else:
@@ -369,7 +378,12 @@ def db_op(cat, data=None, workspace=None):
         path.write_text(json.dumps(data, indent=4))
         return data
 
-    return json.loads(path.read_text() or "[]")
+    loaded = json.loads(path.read_text() or "[]")
+    if cat == "settings":
+        if not isinstance(loaded, dict):
+            loaded = {}
+        return {**get_defaults(), **loaded}
+    return loaded
 
 
 def safe_float(val, default):
@@ -391,6 +405,40 @@ def _is_resource_excluded(item):
     if isinstance(val, str):
         return val.strip().lower() in {"true", "1", "yes"}
     return bool(val)
+
+
+def _patient_display_name(record, fallback):
+    if not record:
+        return fallback
+    name = record.get("name") or record.get("fullName") or ""
+    if name and name.strip():
+        return name
+    parts = [
+        record.get("firstName") or "",
+        record.get("middleName") or "",
+        record.get("lastName") or "",
+    ]
+    combined = " ".join(part for part in parts if part).strip()
+    return combined or fallback
+
+
+def lookup_patient_display_name(p_name, workspace, default="Unnamed Crew"):
+    if not p_name:
+        return default
+    try:
+        patients = db_op("patients", workspace=workspace)
+    except Exception:
+        return default
+    rec = next(
+        (
+            p
+            for p in patients
+            if (p.get("id") and p.get("id") == p_name)
+            or (p.get("name") and p.get("name") == p_name)
+        ),
+        None,
+    )
+    return _patient_display_name(rec, p_name or default)
 
 
 def build_prompt(settings, mode, msg, p_name, workspace):
@@ -421,19 +469,19 @@ def build_prompt(settings, mode, msg, p_name, workspace):
                 continue
             if not item_name:
                 continue
-            cat = (m.get("type") or "").strip().lower()
+            cat = (m.get("type") or "medication").strip().lower()
             key = (item_name or "").strip().lower()
             if not key:
                 continue
-            if cat == "medication":
+            if cat in {"medication", ""}:
                 pharma_items[key] = item_name
             elif cat == "consumable":
                 consumable_items[key] = item_name
             elif cat == "equipment":
                 equip_items[key] = item_name
             else:
-                # If no recognizable category, skip to avoid polluting lists
-                continue
+                # Default unknown types to medication so they are not dropped
+                pharma_items[key] = item_name
         pharma_list = [pharma_items[k] for k in sorted(pharma_items)]
         equip_list = [equip_items[k] for k in sorted(equip_items)]
         consumable_list = [consumable_items[k] for k in sorted(consumable_items)]
@@ -447,21 +495,7 @@ def build_prompt(settings, mode, msg, p_name, workspace):
             if tool_name:
                 tool_items.append(tool_name)
         tool_items.sort(key=lambda s: (s or "").lower())
-        tools = ", ".join(tool_items)
-
-        def _patient_display_name(record, fallback):
-            if not record:
-                return fallback
-            name = record.get("name") or record.get("fullName") or ""
-            if name and name.strip():
-                return name
-            parts = [
-                record.get("firstName") or "",
-                record.get("middleName") or "",
-                record.get("lastName") or "",
-            ]
-            combined = " ".join(part for part in parts if part).strip()
-            return combined or fallback
+        equipment_extra = ", ".join(tool_items)
 
         patient_record = next(
             (
@@ -475,20 +509,67 @@ def build_prompt(settings, mode, msg, p_name, workspace):
         p_hist = patient_record.get("history", "No records.")
         p_sex = patient_record.get("sex") or patient_record.get("gender") or "Unknown"
         p_birth = patient_record.get("birthdate") or "Unknown"
+        vaccines = patient_record.get("vaccines") or []
+
+        def _format_vaccines(vax_list):
+            if not isinstance(vax_list, list) or not vax_list:
+                return "No vaccines recorded."
+            formatted = []
+            for v in vax_list:
+                if not isinstance(v, dict):
+                    continue
+                parts = []
+                v_type = v.get("vaccineType") or "Vaccine"
+                date = v.get("dateAdministered")
+                dose = v.get("doseNumber")
+                trade = v.get("tradeNameManufacturer")
+                lot = v.get("lotNumber")
+                provider = v.get("provider")
+                provider_country = v.get("providerCountry")
+                next_due = v.get("nextDoseDue")
+                exp = v.get("expirationDate")
+                site = v.get("siteRoute")
+                reactions = v.get("reactions")
+                if date:
+                    parts.append(f"Date: {date}")
+                if dose:
+                    parts.append(f"Dose: {dose}")
+                if trade:
+                    parts.append(f"Trade/Manufacturer: {trade}")
+                if lot:
+                    parts.append(f"Lot: {lot}")
+                if provider:
+                    parts.append(f"Provider: {provider}")
+                if provider_country:
+                    parts.append(f"Provider Country: {provider_country}")
+                if next_due:
+                    parts.append(f"Next Dose Due: {next_due}")
+                if exp:
+                    parts.append(f"Expiration: {exp}")
+                if site:
+                    parts.append(f"Site/Route: {site}")
+                if reactions:
+                    parts.append(f"Reactions: {reactions}")
+                details = "; ".join(parts)
+                if details:
+                    formatted.append(f"{v_type} ({details})")
+                else:
+                    formatted.append(v_type)
+            return "; ".join(formatted) if formatted else "No vaccines recorded."
 
         prompt_sections = [
             f"MISSION CONTEXT: {mission_context}" if mission_context else "",
             f"TRIAGE INSTRUCTION:\n{settings.get('triage_instruction')}",
             "RESOURCES:\n"
             f"- Pharmaceuticals: {pharma_str or 'None listed'}\n"
-            f"- Medical Equipment: {equip_str or 'None listed'}\n"
-            f"- Consumables: {consumable_str or 'None listed'}\n"
-            f"- Tools: {tools or 'None listed'}",
+            f"- Medical Equipment: {equip_str or equipment_extra or 'None listed'}\n"
+            f"- Consumables: {consumable_str or 'None listed'}",
             "PATIENT:\n"
             f"- Name: {display_name}\n"
             f"- Sex: {p_sex}\n"
             f"- Date of Birth: {p_birth}\n"
-            f"- Medical History (profile): {p_hist or 'No records.'}",
+            f"- Medical History (profile): {p_hist or 'No records.'}\n"
+            f"- Vaccines: {_format_vaccines(vaccines)}",
             f"SITUATION:\n{msg}",
         ]
         prompt = "\n\n".join(section for section in prompt_sections if section.strip())
@@ -1394,6 +1475,7 @@ async def chat(request: Request, _=Depends(require_auth)):
         start_time = datetime.now()
         form = await request.form()
         msg = form.get("message")
+        user_msg_raw = msg
         p_name = form.get("patient")
         mode = form.get("mode")
         is_priv = form.get("private") == "true"
@@ -1454,15 +1536,25 @@ async def chat(request: Request, _=Depends(require_auth)):
 
         if not is_priv:
             h = db_op("history", workspace=workspace)
+            patient_display = (
+                lookup_patient_display_name(p_name, workspace, default="Unnamed Crew")
+                if mode == "triage"
+                else "Inquiry"
+            )
             h.append(
                 {
                     "id": datetime.now().isoformat(),
                     "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    "patient": p_name if mode == "triage" else "Inquiry",
+                    "patient": patient_display,
+                    "patient_id": p_name or "",
+                    "mode": mode,
                     "query": msg,
+                    "user_query": user_msg_raw,
                     "response": res,
                     "model": models["active_name"],
                     "duration_ms": elapsed_ms,
+                    "prompt": prompt,
+                    "injected_prompt": prompt,
                 }
             )
             db_op("history", h, workspace=workspace)

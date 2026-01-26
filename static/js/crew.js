@@ -2,6 +2,7 @@
 
 // Reuse the chat dropdown storage key without redefining the global constant
 const CREW_LAST_PATIENT_KEY = typeof LAST_PATIENT_KEY !== 'undefined' ? LAST_PATIENT_KEY : 'sailingmed:lastPatient';
+const DEFAULT_VACCINE_TYPES = [];
 
 function escapeHtml(str) {
     return (str || '')
@@ -125,11 +126,16 @@ function groupHistoryByPatient(history) {
         if (item && item.id) {
             historyStoreById[item.id] = item;
         }
-        let key = (item.patient || '').trim();
-        if (!key) key = 'Unnamed Crew';
-        if (key.toLowerCase() === 'inquiry') key = 'Inquiry History';
-        if (!map[key]) map[key] = [];
-        map[key].push(item);
+        const keys = [];
+        const patientName = (item.patient || '').trim();
+        if (patientName) keys.push(patientName);
+        if (item.patient_id) keys.push(`id:${item.patient_id}`);
+        if (!patientName && !item.patient_id) keys.push('Unnamed Crew');
+        if (patientName && patientName.toLowerCase() === 'inquiry') keys.push('Inquiry History');
+        keys.forEach((k) => {
+            if (!map[k]) map[k] = [];
+            map[k].push(item);
+        });
     });
     return map;
 }
@@ -154,6 +160,7 @@ function renderHistoryEntries(entries) {
                         <span class="toggle-label history-arrow" style="font-size:16px; margin-right:8px;">▸</span>
                         <span style="flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:600; font-size:13px;">${date || 'Entry'}${preview ? ' — ' + preview : ''}</span>
                         <div style="display:flex; gap:6px; align-items:center;">
+                            <button class="btn btn-sm history-entry-action" style="background:#3949ab; visibility:hidden;" onclick="event.stopPropagation(); reactivateChat('${item.id || ''}')">↩ Reactivate</button>
                             <button class="btn btn-sm history-entry-action" style="background:var(--inquiry); visibility:hidden;" onclick="event.stopPropagation(); exportHistoryItemById('${item.id || ''}')">Export</button>
                             <button class="btn btn-sm history-entry-action" style="background:var(--red); visibility:hidden;" onclick="event.stopPropagation(); deleteHistoryItemById('${item.id || ''}')">Delete</button>
                         </div>
@@ -190,14 +197,119 @@ function getHistoryForCrew(p, historyMap) {
     if (fullName) keys.push(fullName);
     if (p.name) keys.push(p.name);
     if (p.firstName || p.lastName) keys.push(`${p.firstName || ''} ${p.lastName || ''}`.trim());
+    if (p.id) keys.push(`id:${p.id}`);
     for (const k of keys) {
         if (historyMap[k]) return historyMap[k];
     }
     return [];
 }
 
+function getVaccineOptions(settings = {}) {
+    const raw = Array.isArray(settings.vaccine_types) ? settings.vaccine_types : DEFAULT_VACCINE_TYPES;
+    const seen = new Set();
+    return raw
+        .map((v) => (typeof v === 'string' ? v.trim() : ''))
+        .filter((v) => !!v)
+        .filter((v) => {
+            const key = v.toLowerCase();
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+}
+
+function renderVaccineDetails(v) {
+    const fields = [
+        ['Vaccine Type/Disease', v.vaccineType],
+        ['Date Administered', v.dateAdministered],
+        ['Dose Number', v.doseNumber],
+        ['Next Dose Due Date', v.nextDoseDue],
+        ['Trade Name & Manufacturer', v.tradeNameManufacturer],
+        ['Lot/Batch Number', v.lotNumber],
+        ['Administering Clinic/Provider', v.provider],
+        ['Clinic/Provider Country', v.providerCountry],
+        ['Expiration Date (dose)', v.expirationDate],
+        ['Site & Route', v.siteRoute],
+        ['Allergic Reactions', v.reactions],
+        ['Remarks', v.remarks],
+    ];
+    const rows = fields
+        .filter(([, val]) => val)
+        .map(([label, val]) => `<div><strong>${escapeHtml(label)}:</strong> ${escapeHtml(val)}</div>`)
+        .join('');
+    return rows || '<div style="color:#666;">No details recorded for this dose.</div>';
+}
+
+function renderVaccineList(vaccines = [], crewId) {
+    if (!Array.isArray(vaccines) || vaccines.length === 0) {
+        return '<div style="font-size:12px; color:#666;">No vaccines recorded.</div>';
+    }
+    return vaccines
+        .map((v) => {
+            const vid = escapeHtml(v.id || '');
+            const label = escapeHtml(v.vaccineType || 'Vaccine');
+            const date = escapeHtml(v.dateAdministered || '');
+            return `
+                <div class="collapsible" style="margin-bottom:8px;">
+                    <div class="col-header crew-med-header" onclick="toggleCrewSection(this)" style="justify-content:flex-start; background:#fff;">
+                        <span class="dev-tag">dev:crew-vax-entry</span>
+                        <span class="toggle-label history-arrow" style="font-size:16px; margin-right:8px;">▸</span>
+                        <span style="flex:1; font-weight:600; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${label}${date ? ' — ' + date : ''}</span>
+                        <button onclick="event.stopPropagation(); deleteVaccine('${crewId}', '${vid}')" class="btn btn-sm history-action-btn" style="background:var(--red); visibility:hidden;">🗑 Delete</button>
+                    </div>
+                    <div class="col-body" style="padding:10px; display:none; font-size:12px; background:#f9fbff; border:1px solid #e0e7ff; border-top:none;">
+                        ${renderVaccineDetails(v)}
+                    </div>
+                </div>`;
+        })
+        .join('');
+}
+
+function clearVaccineInputs(crewId) {
+    const ids = [
+        `vx-type-${crewId}`,
+        `vx-type-other-${crewId}`,
+        `vx-date-${crewId}`,
+        `vx-dose-${crewId}`,
+        `vx-trade-${crewId}`,
+        `vx-lot-${crewId}`,
+        `vx-provider-${crewId}`,
+        `vx-provider-country-${crewId}`,
+        `vx-next-${crewId}`,
+        `vx-exp-${crewId}`,
+        `vx-site-${crewId}`,
+        `vx-remarks-${crewId}`,
+    ];
+    ids.forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) {
+            el.value = '';
+            if (id.includes('type-other')) {
+                el.style.display = 'none';
+            }
+        }
+    });
+    const rx = document.getElementById(`vx-reactions-${crewId}`);
+    if (rx) rx.value = '';
+    const typeSelect = document.getElementById(`vx-type-${crewId}`);
+    if (typeSelect) typeSelect.value = '';
+}
+
+function handleVaccineTypeChange(crewId) {
+    const select = document.getElementById(`vx-type-${crewId}`);
+    const other = document.getElementById(`vx-type-other-${crewId}`);
+    if (!select || !other) return;
+    const showOther = select.value === '__other__';
+    other.style.display = showOther ? 'block' : 'none';
+    if (!showOther) {
+        other.value = '';
+    } else {
+        other.focus();
+    }
+}
+
 // Load crew data for both medical and vessel/crew info
-function loadCrewData(data, history = []) {
+function loadCrewData(data, history = [], settings = {}) {
     if (!Array.isArray(data)) {
         console.warn('loadCrewData expected array, got', data);
         return;
@@ -318,6 +430,10 @@ function loadCrewData(data, history = []) {
         const ageStr = calculateAge(p.birthdate);
         const posInfo = p.position ? ` • ${p.position}` : '';
         const info = `${displayName}${ageStr}${posInfo}`;
+        const vaccines = Array.isArray(p.vaccines) ? p.vaccines : [];
+        const vaccineOptions = getVaccineOptions(settings);
+        const vaccineOptionMarkup = vaccineOptions.map((opt) => `<option value="${escapeHtml(opt)}">${escapeHtml(opt)}</option>`).join('');
+        const vaccineList = renderVaccineList(vaccines, p.id);
         
         // Check if crew has data to determine default collapse state
         const hasData = p.firstName && p.lastName && p.citizenship;
@@ -387,18 +503,54 @@ function loadCrewData(data, history = []) {
                 <div style="margin-bottom:8px; font-size:13px;">
                     <input type="text" id="phone-${p.id}" value="${p.phoneNumber || ''}" placeholder="Cell/WhatsApp Number" onchange="autoSaveProfile('${p.id}')" style="padding:5px; width:100%;">
                 </div>
-                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-bottom:8px;">
-                    <div style="border:1px solid #ddd; padding:8px; border-radius:4px; background:#f9f9f9;">
-                        <label style="margin-bottom:4px; display:block; font-weight:bold; font-size:11px;">Passport Photo:</label>
-                        ${p.passportPhoto ? (p.passportPhoto.startsWith('data:image/') ? `<div style="margin-bottom:4px;"><img src="${p.passportPhoto}" style="max-width:100%; max-height:120px; border:1px solid #ccc; border-radius:4px; cursor:pointer;" onclick="window.open('${p.passportPhoto}', '_blank')"><div style="margin-top:4px;"><button onclick="deleteDocument('${p.id}', 'passportPhoto')" style="background:var(--red); color:white; border:none; padding:2px 8px; border-radius:3px; cursor:pointer; font-size:10px;">🗑 Delete</button></div></div>` : `<div style="margin-bottom:4px;"><a href="${p.passportPhoto}" target="_blank" style="color:var(--inquiry); font-size:11px;">📎 View PDF</a> | <button onclick="deleteDocument('${p.id}', 'passportPhoto')" style="background:none; border:none; color:var(--red); cursor:pointer; font-size:10px;">🗑</button></div>`) : ''}
-                        <input type="file" id="pp-${p.id}" accept="image/*,.pdf" onchange="uploadDocument('${p.id}', 'passportPhoto', this)" style="font-size:10px; width:100%;">
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-bottom:8px;">
+                        <div style="border:1px solid #ddd; padding:8px; border-radius:4px; background:#f9f9f9;">
+                            <label style="margin-bottom:4px; display:block; font-weight:bold; font-size:11px;">Passport Photo:</label>
+                            ${p.passportPhoto ? (p.passportPhoto.startsWith('data:image/') ? `<div style="margin-bottom:4px;"><img src="${p.passportPhoto}" style="max-width:100%; max-height:120px; border:1px solid #ccc; border-radius:4px; cursor:pointer;" onclick="window.open('${p.passportPhoto}', '_blank')"><div style="margin-top:4px;"><button onclick="deleteDocument('${p.id}', 'passportPhoto')" style="background:var(--red); color:white; border:none; padding:2px 8px; border-radius:3px; cursor:pointer; font-size:10px;">🗑 Delete</button></div></div>` : `<div style="margin-bottom:4px;"><a href="${p.passportPhoto}" target="_blank" style="color:var(--inquiry); font-size:11px;">📎 View PDF</a> | <button onclick="deleteDocument('${p.id}', 'passportPhoto')" style="background:none; border:none; color:var(--red); cursor:pointer; font-size:10px;">🗑</button></div>`) : ''}
+                            <input type="file" id="pp-${p.id}" accept="image/*,.pdf" onchange="uploadDocument('${p.id}', 'passportPhoto', this)" style="font-size:10px; width:100%;">
+                        </div>
+                        <div style="border:1px solid #ddd; padding:8px; border-radius:4px; background:#f9f9f9;">
+                            <label style="margin-bottom:4px; display:block; font-weight:bold; font-size:11px;">Passport Page Photo:</label>
+                            ${p.passportPage ? (p.passportPage.startsWith('data:image/') ? `<div style="margin-bottom:4px;"><img src="${p.passportPage}" style="max-width:100%; max-height:120px; border:1px solid #ccc; border-radius:4px; cursor:pointer;" onclick="window.open('${p.passportPage}', '_blank')"><div style="margin-top:4px;"><button onclick="deleteDocument('${p.id}', 'passportPage')" style="background:var(--red); color:white; border:none; padding:2px 8px; border-radius:3px; cursor:pointer; font-size:10px;">🗑 Delete</button></div></div>` : `<div style="margin-bottom:4px;"><a href="${p.passportPage}" target="_blank" style="color:var(--inquiry); font-size:11px;">📎 View PDF</a> | <button onclick="deleteDocument('${p.id}', 'passportPage')" style="background:none; border:none; color:var(--red); cursor:pointer; font-size:10px;">🗑</button></div>`) : ''}
+                            <input type="file" id="ppg-${p.id}" accept="image/*,.pdf" onchange="uploadDocument('${p.id}', 'passportPage', this)" style="font-size:10px; width:100%;">
+                        </div>
                     </div>
-                    <div style="border:1px solid #ddd; padding:8px; border-radius:4px; background:#f9f9f9;">
-                        <label style="margin-bottom:4px; display:block; font-weight:bold; font-size:11px;">Passport Page Photo:</label>
-                        ${p.passportPage ? (p.passportPage.startsWith('data:image/') ? `<div style="margin-bottom:4px;"><img src="${p.passportPage}" style="max-width:100%; max-height:120px; border:1px solid #ccc; border-radius:4px; cursor:pointer;" onclick="window.open('${p.passportPage}', '_blank')"><div style="margin-top:4px;"><button onclick="deleteDocument('${p.id}', 'passportPage')" style="background:var(--red); color:white; border:none; padding:2px 8px; border-radius:3px; cursor:pointer; font-size:10px;">🗑 Delete</button></div></div>` : `<div style="margin-bottom:4px;"><a href="${p.passportPage}" target="_blank" style="color:var(--inquiry); font-size:11px;">📎 View PDF</a> | <button onclick="deleteDocument('${p.id}', 'passportPage')" style="background:none; border:none; color:var(--red); cursor:pointer; font-size:10px;">🗑</button></div>`) : ''}
-                        <input type="file" id="ppg-${p.id}" accept="image/*,.pdf" onchange="uploadDocument('${p.id}', 'passportPage', this)" style="font-size:10px; width:100%;">
+                    <div class="collapsible" style="margin-top:12px;">
+                        <div class="col-header crew-med-header" onclick="toggleCrewSection(this)" style="background:#fff6e8; border:1px solid #f0d9a8; justify-content:flex-start;">
+                            <span class="dev-tag">dev:crew-vax-shell</span>
+                            <span class="toggle-label history-arrow" style="font-size:18px; margin-right:8px;">▸</span>
+                            <span style="font-weight:700;">Crew Vaccines</span>
+                            <span style="font-size:12px; color:#6a5b3a; margin-left:8px;">${vaccines.length} recorded</span>
+                        </div>
+                        <div class="col-body" style="padding:10px; background:#fffdf7; border:1px solid #f0d9a8; border-top:none; display:none;">
+                            <div class="dev-tag" style="margin-bottom:6px;">dev:crew-vax-form</div>
+                            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:8px; margin-bottom:8px; font-size:12px;">
+                                <div style="grid-column: span 2;">
+                                    <label style="font-weight:700; font-size:12px;">Vaccine Type/Disease *</label>
+                                    <select id="vx-type-${p.id}" onchange="handleVaccineTypeChange('${p.id}')" style="width:100%; padding:6px;">
+                                        <option value="">Select or choose Other…</option>
+                                        ${vaccineOptionMarkup}
+                                        <option value="__other__">Other (type below)</option>
+                                    </select>
+                                    <input id="vx-type-other-${p.id}" type="text" style="width:100%; padding:6px; margin-top:6px; display:none;" placeholder="Enter other vaccine type">
+                                </div>
+                                <div><label style="font-weight:700; font-size:12px;">Date Administered</label><input id="vx-date-${p.id}" type="text" style="width:100%; padding:6px;" placeholder="26-Jan-2026"></div>
+                                <div><label style="font-weight:700; font-size:12px;">Dose Number</label><input id="vx-dose-${p.id}" type="text" style="width:100%; padding:6px;" placeholder="Dose 1 of 3"></div>
+                                <div><label style="font-weight:700; font-size:12px;">Next Dose Due Date</label><input id="vx-next-${p.id}" type="text" style="width:100%; padding:6px;" placeholder="e.g., 10-Feb-2026"></div>
+                                <div style="grid-column: span 2;"><label style="font-weight:700; font-size:12px;">Trade Name & Manufacturer</label><input id="vx-trade-${p.id}" type="text" style="width:100%; padding:6px;" placeholder="Adacel by Sanofi Pasteur"></div>
+                                <div><label style="font-weight:700; font-size:12px;">Lot/Batch Number</label><input id="vx-lot-${p.id}" type="text" style="width:100%; padding:6px;" placeholder="Batch #12345X"></div>
+                                <div><label style="font-weight:700; font-size:12px;">Administering Clinic/Provider</label><input id="vx-provider-${p.id}" type="text" style="width:100%; padding:6px;" placeholder="Harbor Medical Clinic, Dock 3"></div>
+                                <div><label style="font-weight:700; font-size:12px;">Clinic/Provider Country</label><input id="vx-provider-country-${p.id}" type="text" style="width:100%; padding:6px;" placeholder="Spain"></div>
+                                <div><label style="font-weight:700; font-size:12px;">Expiration Date (dose)</label><input id="vx-exp-${p.id}" type="text" style="width:100%; padding:6px;" placeholder="e.g., 30-Dec-2026"></div>
+                                <div><label style="font-weight:700; font-size:12px;">Site & Route</label><input id="vx-site-${p.id}" type="text" style="width:100%; padding:6px;" placeholder="Left Arm - IM"></div>
+                                <div style="grid-column: span 1;"><label style="font-weight:700; font-size:12px;">Allergic Reactions</label><textarea id="vx-reactions-${p.id}" style="width:100%; padding:6px; min-height:60px;" placeholder="Redness, fever, swelling..."></textarea></div>
+                                <div style="grid-column: span 1;"><label style="font-weight:700; font-size:12px;">Remarks</label><textarea id="vx-remarks-${p.id}" style="width:100%; padding:6px; min-height:60px;" placeholder="Notes, special handling, country requirements, follow-up instructions..."></textarea></div>
+                            </div>
+                            <button onclick="addVaccine('${p.id}')" class="btn btn-sm" style="background:var(--dark); width:100%;"><span class="dev-tag">dev:crew-vax-add</span>+ Add Vaccine</button>
+                            <div class="dev-tag" style="margin:10px 0 6px;">dev:crew-vax-list</div>
+                            <div id="vax-list-${p.id}">${vaccineList}</div>
+                        </div>
                     </div>
-                </div>
                     </div>
                 </div>
             </div>
@@ -464,6 +616,7 @@ async function addCrew() {
         emergencyContactEmail: emergencyContactEmail,
         emergencyContactNotes: emergencyContactNotes,
         phoneNumber: phoneNumber,
+        vaccines: [],
         passportPhoto: '',
         passportPage: '',
         history: '' 
@@ -491,6 +644,75 @@ async function addCrew() {
     document.getElementById('cn-passport-photo').value = '';
     document.getElementById('cn-passport-page').value = '';
     
+    loadData();
+}
+
+async function addVaccine(crewId) {
+    const getVal = (suffix) => document.getElementById(`vx-${suffix}-${crewId}`)?.value.trim() || '';
+    const typeSelect = document.getElementById(`vx-type-${crewId}`);
+    const selectedType = typeSelect ? typeSelect.value : '';
+    const otherVal = getVal('type-other');
+    const vaccineType = selectedType === '__other__' ? otherVal : selectedType;
+    if (!vaccineType) {
+        alert('Please enter Vaccine Type/Disease');
+        if (selectedType === '__other__') {
+            const otherField = document.getElementById(`vx-type-other-${crewId}`);
+            if (otherField) otherField.focus();
+        } else if (typeSelect) {
+            typeSelect.focus();
+        }
+        return;
+    }
+    const entry = {
+        id: `vax-${Date.now()}`,
+        vaccineType,
+        dateAdministered: getVal('date'),
+        doseNumber: getVal('dose'),
+        tradeNameManufacturer: getVal('trade'),
+        lotNumber: getVal('lot'),
+        provider: getVal('provider'),
+        providerCountry: getVal('provider-country'),
+        nextDoseDue: getVal('next'),
+        expirationDate: getVal('exp'),
+        siteRoute: getVal('site'),
+        reactions: document.getElementById(`vx-reactions-${crewId}`)?.value.trim() || '',
+        remarks: document.getElementById(`vx-remarks-${crewId}`)?.value.trim() || ''
+    };
+
+    const data = await (await fetch('/api/data/patients', { credentials: 'same-origin' })).json();
+    const patient = data.find((p) => p.id === crewId);
+    if (!patient) {
+        alert('Crew member not found.');
+        return;
+    }
+    patient.vaccines = Array.isArray(patient.vaccines) ? patient.vaccines : [];
+    patient.vaccines.push(entry);
+    await fetch('/api/data/patients', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+        credentials: 'same-origin',
+    });
+    clearVaccineInputs(crewId);
+    loadData();
+}
+
+async function deleteVaccine(crewId, vaccineId) {
+    if (!vaccineId) return;
+    if (!confirm('Delete this vaccine record?')) return;
+    const data = await (await fetch('/api/data/patients', { credentials: 'same-origin' })).json();
+    const patient = data.find((p) => p.id === crewId);
+    if (!patient || !Array.isArray(patient.vaccines)) {
+        alert('Vaccine record not found.');
+        return;
+    }
+    patient.vaccines = patient.vaccines.filter((v) => v.id !== vaccineId);
+    await fetch('/api/data/patients', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+        credentials: 'same-origin',
+    });
     loadData();
 }
 
@@ -826,6 +1048,12 @@ async function loadVesselInfo() {
     setVal('vessel-tonnage', v.tonnage);
     setVal('vessel-net-tonnage', v.netTonnage);
     setVal('vessel-mmsi', v.mmsi);
+    setVal('vessel-hull-number', v.hullNumber);
+    setVal('vessel-starboard-engine', v.starboardEngine);
+    setVal('vessel-starboard-sn', v.starboardEngineSn);
+    setVal('vessel-port-engine', v.portEngine);
+    setVal('vessel-port-sn', v.portEngineSn);
+    setVal('vessel-rib-sn', v.ribSn);
 }
 
 async function saveVesselInfo() {
@@ -837,7 +1065,13 @@ async function saveVesselInfo() {
         callSign: document.getElementById('vessel-callsign')?.value || '',
         tonnage: document.getElementById('vessel-tonnage')?.value || '',
         netTonnage: document.getElementById('vessel-net-tonnage')?.value || '',
-        mmsi: document.getElementById('vessel-mmsi')?.value || ''
+        mmsi: document.getElementById('vessel-mmsi')?.value || '',
+        hullNumber: document.getElementById('vessel-hull-number')?.value || '',
+        starboardEngine: document.getElementById('vessel-starboard-engine')?.value || '',
+        starboardEngineSn: document.getElementById('vessel-starboard-sn')?.value || '',
+        portEngine: document.getElementById('vessel-port-engine')?.value || '',
+        portEngineSn: document.getElementById('vessel-port-sn')?.value || '',
+        ribSn: document.getElementById('vessel-rib-sn')?.value || ''
     };
     await fetch('/api/data/vessel', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(v), credentials:'same-origin'});
     alert('Vessel information saved.');

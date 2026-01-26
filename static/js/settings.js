@@ -13,7 +13,8 @@ const DEFAULT_SETTINGS = {
     rep_penalty: 1.1,
     user_mode: "user",
     med_photo_model: "qwen",
-    med_photo_prompt: "You are a pharmacy intake assistant on a sailing vessel. Look at the medication photo and return JSON only with keys: generic_name, brand_name, form, strength, expiry_date, batch_lot, storage_location, manufacturer, indication, allergy_warnings, dosage, notes."
+    med_photo_prompt: "You are a pharmacy intake assistant on a sailing vessel. Look at the medication photo and return JSON only with keys: generic_name, brand_name, form, strength, expiry_date, batch_lot, storage_location, manufacturer, indication, allergy_warnings, dosage, notes.",
+    vaccine_types: ["MMR", "DTaP", "HepB", "HepA", "Td/Tdap", "Influenza", "COVID-19"]
 };
 
 let settingsDirty = false;
@@ -21,6 +22,7 @@ let settingsLoaded = false;
 let settingsAutoSaveTimer = null;
 let workspaceListLoaded = false;
 let offlineStatusCache = null;
+let vaccineTypeList = [...DEFAULT_SETTINGS.vaccine_types];
 
 function setUserMode(mode) {
     const body = document.body;
@@ -42,6 +44,8 @@ function setUserMode(mode) {
 
 function applySettingsToUI(data = {}) {
     const merged = { ...DEFAULT_SETTINGS, ...(data || {}) };
+    vaccineTypeList = normalizeVaccineTypes(merged.vaccine_types);
+    renderVaccineTypes();
     Object.keys(merged).forEach(k => {
         const el = document.getElementById(k);
         if (el) {
@@ -164,6 +168,7 @@ async function saveSettings(showAlert = true, reason = 'manual') {
                 s[k] = val;
             }
         });
+        s.vaccine_types = normalizeVaccineTypes(vaccineTypeList);
         console.log('[settings] saving', { reason, payload: s });
         updateSettingsStatus('Saving…', false);
         const headers = { 'Content-Type': 'application/json' };
@@ -188,7 +193,7 @@ async function saveSettings(showAlert = true, reason = 'manual') {
         const updated = await res.json();
         console.log('[settings] save response', updated);
         // Preserve the locally selected user_mode to avoid flicker if the server echoes stale data
-        const merged = { ...updated, user_mode: s.user_mode || updated.user_mode };
+        const merged = { ...updated, user_mode: s.user_mode || updated.user_mode, vaccine_types: s.vaccine_types || updated.vaccine_types };
         applySettingsToUI(merged);
         try { localStorage.setItem('user_mode', updated.user_mode || 'user'); } catch (err) { /* ignore */ }
         settingsDirty = false;
@@ -230,6 +235,77 @@ function resetSection(section) {
         if (el) el.value = DEFAULT_SETTINGS.med_photo_prompt;
     }
     saveSettings();
+}
+
+function normalizeVaccineTypes(list) {
+    if (!Array.isArray(list)) return [...DEFAULT_SETTINGS.vaccine_types];
+    const seen = new Set();
+    return list
+        .map((v) => (typeof v === 'string' ? v.trim() : ''))
+        .filter((v) => !!v)
+        .filter((v) => {
+            const key = v.toLowerCase();
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+}
+
+function renderVaccineTypes() {
+    const container = document.getElementById('vaccine-types-list');
+    if (!container) return;
+    if (!vaccineTypeList.length) {
+        container.innerHTML = '<div style="color:#666; font-size:12px;">No vaccine types defined. Add at least one to enable the dropdown.</div>';
+        return;
+    }
+    container.innerHTML = vaccineTypeList
+        .map((v, idx) => `
+            <div style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid #eee;">
+                <div style="width:28px; text-align:right; font-weight:700; color:#666;">${idx + 1}.</div>
+                <div style="flex:1; font-weight:600;">${v}</div>
+                <div style="display:flex; gap:6px; align-items:center;">
+                    <button class="btn btn-sm" style="background:#607d8b;" ${idx === 0 ? 'disabled' : ''} onclick="moveVaccineType(${idx}, -1)">↑</button>
+                    <button class="btn btn-sm" style="background:#607d8b;" ${idx === vaccineTypeList.length - 1 ? 'disabled' : ''} onclick="moveVaccineType(${idx}, 1)">↓</button>
+                    <button class="btn btn-sm" style="background:var(--red);" onclick="removeVaccineType(${idx})">🗑 Remove</button>
+                </div>
+            </div>
+        `).join('');
+}
+
+function addVaccineType() {
+    const input = document.getElementById('vaccine-type-input');
+    if (!input) return;
+    const val = input.value.trim();
+    if (!val) {
+        alert('Enter a vaccine type before adding.');
+        return;
+    }
+    vaccineTypeList = normalizeVaccineTypes([...vaccineTypeList, val]);
+    input.value = '';
+    renderVaccineTypes();
+    settingsDirty = true;
+    scheduleAutoSave('vaccine-type-add');
+}
+
+function removeVaccineType(idx) {
+    if (idx < 0 || idx >= vaccineTypeList.length) return;
+    vaccineTypeList.splice(idx, 1);
+    vaccineTypeList = normalizeVaccineTypes(vaccineTypeList);
+    renderVaccineTypes();
+    settingsDirty = true;
+    scheduleAutoSave('vaccine-type-remove');
+}
+
+function moveVaccineType(idx, delta) {
+    const newIndex = idx + delta;
+    if (newIndex < 0 || newIndex >= vaccineTypeList.length) return;
+    const nextList = [...vaccineTypeList];
+    const [item] = nextList.splice(idx, 1);
+    nextList.splice(newIndex, 0, item);
+    vaccineTypeList = normalizeVaccineTypes(nextList);
+    renderVaccineTypes();
+    settingsDirty = true;
+    scheduleAutoSave('vaccine-type-reorder');
 }
 
 function renderOfflineStatus(msg, isError = false) {
@@ -528,3 +604,6 @@ window.setUserMode = setUserMode;
 window.runOfflineCheck = runOfflineCheck;
 window.createOfflineBackup = createOfflineBackup;
 window.restoreOfflineBackup = restoreOfflineBackup;
+window.addVaccineType = addVaccineType;
+window.removeVaccineType = removeVaccineType;
+window.moveVaccineType = moveVaccineType;

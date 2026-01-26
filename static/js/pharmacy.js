@@ -117,6 +117,28 @@ function getTextareaHeights() {
     return map;
 }
 
+function handleSortCategoryChange(id) {
+    const select = document.getElementById(`sort-${id}`);
+    const custom = document.getElementById(`sort-custom-${id}`);
+    if (!select || !custom) return;
+    const val = select.value;
+    const isCustom = val === 'Other';
+    custom.style.display = isCustom ? 'block' : 'none';
+    if (!isCustom) {
+        custom.value = '';
+    }
+    scheduleSaveMedication(id, true);
+}
+
+function toggleCustomSortField() {
+    const sel = document.getElementById('med-new-sort');
+    const custom = document.getElementById('med-new-sort-custom');
+    if (!sel || !custom) return;
+    const isCustom = sel.value === 'Other';
+    custom.style.display = isCustom ? 'block' : 'none';
+    if (!isCustom) custom.value = '';
+}
+
 function ensurePurchaseDefaults(p) {
     return {
         id: p.id || `ph-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
@@ -145,6 +167,8 @@ function ensurePharmacyDefaults(item) {
         primaryIndication: item.primaryIndication || '',
         allergyWarnings: item.allergyWarnings || '',
         standardDosage: item.standardDosage || '',
+        sortCategory: item.sortCategory || '',
+        verified: !!item.verified,
         photos: Array.isArray(item.photos) ? item.photos : [],
         purchaseHistory: Array.isArray(item.purchaseHistory)
             ? item.purchaseHistory.map(ensurePurchaseDefaults)
@@ -155,12 +179,12 @@ function ensurePharmacyDefaults(item) {
     };
 }
 
-function scheduleSaveMedication(id) {
+function scheduleSaveMedication(id, rerender = false) {
     if (pharmacySaveTimers[id]) {
         clearTimeout(pharmacySaveTimers[id]);
     }
     pharmacySaveTimers[id] = setTimeout(() => {
-        saveMedication(id);
+        saveMedication(id, rerender);
     }, 400);
 }
 
@@ -180,13 +204,17 @@ function getMedicationDisplayName(med) {
 function sortPharmacyItems(items) {
     const list = Array.isArray(items) ? [...items] : [];
     const sortSel = document.getElementById('pharmacy-sort');
-    const mode = (sortSel && sortSel.value) || 'generic';
+    const mode = (sortSel && sortSel.value) || 'sortCategory';
     const byText = (a, b, pathA, pathB) => {
         const va = (pathA || '').toLowerCase();
         const vb = (pathB || '').toLowerCase();
         return va.localeCompare(vb);
     };
     list.sort((a, b) => {
+        if (mode === 'sortCategory') {
+            const cat = byText(a, b, a.sortCategory || '', b.sortCategory || '');
+            if (cat !== 0) return cat;
+        }
         if (mode === 'brand') {
             return byText(a, b, a.brandName || '', b.brandName || '');
         }
@@ -222,6 +250,12 @@ async function loadPharmacy() {
         updatePharmacyCount(0);
         list.innerHTML = `<div style="color:red;">Error loading inventory: ${err.message}</div>`;
     }
+}
+
+function handlePharmacySortChange() {
+    const openIds = getOpenMedIds();
+    const textHeights = getTextareaHeights();
+    renderPharmacy(pharmacyCache, openIds, textHeights);
 }
 
 function getOpenMedIds() {
@@ -296,6 +330,7 @@ function renderMedicationCard(med, isOpen = true, textHeights = {}) {
     const headerNote = [lowStock ? 'Low Stock' : null, expirySoon ? 'Expiring Soon' : null].filter(Boolean).join(' · ');
     const displayName = getMedicationDisplayName(med);
     const strength = (med.strength || '').trim();
+    const sortLabel = med.sortCategory ? `<span style="font-size:11px; color:#455a64; margin-right:8px;">${med.sortCategory}</span>` : '';
     const bodyDisplay = isOpen ? 'display:block;' : 'display:none;';
     const arrow = isOpen ? '▾' : '▸';
     const headerBg = med.excludeFromResources ? '#ffecef' : '#eef7ff';
@@ -304,7 +339,10 @@ function renderMedicationCard(med, isOpen = true, textHeights = {}) {
     const bodyBorderColor = med.excludeFromResources ? '#ffcfd0' : '#cfe9d5';
     const badgeColor = med.excludeFromResources ? '#d32f2f' : '#2e7d32';
     const badgeText = med.excludeFromResources ? 'Resource Currently Unavailable' : 'Resource Available';
-    const availabilityBadge = `<span style="margin-left:auto; padding:2px 10px; border-radius:999px; background:${badgeColor}; color:#fff; font-size:11px; white-space:nowrap;">${badgeText}</span>`;
+    const availabilityBadge = `<span style="padding:2px 10px; border-radius:999px; background:${badgeColor}; color:#fff; font-size:11px; white-space:nowrap;">${badgeText}</span>`;
+    const verifiedBadge = med.verified
+        ? `<span style="padding:2px 10px; border-radius:999px; background:#1b5e20; color:#fff; font-size:11px; white-space:nowrap;">Verified</span>`
+        : `<span style="padding:2px 10px; border-radius:999px; background:transparent; color:#1b5e20; font-size:11px; white-space:nowrap; border:1px dashed #b2c7b5;">Not verified</span>`;
     const doseHeight = textHeights[`dose-${med.id}`] ? `height:${textHeights[`dose-${med.id}`]};` : '';
     const photoThumbs = (med.photos || []).map(
         (src, idx) => `
@@ -322,9 +360,14 @@ function renderMedicationCard(med, isOpen = true, textHeights = {}) {
             <span style="flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:700;">
                 ${displayName}${strength ? ' — ' + strength : ''}
             </span>
+            ${sortLabel}
             ${headerNote ? `<span class="sidebar-pill" style="margin-right:8px; background:${lowStock ? '#ffebee' : '#fff7e0'}; color:${lowStock ? '#c62828' : '#b26a00'};">${headerNote}</span>` : ''}
             <button onclick="event.stopPropagation(); deleteMedication('${med.id}')" class="btn btn-sm history-action-btn" style="background:var(--red); visibility:hidden;">🗑 Delete Medication</button>
-            ${availabilityBadge}
+            <div style="display:flex; align-items:center; gap:6px; margin-left:8px;">${verifiedBadge}${availabilityBadge}</div>
+            <label style="display:flex; align-items:center; gap:4px; font-size:11px; margin-left:8px; padding:4px 8px; border:1px solid #c7ddff; border-radius:6px; background:#fff;" onclick="event.stopPropagation();">
+                <input id="ver-${med.id}" type="checkbox" ${med.verified ? 'checked' : ''} onchange="scheduleSaveMedication('${med.id}', true); event.stopPropagation();">
+                Verified
+            </label>
         </div>
         <div class="col-body" data-med-id="${med.id}" style="padding:12px; background:${bodyBg}; border:1px solid ${bodyBorderColor}; border-radius:6px; ${bodyDisplay}">
             <div class="collapsible" style="margin-bottom:10px;">
@@ -335,10 +378,10 @@ function renderMedicationCard(med, isOpen = true, textHeights = {}) {
                 </div>
             <div class="col-body" style="padding:10px; display:block;" id="details-${med.id}">
                 <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
-                    <input id="exclude-${med.id}" type="checkbox" ${med.excludeFromResources ? 'checked' : ''} onchange="scheduleSaveMedication('${med.id}')">
-                    <label style="font-size:12px; line-height:1.2; margin:0;">Resource Currently Unavailable</label>
-                </div>
-                    <div style="display:grid; grid-template-columns: repeat(2, minmax(240px, 1fr)); gap:10px; margin-bottom:10px;">
+                            <input id="exclude-${med.id}" type="checkbox" ${med.excludeFromResources ? 'checked' : ''} onchange="scheduleSaveMedication('${med.id}', true)">
+                            <label style="font-size:12px; line-height:1.2; margin:0;">Resource Currently Unavailable</label>
+                        </div>
+                        <div style="display:grid; grid-template-columns: repeat(2, minmax(240px, 1fr)); gap:10px; margin-bottom:10px;">
                         <div>
                             <label style="font-weight:700; font-size:12px;">Generic Name</label>
                             <input id="gn-${med.id}" type="text" value="${med.genericName}" style="width:100%; padding:8px;" oninput="scheduleSaveMedication('${med.id}')">
@@ -388,6 +431,21 @@ function renderMedicationCard(med, isOpen = true, textHeights = {}) {
                                 <option value="false" ${!med.controlled ? 'selected' : ''}>No</option>
                                 <option value="true" ${med.controlled ? 'selected' : ''}>Yes</option>
                             </select>
+                        </div>
+                        <div>
+                            <label style="font-weight:700; font-size:12px;">Sort Category</label>
+                            <select id="sort-${med.id}" style="width:100%; padding:8px;" onchange="handleSortCategoryChange('${med.id}')">
+                                <option value="">Select...</option>
+                                <option value="Antibiotic" ${med.sortCategory === 'Antibiotic' ? 'selected' : ''}>Antibiotic</option>
+                                <option value="Analgesic" ${med.sortCategory === 'Analgesic' ? 'selected' : ''}>Analgesic</option>
+                                <option value="Cardiac" ${med.sortCategory === 'Cardiac' ? 'selected' : ''}>Cardiac</option>
+                                <option value="Respiratory" ${med.sortCategory === 'Respiratory' ? 'selected' : ''}>Respiratory</option>
+                                <option value="Gastrointestinal" ${med.sortCategory === 'Gastrointestinal' ? 'selected' : ''}>Gastrointestinal</option>
+                                <option value="Endocrine" ${med.sortCategory === 'Endocrine' ? 'selected' : ''}>Endocrine</option>
+                                <option value="Emergency" ${med.sortCategory === 'Emergency' ? 'selected' : ''}>Emergency</option>
+                                <option value="Other" ${med.sortCategory && !['Antibiotic','Analgesic','Cardiac','Respiratory','Gastrointestinal','Endocrine','Emergency'].includes(med.sortCategory) ? 'selected' : ''}>Custom...</option>
+                            </select>
+                            <input id="sort-custom-${med.id}" type="text" value="${(['Antibiotic','Analgesic','Cardiac','Respiratory','Gastrointestinal','Endocrine','Emergency'].includes(med.sortCategory) ? '' : med.sortCategory) || ''}" placeholder="Custom category" style="width:100%; padding:6px; margin-top:6px; ${med.sortCategory && !['Antibiotic','Analgesic','Cardiac','Respiratory','Gastrointestinal','Endocrine','Emergency'].includes(med.sortCategory) ? '' : 'display:none;'}" oninput="scheduleSaveMedication('${med.id}', true)">
                         </div>
                         <div>
                             <label style="font-weight:700; font-size:12px;">Manufacturer</label>
@@ -625,7 +683,7 @@ function addPurchaseEntry(medId) {
     scheduleSaveMedication(medId);
 }
 
-async function saveMedication(id) {
+async function saveMedication(id, rerender = false) {
     const openMedIds = getOpenMedIds();
     const textHeights = getTextareaHeights();
     const data = await (await fetchInventory()).json();
@@ -655,6 +713,8 @@ async function saveMedication(id) {
     med.allergyWarnings = document.getElementById(`alg-${id}`)?.value || '';
     med.standardDosage = document.getElementById(`dose-${id}`)?.value || '';
     med.excludeFromResources = !!document.getElementById(`exclude-${id}`)?.checked;
+    med.sortCategory = document.getElementById(`sort-${id}`)?.value || document.getElementById(`sort-custom-${id}`)?.value || '';
+    med.verified = !!document.getElementById(`ver-${id}`)?.checked;
     med.purchaseHistory = collectPurchaseEntries(id);
 
     await fetchInventory({
@@ -663,7 +723,9 @@ async function saveMedication(id) {
         body: JSON.stringify(meds),
     });
     pharmacyCache = meds;
-    renderPharmacy(pharmacyCache, openMedIds, textHeights);
+    if (rerender) {
+        renderPharmacy(pharmacyCache, openMedIds, textHeights);
+    }
 }
 
 function collectPurchaseEntries(medId) {

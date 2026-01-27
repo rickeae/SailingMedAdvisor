@@ -15,7 +15,9 @@ const DEFAULT_SETTINGS = {
     med_photo_model: "qwen",
     med_photo_prompt: "You are a pharmacy intake assistant on a sailing vessel. Look at the medication photo and return JSON only with keys: generic_name, brand_name, form, strength, expiry_date, batch_lot, storage_location, manufacturer, indication, allergy_warnings, dosage, notes.",
     vaccine_types: ["MMR", "DTaP", "HepB", "HepA", "Td/Tdap", "Influenza", "COVID-19"],
-    pharmacy_labels: ["Antibiotic", "Analgesic", "Cardiac", "Respiratory", "Gastrointestinal", "Endocrine", "Emergency"]
+    pharmacy_labels: ["Antibiotic", "Analgesic", "Cardiac", "Respiratory", "Gastrointestinal", "Endocrine", "Emergency"],
+    workspaces_enabled: true,
+    workspaces_active_label: "Rick"
 };
 
 let settingsDirty = false;
@@ -23,6 +25,7 @@ let settingsLoaded = false;
 let settingsAutoSaveTimer = null;
 let workspaceListLoaded = false;
 let offlineStatusCache = null;
+let cachedWorkspaceNames = [];
 let vaccineTypeList = [...DEFAULT_SETTINGS.vaccine_types];
 let pharmacyLabelList = [...DEFAULT_SETTINGS.pharmacy_labels];
 
@@ -53,9 +56,14 @@ function applySettingsToUI(data = {}) {
     Object.keys(merged).forEach(k => {
         const el = document.getElementById(k);
         if (el) {
-            el.value = merged[k];
+            if (el.type === 'checkbox') {
+                el.checked = Boolean(merged[k]);
+            } else {
+                el.value = merged[k];
+            }
         }
     });
+    syncWorkspaceToggleUI(merged);
     setUserMode(merged.user_mode);
     try { localStorage.setItem('user_mode', merged.user_mode || 'user'); } catch (err) { /* ignore */ }
     window.CACHED_SETTINGS = merged;
@@ -138,6 +146,31 @@ async function loadSettingsUI() {
     }
 }
 
+function syncWorkspaceToggleUI(settings = {}) {
+    const enabled = settings.workspaces_enabled !== false;
+    const active = settings.workspaces_active_label || 'Rick';
+    const toggle = document.getElementById('workspaces_enabled');
+    const activeSel = document.getElementById('workspaces_active_label');
+    const switchRow = document.getElementById('workspace-switch-row');
+    const notice = document.getElementById('workspace-switch-status');
+    if (toggle) toggle.checked = enabled;
+    if (activeSel) activeSel.value = active;
+    if (switchRow) {
+        if (!enabled) {
+            switchRow.innerHTML = `<div style="font-size:13px; color:#2c3e50;">Workspaces disabled. Using <strong>${active}</strong>.</div>`;
+        } else if (!workspaceListLoaded) {
+            switchRow.innerHTML = 'Loading workspaces…';
+        }
+    }
+    if (notice && !enabled) {
+        notice.textContent = 'Workspaces are disabled. Enable to switch.';
+        notice.style.color = '#555';
+    }
+    if (activeSel) {
+        activeSel.style.display = enabled ? 'none' : 'inline-block';
+    }
+}
+
 function updateSettingsStatus(message, isError = false) {
     const el = document.getElementById('settings-save-status');
     if (!el) return;
@@ -159,22 +192,23 @@ function scheduleAutoSave(reason = 'auto') {
 
 async function saveSettings(showAlert = true, reason = 'manual') {
     try {
-        const workspaceLabel = window.WORKSPACE_LABEL || localStorage.getItem('workspace_label') || '';
-        const s = {};
-        const numeric = new Set(['tr_temp','tr_tok','tr_p','in_temp','in_tok','in_p','rep_penalty']);
-        ['triage_instruction','inquiry_instruction','tr_temp','tr_tok','tr_p','in_temp','in_tok','in_p','mission_context','rep_penalty','user_mode','med_photo_model','med_photo_prompt'].forEach(k => {
-            const el = document.getElementById(k);
-            if (!el) return;
-            const val = el.value;
-            if (numeric.has(k)) {
-                const num = val === '' ? '' : Number(val);
-                s[k] = Number.isFinite(num) ? num : DEFAULT_SETTINGS[k];
-            } else {
-                s[k] = val;
-            }
-        });
-        s.vaccine_types = normalizeVaccineTypes(vaccineTypeList);
-        s.pharmacy_labels = normalizePharmacyLabels(pharmacyLabelList);
+    const workspaceLabel = window.WORKSPACE_LABEL || localStorage.getItem('workspace_label') || '';
+    const s = {};
+    const numeric = new Set(['tr_temp','tr_tok','tr_p','in_temp','in_tok','in_p','rep_penalty']);
+    ['triage_instruction','inquiry_instruction','tr_temp','tr_tok','tr_p','in_temp','in_tok','in_p','mission_context','rep_penalty','user_mode','med_photo_model','med_photo_prompt','workspaces_active_label'].forEach(k => {
+        const el = document.getElementById(k);
+        if (!el) return;
+        const val = el.type === 'checkbox' ? el.checked : el.value;
+        if (numeric.has(k)) {
+            const num = val === '' ? '' : Number(val);
+            s[k] = Number.isFinite(num) ? num : DEFAULT_SETTINGS[k];
+        } else {
+            s[k] = val;
+        }
+    });
+    s.workspaces_enabled = document.getElementById('workspaces_enabled')?.checked ?? DEFAULT_SETTINGS.workspaces_enabled;
+    s.vaccine_types = normalizeVaccineTypes(vaccineTypeList);
+    s.pharmacy_labels = normalizePharmacyLabels(pharmacyLabelList);
         console.log('[settings] saving', { reason, payload: s });
         updateSettingsStatus('Saving…', false);
         const headers = { 'Content-Type': 'application/json' };
@@ -515,38 +549,57 @@ async function loadWorkspaceSwitcher() {
         const data = await res.json();
         if (!res.ok || data.error) throw new Error(data.error || `Status ${res.status}`);
         const names = (data.workspaces || []).slice().sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+        cachedWorkspaceNames = names;
         const current = data.current || '';
         if (!names.length) {
             row.innerHTML = '<div style="color:#666;">No workspaces configured.</div>';
             return;
         }
-        const select = document.createElement('select');
-        select.id = 'workspace-select';
-        select.style.padding = '10px';
-        select.style.minWidth = '200px';
-        names.forEach(n => {
-            const opt = document.createElement('option');
-            opt.value = n;
-            opt.textContent = n;
-            if (n === current) opt.selected = true;
-        select.appendChild(opt);
-        });
-        const pwd = document.createElement('input');
-        pwd.type = 'password';
-        pwd.id = 'workspace-switch-pwd';
-        pwd.placeholder = 'Workspace password';
-        pwd.style.padding = '10px';
-        pwd.style.minWidth = '180px';
-        pwd.value = 'Aphrodite';
-        const btn = document.createElement('button');
-        btn.className = 'btn btn-sm';
-        btn.style.background = 'var(--inquiry)';
-        btn.textContent = 'Switch workspace';
-        btn.onclick = switchWorkspaceFromSettings;
-        row.innerHTML = '';
-        row.appendChild(select);
-        row.appendChild(pwd);
-        row.appendChild(btn);
+        const cfg = window.CACHED_SETTINGS || DEFAULT_SETTINGS;
+        if (cfg.workspaces_enabled === false) {
+            row.innerHTML = `<div style=\"color:#2c3e50;\">Workspaces disabled. Using <strong>${cfg.workspaces_active_label || names[0]}</strong>.</div>`;
+        } else {
+            const select = document.createElement('select');
+            select.id = 'workspace-select';
+            select.style.padding = '10px';
+            select.style.minWidth = '200px';
+            names.forEach(n => {
+                const opt = document.createElement('option');
+                opt.value = n;
+                opt.textContent = n;
+                if (n === current) opt.selected = true;
+                select.appendChild(opt);
+            });
+            const pwd = document.createElement('input');
+            pwd.type = 'password';
+            pwd.id = 'workspace-switch-pwd';
+            pwd.placeholder = 'Workspace password';
+            pwd.style.padding = '10px';
+            pwd.style.minWidth = '180px';
+            pwd.value = 'Aphrodite';
+            const btn = document.createElement('button');
+            btn.className = 'btn btn-sm';
+            btn.style.background = 'var(--inquiry)';
+            btn.textContent = 'Switch workspace';
+            btn.onclick = switchWorkspaceFromSettings;
+            row.innerHTML = '';
+            row.appendChild(select);
+            row.appendChild(pwd);
+            row.appendChild(btn);
+        }
+        // Populate active workspace selector
+        const activeSel = document.getElementById('workspaces_active_label');
+        if (activeSel) {
+            activeSel.innerHTML = '';
+            names.forEach(n => {
+                const opt = document.createElement('option');
+                opt.value = n;
+                opt.textContent = n;
+                activeSel.appendChild(opt);
+            });
+            activeSel.value = (window.CACHED_SETTINGS && window.CACHED_SETTINGS.workspaces_active_label) || names[0];
+            activeSel.style.display = cfg.workspaces_enabled === false ? 'inline-block' : 'none';
+        }
         workspaceListLoaded = true;
     } catch (err) {
         row.innerHTML = `<div style="color:var(--red);">Unable to load workspaces: ${err.message}</div>`;

@@ -928,6 +928,16 @@
                             <span class="dev-tag">dev:settings-workspace</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Workspace</span>
                         </div>
                         <div class="col-body" style="padding:12px; background:#f8f9fa;">
+                            <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-bottom:10px;">
+                                <label style="display:flex; align-items:center; gap:6px; font-weight:700;">
+                                    <input type="checkbox" id="workspaces_enabled" onchange="scheduleAutoSave('workspace-toggle')">
+                                    Enable workspaces
+                                </label>
+                                <div style="display:flex; align-items:center; gap:8px;">
+                                    <span style="font-weight:700;">Active workspace when disabled:</span>
+                                    <select id="workspaces_active_label" style="padding:8px; min-width:180px; display:none;" onchange="scheduleAutoSave('workspace-active')"></select>
+                                </div>
+                            </div>
                             <div id="workspace-switch-row" style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
                                 Loading workspaces…
                             </div>

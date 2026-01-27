@@ -221,6 +221,7 @@ _bootstrap_db()
 configure_db(DB_PATH)
 REQUIRED_MODELS = [
     "google/medgemma-1.5-4b-it",
+    "google/medgemma-27b-text-it",
     "Qwen/Qwen2.5-VL-7B-Instruct",
 ]
 
@@ -434,6 +435,17 @@ def _workspace_dirs(workspace_label: str):
 
 def _get_workspace(request: Request, required: bool = True):
     label = request.session.get("workspace_label") or request.session.get("workspace")
+    # Global workspace override via settings (allows single-workspace mode for judging)
+    try:
+        settings_ws_label = "Rick" if "Rick" in WORKSPACE_NAMES else WORKSPACE_NAMES[0]
+        settings_ws = _workspace_dirs(settings_ws_label)
+        app_settings = db_op("settings", workspace=settings_ws)
+    except Exception:
+        app_settings = get_defaults()
+    workspaces_enabled = app_settings.get("workspaces_enabled", True)
+    active_label = app_settings.get("workspaces_active_label") or ("Rick" if "Rick" in WORKSPACE_NAMES else WORKSPACE_NAMES[0])
+    if not workspaces_enabled:
+        label = active_label
     if not label:
         # Allow fallbacks from headers/query to reduce UX dead-ends
         label = (
@@ -605,6 +617,8 @@ def get_defaults():
             "storage_location, manufacturer, indication, allergy_warnings, dosage, notes."
         ),
         "vaccine_types": ["MMR", "DTaP", "HepB", "HepA", "Td/Tdap", "Influenza", "COVID-19"],
+        "workspaces_enabled": True,
+        "workspaces_active_label": "Rick",
     }
 
 

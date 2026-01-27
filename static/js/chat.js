@@ -12,6 +12,19 @@ const PROMPT_PREVIEW_STATE_KEY = 'sailingmed:promptPreviewOpen';
 const PROMPT_PREVIEW_CONTENT_KEY = 'sailingmed:promptPreviewContent';
 const CHAT_STATE_KEY = 'sailingmed:chatState';
 let triageSamples = [];
+let chatMetrics = {}; // { model: {count, total_ms, avg_ms}}
+
+async function loadChatMetrics() {
+    try {
+        const res = await fetch('/api/chat/metrics', { credentials: 'same-origin' });
+        const data = await res.json();
+        if (res.ok && data && typeof data.metrics === 'object') {
+            chatMetrics = data.metrics || {};
+        }
+    } catch (err) {
+        console.warn('[chat] unable to load chat metrics', err);
+    }
+}
 
 function escapeHtml(str) {
     return (str || '')
@@ -134,10 +147,12 @@ if (document.readyState !== 'loading') {
     setupPromptInjectionPanel();
     bindTriageMetaRefresh();
     applyChatState(currentMode);
+    loadChatMetrics().catch(() => {});
 } else {
     document.addEventListener('DOMContentLoaded', setupPromptInjectionPanel, { once: true });
     document.addEventListener('DOMContentLoaded', bindTriageMetaRefresh, { once: true });
     document.addEventListener('DOMContentLoaded', () => applyChatState(currentMode), { once: true });
+    document.addEventListener('DOMContentLoaded', () => loadChatMetrics().catch(() => {}), { once: true });
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -162,6 +177,7 @@ function updateUI() {
     const msg = document.getElementById('msg');
     const queryTitle = document.getElementById('query-form-title');
     const runBtn = document.getElementById('run-btn');
+    const modelSelect = document.getElementById('model-select');
     
     // Remove both classes first
     banner.classList.remove('inquiry-mode', 'private-mode', 'no-privacy');
@@ -203,6 +219,10 @@ function updateUI() {
     if (runBtn) {
         runBtn.innerText = currentMode === 'triage' ? 'SUBMIT FOR TRIAGE' : 'SUBMIT INQUIRY';
         runBtn.style.background = currentMode === 'triage' ? 'var(--triage)' : 'var(--inquiry)';
+    }
+    // Default model to 4B on load
+    if (modelSelect && !modelSelect.value) {
+        modelSelect.value = 'google/medgemma-1.5-4b-it';
     }
 }
 
@@ -298,7 +318,18 @@ async function runChat(promptText = null, force28b = false) {
     lastPrompt = txt;
     const startTime = Date.now();
     const blocker = document.getElementById('chat-blocker');
-    if (blocker) blocker.style.display = 'flex';
+    const modelName = document.getElementById('model-select').value || 'google/medgemma-1.5-4b-it';
+    if (blocker) {
+        const title = blocker.querySelector('h3');
+        if (title) title.textContent = currentMode === 'triage' ? 'Processing Triage Chat…' : 'Processing Inquiry Chat…';
+        const modelLine = document.getElementById('chat-model-line');
+        const etaLine = document.getElementById('chat-eta-line');
+        if (modelLine) modelLine.textContent = `Model: ${modelName}`;
+        const avgMs = (chatMetrics[modelName]?.avg_ms) || (modelName.toLowerCase().includes('27b') ? 60000 : 20000);
+        const eta = new Date(Date.now() + avgMs);
+        if (etaLine) etaLine.textContent = `Expected finish: ~${eta.toLocaleTimeString()} (avg ${Math.round(avgMs/1000)}s)`;
+        blocker.style.display = 'flex';
+    }
     
         // Show loading indicator
         const display = document.getElementById('display');
@@ -321,7 +352,7 @@ async function runChat(promptText = null, force28b = false) {
         fd.append('patient', patientVal);
         fd.append('mode', currentMode);
         fd.append('private', isPrivate);
-        fd.append('model_choice', document.getElementById('model-select').value);
+        fd.append('model_choice', modelName);
         fd.append('force_28b', force28b ? 'true' : 'false');
         if (currentMode === 'triage') {
             fd.append('triage_consciousness', document.getElementById('triage-consciousness')?.value || '');
@@ -365,6 +396,9 @@ async function runChat(promptText = null, force28b = false) {
                 : (res.response || '').replace(/\n/g, '<br>');
             const meta = res.model ? `[${res.model}${res.duration_ms ? ` · ${Math.round(res.duration_ms)} ms` : ` · ${Math.round(durationMs)} ms`}]` : '';
             display.innerHTML += `<div class="response-block"><b>${meta}</b><br>${parsed}</div>`;
+            if (res.model && res.model_metrics) {
+                chatMetrics[res.model] = res.model_metrics;
+            }
             if (typeof loadData === 'function') {
                 loadData(); // refresh crew history/logs after a chat completes
             }

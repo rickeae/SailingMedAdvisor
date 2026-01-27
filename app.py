@@ -315,6 +315,19 @@ def _restore_inventory_photos():
         print(f"[photo-restore] failed: {exc}")
 
 
+def _update_chat_metrics(workspace, model_name: str, duration_ms: int):
+    metrics = db_op("chat_metrics", workspace=workspace)
+    if not isinstance(metrics, dict):
+        metrics = {}
+    rec = metrics.get(model_name) or {"count": 0, "total_ms": 0, "avg_ms": 0}
+    rec["count"] = rec.get("count", 0) + 1
+    rec["total_ms"] = rec.get("total_ms", 0) + duration_ms
+    rec["avg_ms"] = rec["total_ms"] / rec["count"]
+    metrics[model_name] = rec
+    db_op("chat_metrics", metrics, workspace=workspace)
+    return rec
+
+
 def _rehydrate_inventory_photos(workspaces=None):
     """Restores missing photo files for selected workspaces and reports stats."""
     results = []
@@ -635,6 +648,7 @@ def db_op(cat, data=None, workspace=None):
         "vessel",
         "med_photo_queue",
         "med_photo_jobs",
+        "chat_metrics",
     ]
     if cat not in allowed_categories:
         raise ValueError(f"Invalid category: {cat}")
@@ -1432,6 +1446,18 @@ async def workspace_meta(request: Request):
     return {"workspaces": WORKSPACE_NAMES, "current": current}
 
 
+@app.get("/api/chat/metrics")
+async def chat_metrics(request: Request, _=Depends(require_auth)):
+    try:
+        workspace = _get_workspace(request, required=False)
+        if not workspace:
+            return {"metrics": {}}
+        metrics = db_op("chat_metrics", workspace=workspace)
+        return {"metrics": metrics if isinstance(metrics, dict) else {}}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 @app.get("/api/db/status")
 async def db_status():
     """Report whether the primary SQLite DB exists and has workspaces."""
@@ -1986,6 +2012,7 @@ async def chat(request: Request, _=Depends(require_auth)):
                 )
             return JSONResponse({"error": str(e)}, status_code=status.HTTP_400_BAD_REQUEST)
         elapsed_ms = max(int((datetime.now() - start_time).total_seconds() * 1000), 0)
+        metrics = _update_chat_metrics(workspace, models["active_name"], elapsed_ms)
 
         if not is_priv:
             h = db_op("history", workspace=workspace)
@@ -2017,6 +2044,7 @@ async def chat(request: Request, _=Depends(require_auth)):
                 "response": f"{res}\n\n(Response time: {elapsed_ms} ms)",
                 "model": models["active_name"],
                 "duration_ms": elapsed_ms,
+                "model_metrics": metrics,
             }
         )
     except Exception as e:

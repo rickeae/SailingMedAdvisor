@@ -18,26 +18,7 @@ from typing import List, Optional
 from db_store import configure_db, init_workspaces, ensure_workspace, get_doc, set_doc
 import base64
 
-# Temporary startup cleanup to reclaim space and report usage on HF Spaces
-def _cleanup_and_report():
-    try:
-        subprocess.run(
-            "rm -rf ~/.cache/huggingface ~/.cache/torch ~/.cache/pip ~/.cache/*",
-            shell=True,
-            check=False,
-        )
-        subprocess.run(
-            "df -h && du -sh /home/user /home/user/* ~/.cache 2>/dev/null | sort -hr | head -30",
-            shell=True,
-            check=False,
-        )
-    except Exception as exc:
-        print(f"[startup-cleanup] failed: {exc}")
-
-_cleanup_and_report()
-
-
-# Temporary startup cleanup to reclaim space and report usage on HF Spaces
+# Optional startup cleanup (disabled by default to speed launch)
 def _cleanup_and_report():
     try:
         import subprocess as _sp
@@ -46,7 +27,8 @@ def _cleanup_and_report():
     except Exception as exc:
         print(f"[startup-cleanup] failed: {exc}")
 
-_cleanup_and_report()
+if os.environ.get("STARTUP_CLEANUP") == "1":
+    _cleanup_and_report()
 
 # Encourage less fragmentation on GPUs with limited VRAM (e.g., RTX 5000)
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -54,7 +36,8 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 os.environ.setdefault("HF_HUB_OFFLINE", "0")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "0")
 AUTO_DOWNLOAD_MODELS = os.environ.get("AUTO_DOWNLOAD_MODELS", "1" if os.environ.get("HUGGINGFACE_SPACE_ID") else "0") == "1"
-VERIFY_MODELS_ON_START = os.environ.get("VERIFY_MODELS_ON_START", "1") == "1"
+# Default off for faster startup; set to "1" when you explicitly want cache verification
+VERIFY_MODELS_ON_START = os.environ.get("VERIFY_MODELS_ON_START", "0") == "1"
 # On HF Spaces, avoid local inference; edge/offline installs keep it enabled.
 IS_HF_SPACE = bool(os.environ.get("HUGGINGFACE_SPACE_ID"))
 DISABLE_LOCAL_INFERENCE = os.environ.get("DISABLE_LOCAL_INFERENCE") == "1" or IS_HF_SPACE

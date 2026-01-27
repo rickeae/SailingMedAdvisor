@@ -299,13 +299,10 @@
                                 </select>
                                 <button onclick="togglePriv()" id="priv-btn" class="btn" style="background:#555; min-width:140px;">LOGGING: ON</button>
                             </div>
-                            <div style="display:flex; align-items:center; gap:6px; margin-bottom:6px;">
-                                <span class="dev-tag">dev:triage-message</span>
-                            </div>
-                            <div style="display:flex; gap:10px; align-items:center; margin-bottom:8px;">
-                                <label for="triage-sample-select" style="font-size:12px; color:#333; font-weight:700;">Load sample case:</label>
-                                <select id="triage-sample-select" style="padding:8px; min-width:240px;" onchange="applyTriageSample(this.value)">
-                                    <option value="">Select a sample…</option>
+                            <div style="display:flex; gap:10px; align-items:center; margin-bottom:8px; flex-wrap:wrap;">
+                                <label for="triage-sample-select" style="font-size:12px; color:#333; font-weight:700;">Select a Test Case:</label>
+                                <select id="triage-sample-select" style="padding:8px; min-width:220px;" onchange="applyTriageSample(this.value)">
+                                    <option value="">Select a Test Case</option>
                                 </select>
                             </div>
                             <textarea id="msg" style="height:105px;" placeholder="Describe what's happening"></textarea>

@@ -38,6 +38,8 @@ os.environ.setdefault("TRANSFORMERS_OFFLINE", "0")
 AUTO_DOWNLOAD_MODELS = os.environ.get("AUTO_DOWNLOAD_MODELS", "1" if os.environ.get("HUGGINGFACE_SPACE_ID") else "0") == "1"
 # Default off for faster startup; set to "1" when you explicitly want cache verification
 VERIFY_MODELS_ON_START = os.environ.get("VERIFY_MODELS_ON_START", "0") == "1"
+# Background model verification/download when online (non-blocking) — default off for speed
+AUTO_VERIFY_ONLINE = os.environ.get("AUTO_VERIFY_ONLINE", "0") == "1"
 # On HF Spaces, avoid local inference; edge/offline installs keep it enabled.
 IS_HF_SPACE = bool(os.environ.get("HUGGINGFACE_SPACE_ID"))
 DISABLE_LOCAL_INFERENCE = os.environ.get("DISABLE_LOCAL_INFERENCE") == "1" or IS_HF_SPACE
@@ -115,7 +117,8 @@ if LEGACY_CACHE.exists() and not (CACHE_DIR / ".migrated").exists():
         (CACHE_DIR / ".migrated").write_text("ok", encoding="utf-8")
         print(f"[startup] migrated legacy model cache from {LEGACY_CACHE} to {CACHE_DIR}")
     except Exception as exc:
-        print(f"[startup] legacy model cache migration failed: {exc}")
+        # If legacy cache is partially missing, skip silently to avoid noisy logs
+        pass
 
 BACKUP_ROOT = BASE_STORE / "backups"
 BACKUP_ROOT.mkdir(parents=True, exist_ok=True)
@@ -481,6 +484,44 @@ def _startup_model_check():
             f"[offline] Missing model cache for {len(missing)} model(s). Run Offline Readiness in Settings or ensure internet to download."
         )
 
+
+def _background_verify_models():
+    """Non-blocking model cache verify/download when online."""
+    if DISABLE_LOCAL_INFERENCE or IS_HF_SPACE or not AUTO_VERIFY_ONLINE:
+        return
+    # Quick check: skip if nothing is missing
+    missing = [m for m in verify_required_models(download_missing=False) if not m["cached"]]
+    if not missing:
+        return
+    if is_offline_mode():
+        print("[offline] Skipping background verify (offline mode).")
+        return
+
+    def _runner():
+        try:
+            print("[offline] Background verify: checking/downloading MedGemma caches...")
+            verify_required_models(download_missing=True)
+            print("[offline] Background verify complete.")
+        except Exception as exc:
+            print(f"[offline] Background verify failed: {exc}")
+
+    t = threading.Thread(target=_runner, daemon=True)
+    t.start()
+
+
+def _heartbeat(label: str, interval: float = 2.0, stop_event: threading.Event = None):
+    """Print progress dots while long startup tasks run."""
+    if stop_event is None:
+        stop_event = threading.Event()
+    def _runner():
+        print(label, end='', flush=True)
+        while not stop_event.is_set():
+            time.sleep(interval)
+            print('.', end='', flush=True)
+        print(" done", flush=True)
+    th = threading.Thread(target=_runner, daemon=True)
+    th.start()
+    return stop_event
 
 def unload_model():
     """Free GPU/CPU memory for previously loaded model."""
@@ -2400,9 +2441,13 @@ async def photo_status():
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+hb_models = _heartbeat("Housekeeping", interval=2.0)
 _restore_inventory_photos()
 _startup_model_check()
+_background_verify_models()
 _start_photo_worker()
+hb_models.set()
+print("[startup] Housekeeping complete", flush=True)
 
 if __name__ == "__main__":
     import uvicorn

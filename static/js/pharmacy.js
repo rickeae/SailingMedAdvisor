@@ -232,13 +232,14 @@ function toggleCustomSortField() {
     if (!isCustom) custom.value = '';
 }
 
-function ensurePurchaseDefaults(p) {
+function ensurePurchaseDefaults(p, open = false) {
     return {
         id: p.id || `ph-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
         date: p.date || '',
         quantity: p.quantity || '',
         notes: p.notes || '',
         photos: Array.isArray(p.photos) ? p.photos : [],
+        _open: open
     };
 }
 
@@ -249,7 +250,7 @@ function ensurePharmacyDefaults(item) {
         brandName: item.brandName || '',
         form: item.form || '',
         strength: item.strength || '',
-        currentQuantity: item.currentQuantity || '',
+        currentQuantity: item.currentQuantity || '', // legacy; derived from purchase history
         minThreshold: item.minThreshold || '',
         unit: item.unit || '',
         storageLocation: item.storageLocation || '',
@@ -279,7 +280,7 @@ function scheduleSaveMedication(id, rerender = false) {
     }
     pharmacySaveTimers[id] = setTimeout(() => {
         saveMedication(id, rerender);
-    }, 400);
+    }, 50); // very short debounce for snappier UI feedback
 }
 
 function getMedicationDisplayName(med) {
@@ -293,6 +294,26 @@ function getMedicationDisplayName(med) {
     }
     const showBrand = brand && !isPlaceholder(brand) && brand.toLowerCase() !== primary.toLowerCase();
     return `${primary}${showBrand ? ' — ' + brand : ''}`;
+}
+
+function getExpiryDate(med) {
+    if (!med || !Array.isArray(med.purchaseHistory)) return med?.expiryDate || '';
+    let earliest = null;
+    med.purchaseHistory.forEach(ph => {
+        if (!ph || !ph.date) return;
+        const d = new Date(ph.date);
+        if (isNaN(d)) return;
+        if (!earliest || d < earliest) earliest = d;
+    });
+    return earliest ? earliest.toISOString().slice(0, 10) : (med.expiryDate || '');
+}
+
+function getCurrentQuantity(med) {
+    if (!med || !Array.isArray(med.purchaseHistory)) return Number(med.currentQuantity) || 0;
+    return med.purchaseHistory.reduce((sum, ph) => {
+        const n = Number(ph.quantity);
+        return Number.isFinite(n) ? sum + n : sum;
+    }, 0);
 }
 
 function sortPharmacyItems(items) {
@@ -322,7 +343,7 @@ function sortPharmacyItems(items) {
             return byText(a, b, a.strength || '', b.strength || '');
         }
         if (mode === 'expiry') {
-            return byText(a, b, a.expiryDate || '', b.expiryDate || '');
+            return byText(a, b, getExpiryDate(a) || '', getExpiryDate(b) || '');
         }
         // default generic
         return byText(a, b, a.genericName || a.brandName || '', b.genericName || b.brandName || '');
@@ -388,7 +409,7 @@ function renderPharmacy(items, openIds = [], textHeights = {}) {
 }
 
 function renderPurchaseRows(med) {
-    const rows = med.purchaseHistory.length ? med.purchaseHistory : [ensurePurchaseDefaults({})];
+    const rows = med.purchaseHistory.length ? med.purchaseHistory : [ensurePurchaseDefaults({}, true)];
     return rows
         .map((p) => {
             const photos = (p.photos || []).map(
@@ -403,15 +424,15 @@ function renderPurchaseRows(med) {
                 <div class="purchase-row" data-med-id="${med.id}" data-ph-id="${p.id || ''}" style="border:1px solid #d9e5f7; padding:10px; border-radius:6px; margin-bottom:10px; background:#f5f9ff;">
                 <div style="display:grid; grid-template-columns: repeat(2, minmax(200px, 1fr)); gap:10px; align-items:center; margin-bottom:10px;">
                     <div style="display:flex; align-items:center; gap:8px;">
-                        <span class="ph-notes-toggle" style="cursor:pointer; font-weight:800; color:var(--dark);" onclick="togglePurchaseNotes(this)">▾</span>
+                        <span class="ph-notes-toggle" style="cursor:pointer; font-weight:800; color:var(--dark);" onclick="togglePurchaseNotes(this)">${p._open ? '▾' : '▸'}</span>
                         <input type="date" class="ph-date" value="${p.date || ''}" style="padding:8px; font-size:14px; width:100%;" onchange="scheduleSaveMedication('${med.id}')" title="Expiry Date">
                     </div>
                     <input type="number" class="ph-qty" value="${p.quantity || ''}" placeholder="Qty" style="padding:8px; font-size:14px;" oninput="scheduleSaveMedication('${med.id}')" title="Quantity tied to this expiry">
                 </div>
-                <div class="ph-notes-container" style="margin-bottom:10px; display:block;">
+                <div class="ph-notes-container" style="margin-bottom:10px; display:${p._open ? 'block' : 'none'};">
                     <textarea class="ph-notes" placeholder="Notes (batch/lot/location)" style="width:100%; padding:8px; min-height:60px; font-size:14px;" oninput="scheduleSaveMedication('${med.id}')">${p.notes || ''}</textarea>
                 </div>
-                <div class="ph-photos-container" style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-start; margin-top:6px;">
+                <div class="ph-photos-container" style="display:${p._open ? 'flex' : 'none'}; gap:10px; flex-wrap:wrap; align-items:flex-start; margin-top:6px;">
                     ${photos.join('')}
                     <div>
                         <label style="font-size:12px; font-weight:700; display:block; margin-bottom:4px;">Add Photo</label>
@@ -427,10 +448,18 @@ function renderPurchaseRows(med) {
 }
 
 function renderMedicationCard(med, isOpen = true, textHeights = {}) {
-    const lowStock = med.minThreshold && Number(med.currentQuantity) <= Number(med.minThreshold);
-    const expirySoon = med.expiryDate && daysUntil(med.expiryDate) <= 60;
-    const expiryText = med.expiryDate ? `Exp: ${med.expiryDate}` : 'No expiry set';
-    const headerNote = [lowStock ? 'Low Stock' : null, expirySoon ? 'Expiring Soon' : null].filter(Boolean).join(' · ');
+    const currentQty = getCurrentQuantity(med);
+    const lowStock = med.minThreshold && Number(currentQty) <= Number(med.minThreshold);
+    const expiryDate = getExpiryDate(med);
+    const days = expiryDate ? daysUntil(expiryDate) : null;
+    const isExpired = Number.isFinite(days) && days < 0;
+    const expirySoon = Number.isFinite(days) && days >= 0 && days <= 60;
+    const expiryText = expiryDate ? `Exp: ${expiryDate}` : 'No expiry set';
+    const headerNote = [
+        lowStock ? 'Low Stock' : null,
+        isExpired ? 'Expired' : null,
+        !isExpired && expirySoon ? 'Expiring Soon' : null
+    ].filter(Boolean).join(' · ');
     const displayName = getMedicationDisplayName(med);
     const strength = (med.strength || '').trim();
     const userLabelRender = renderUserLabelOptions(med.sortCategory || '');
@@ -515,10 +544,6 @@ function renderMedicationCard(med, isOpen = true, textHeights = {}) {
                         </div>
                         <div style="grid-column: 1 / span 2; display:grid; grid-template-columns: repeat(3, minmax(160px, 1fr)); gap:10px;">
                             <div>
-                                <label style="font-weight:700; font-size:12px;">Current Quantity</label>
-                                <input id="qty-${med.id}" type="number" value="${med.currentQuantity}" style="width:100%; padding:8px;" oninput="scheduleSaveMedication('${med.id}')">
-                            </div>
-                            <div>
                                 <label style="font-weight:700; font-size:12px;">Minimum Threshold</label>
                                 <input id="min-${med.id}" type="number" value="${med.minThreshold}" style="width:100%; padding:8px;" oninput="scheduleSaveMedication('${med.id}')">
                             </div>
@@ -530,11 +555,6 @@ function renderMedicationCard(med, isOpen = true, textHeights = {}) {
                         <div>
                             <label style="font-weight:700; font-size:12px;">Storage Location</label>
                             <input id="loc-${med.id}" type="text" value="${med.storageLocation}" placeholder="Locker A, Fridge" style="width:100%; padding:8px;" oninput="scheduleSaveMedication('${med.id}')">
-                        </div>
-                        <div>
-                            <label style="font-weight:700; font-size:12px;">Expiry Date</label>
-                            <input id="exp-${med.id}" type="date" value="${med.expiryDate}" style="width:100%; padding:8px;" onchange="scheduleSaveMedication('${med.id}')">
-                            <div style="font-size:11px; color:${expirySoon ? '#c62828' : '#555'};">${expiryText}${expirySoon ? ' (within 60 days)' : ''}</div>
                         </div>
                         <div>
                             <label style="font-weight:700; font-size:12px;">Batch/Lot Number</label>
@@ -801,11 +821,9 @@ async function saveMedication(id, rerender = false) {
     med.brandName = document.getElementById(`bn-${id}`)?.value || '';
     med.form = document.getElementById(`form-${id}`)?.value || '';
     med.strength = document.getElementById(`str-${id}`)?.value || '';
-    med.currentQuantity = document.getElementById(`qty-${id}`)?.value || '';
     med.minThreshold = document.getElementById(`min-${id}`)?.value || '';
     med.unit = document.getElementById(`unit-${id}`)?.value || '';
     med.storageLocation = document.getElementById(`loc-${id}`)?.value || '';
-    med.expiryDate = document.getElementById(`exp-${id}`)?.value || '';
     med.batchLot = document.getElementById(`batch-${id}`)?.value || '';
     med.controlled = (document.getElementById(`ctrl-${id}`)?.value || 'false') === 'true';
     med.manufacturer = document.getElementById(`manu-${id}`)?.value || '';
@@ -819,15 +837,15 @@ async function saveMedication(id, rerender = false) {
     med.verified = !!document.getElementById(`ver-${id}`)?.checked;
     med.purchaseHistory = collectPurchaseEntries(id);
 
+    // Optimistic rerender before saving to backend for instant UI feedback
+    pharmacyCache = meds;
+    renderPharmacy(pharmacyCache, openMedIds, textHeights);
+
     await fetchInventory({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(meds),
     });
-    pharmacyCache = meds;
-    if (rerender) {
-        renderPharmacy(pharmacyCache, openMedIds, textHeights);
-    }
 }
 
 function collectPurchaseEntries(medId) {

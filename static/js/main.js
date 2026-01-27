@@ -278,3 +278,92 @@ async function restoreLastChatView() {
         console.warn('Failed to restore last chat view', err);
     }
 }
+
+// Medical Chest search across pharma/equipment/consumables
+async function searchMedicalChest() {
+    const input = document.getElementById('medchest-search-input');
+    const scopeSel = document.getElementById('medchest-search-scope');
+    const resultsBox = document.getElementById('medchest-search-results');
+    if (!input || !scopeSel || !resultsBox) return;
+    const q = (input.value || '').trim().toLowerCase();
+    const scope = scopeSel.value || 'all';
+    if (!q) {
+        resultsBox.innerHTML = '<div style="color:#b71c1c;">Enter a search term.</div>';
+        return;
+    }
+    resultsBox.innerHTML = '<div style="color:#555;">Searching…</div>';
+    try {
+        const wantPharma = scope === 'all' || scope === 'pharma';
+        const wantEquip = scope === 'all' || scope === 'equipment' || scope === 'consumables';
+        const [invData, toolsData] = await Promise.all([
+            wantPharma ? fetch('/api/data/inventory', { credentials: 'same-origin' }).then(r => r.json()) : Promise.resolve([]),
+            wantEquip ? fetch('/api/data/tools', { credentials: 'same-origin' }).then(r => r.json()) : Promise.resolve([]),
+        ]);
+        const results = [];
+        if (wantPharma && Array.isArray(invData)) {
+            invData.forEach(m => {
+                const hay = [m.genericName, m.brandName, m.primaryIndication, m.standardDosage, m.storageLocation, m.notes].join(' ').toLowerCase();
+                if (hay.includes(q)) {
+                    results.push({ section: 'Pharmaceuticals', title: m.genericName || m.brandName || 'Medication', detail: m.strength || '', extra: m.storageLocation || '' });
+                }
+            });
+        }
+        if (wantEquip && Array.isArray(toolsData)) {
+            toolsData.forEach(t => {
+                const hay = [t.name, t.storageLocation, t.notes, t.quantity].join(' ').toLowerCase();
+                const isConsumable = (t.type || '').toLowerCase() === 'consumable';
+                const sec = isConsumable ? 'Consumables' : 'Equipment';
+                if ((scope === 'consumables' && !isConsumable) || (scope === 'equipment' && isConsumable)) return;
+                if (hay.includes(q)) {
+                    results.push({ section: sec, title: t.name || 'Item', detail: t.quantity || '', extra: t.storageLocation || '' });
+                }
+            });
+        }
+        if (!results.length) {
+            resultsBox.innerHTML = '<div style="color:#2c3e50;">No matches found.</div>';
+            return;
+        }
+        const grouped = results.reduce((acc, r) => {
+            acc[r.section] = acc[r.section] || [];
+            acc[r.section].push(r);
+            return acc;
+        }, {});
+        let html = '';
+        Object.keys(grouped).forEach(sec => {
+            const list = grouped[sec];
+            html += `
+                <div style="margin-bottom:10px; border:1px solid #d8e2f5; border-radius:8px;">
+                    <div style="padding:8px 10px; background:#eef3ff; cursor:pointer; font-weight:700;" onclick="toggleSearchResults(this)">
+                        ${sec} — ${list.length} match(es)
+                        <span style="float:right;">▾</span>
+                    </div>
+                    <div class="medchest-search-results-body" style="padding:8px 10px; display:none; background:#fff;">
+                        ${list.map(item => `
+                            <div style="padding:6px 0; border-bottom:1px solid #eee;">
+                                <div style="font-weight:700;">${item.title}</div>
+                                <div style="font-size:12px; color:#444;">${item.detail || ''}</div>
+                                <div style="font-size:12px; color:#666;">${item.extra || ''}</div>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
+        });
+        resultsBox.innerHTML = html;
+    } catch (err) {
+        resultsBox.innerHTML = `<div style="color:#b71c1c;">Search failed: ${err.message}</div>`;
+    }
+}
+
+function toggleSearchResults(headerEl) {
+    const body = headerEl.nextElementSibling;
+    if (!body) return;
+    const isShown = body.style.display === 'block';
+    body.style.display = isShown ? 'none' : 'block';
+    const arrow = headerEl.querySelector('span');
+    if (arrow) arrow.textContent = isShown ? '▸' : '▾';
+}
+
+// expose for inline handlers
+window.searchMedicalChest = searchMedicalChest;
+window.toggleSearchResults = toggleSearchResults;

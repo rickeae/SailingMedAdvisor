@@ -462,6 +462,9 @@ def _get_workspace(request: Request, required: bool = True):
             label = mapped
     if not label:
         if required:
+            # When workspaces are enabled, require explicit selection to show the login/crew password page
+            if workspaces_enabled:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Workspace not selected")
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Workspace not selected")
         return None
     if label not in WORKSPACE_NAMES:

@@ -1080,5 +1080,27 @@ async function saveVesselInfo() {
         ribSn: document.getElementById('vessel-rib-sn')?.value || ''
     };
     await fetch('/api/data/vessel', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(v), credentials:'same-origin'});
-    alert('Vessel information saved.');
 }
+
+let vesselSaveTimer = null;
+function scheduleVesselSave() {
+    if (vesselSaveTimer) clearTimeout(vesselSaveTimer);
+    vesselSaveTimer = setTimeout(() => saveVesselInfo().catch(() => {}), 400);
+}
+
+// bind autosave listeners once DOM is ready
+document.addEventListener('DOMContentLoaded', () => {
+    const ids = [
+        'vessel-name','vessel-registration','vessel-flag','vessel-homeport','vessel-callsign',
+        'vessel-tonnage','vessel-net-tonnage','vessel-mmsi','vessel-hull-number',
+        'vessel-starboard-engine','vessel-starboard-sn','vessel-port-engine','vessel-port-sn','vessel-rib-sn'
+    ];
+    ids.forEach(id => {
+        const el = document.getElementById(id);
+        if (el && !el.dataset.vesselAutosave) {
+            el.dataset.vesselAutosave = '1';
+            el.addEventListener('input', () => scheduleVesselSave());
+            el.addEventListener('change', () => scheduleVesselSave());
+        }
+    });
+});

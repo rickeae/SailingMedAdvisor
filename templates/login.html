@@ -8,110 +8,99 @@
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            display: flex;
-            justify-content: center;
-            align-items: center;
+            font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: radial-gradient(circle at 20% 20%, #6f7cf7 0%, #5b62d4 35%, #5b3fad 70%, #432a8a 100%);
             min-height: 100vh;
-            padding: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 32px 16px;
+            color: #0f2145;
         }
         .login-container {
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-            padding: 40px;
-            max-width: 420px;
-            width: min(100%, 460px);
+            background: #ffffff;
+            border-radius: 18px;
+            box-shadow: 0 18px 48px rgba(0,0,0,0.18);
+            padding: 40px 40px 44px;
+            width: min(720px, 96vw);
         }
-        .login-header {
-            text-align: center;
-            margin-bottom: 30px;
-        }
+        .login-header { text-align: center; margin-bottom: 26px; }
         .login-header h1 {
-            color: #1a5490;
-            font-size: 32px;
-            margin-bottom: 8px;
-            font-weight: 700;
-            letter-spacing: -0.5px;
+            color: #1c4277;
+            font-size: 36px;
+            font-weight: 800;
+            letter-spacing: -0.8px;
         }
         .login-header .tagline {
-            color: #34495e;
-            font-size: 15px;
-            font-weight: 600;
-            margin-bottom: 18px;
-            line-height: 1.4;
+            color: #203459;
+            font-size: 18px;
+            font-weight: 700;
+            margin-top: 4px;
         }
         .login-header .description {
-            color: #5a6c7d;
-            font-size: 13px;
+            color: #304467;
+            font-size: 16px;
             line-height: 1.7;
             text-align: left;
-            padding: 15px;
-            background: #f8f9fa;
-            border-left: 3px solid #1a5490;
-            border-radius: 4px;
-            margin-bottom: 25px;
+            padding: 18px 16px;
+            background: #f5f9ff;
+            border: 1px solid #d4e3ff;
+            border-radius: 10px;
+            margin: 22px 0 10px;
         }
-        .icon {
-            font-size: 50px;
-            margin-bottom: 12px;
-        }
-        .form-group {
-            margin-bottom: 20px;
-        }
-        label {
-            display: block;
-            color: #2c3e50;
-            font-weight: 600;
-            margin-bottom: 8px;
-            font-size: 14px;
-        }
+        .icon { font-size: 58px; margin-bottom: 12px; color: #6a5cf0; }
+        .form-group { margin-bottom: 18px; }
+        label { display:block; color:#1f2f4d; font-weight:700; margin-bottom:6px; font-size:14px;}
         input[type="password"], input[type="text"] {
             width: 100%;
-            padding: 12px 15px;
-            border: 2px solid #e0e0e0;
-            border-radius: 6px;
+            padding: 13px 14px;
+            border: 2px solid #e1e6ef;
+            border-radius: 10px;
             font-size: 16px;
-            transition: border-color 0.3s;
+            transition: border-color 0.2s, box-shadow 0.2s;
         }
         input[type="password"]:focus, input[type="text"]:focus {
             outline: none;
-            border-color: #667eea;
+            border-color: #6a5cf0;
+            box-shadow: 0 0 0 3px rgba(106,92,240,0.15);
         }
         .btn-login {
             width: 100%;
-            padding: 14px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
+            padding: 15px;
+            background: linear-gradient(90deg, #5f4de1 0%, #7a5ef0 100%);
+            color: #fff;
             border: none;
-            border-radius: 6px;
-            font-size: 16px;
-            font-weight: 600;
+            border-radius: 12px;
+            font-size: 18px;
+            font-weight: 800;
             cursor: pointer;
             transition: transform 0.2s, box-shadow 0.2s;
         }
-        .btn-login:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
-        }
-        .btn-login:active {
-            transform: translateY(0);
+        .btn-login:hover { transform: translateY(-1px); box-shadow: 0 8px 22px rgba(95,77,225,0.32); }
+        .btn-login:active { transform: translateY(0); }
+        .info-banner {
+            background:#e9f7ef;
+            border:1px solid #c5e4d3;
+            color:#1f6f3f;
+            border-radius:10px;
+            padding:12px 14px;
+            font-size:15px;
+            margin-bottom:18px;
         }
         .error-message {
-            background: #fee;
-            color: #c33;
-            padding: 10px;
-            border-radius: 6px;
-            margin-bottom: 20px;
-            display: none;
-            font-size: 14px;
+            background:#fee;
+            color:#c33;
+            padding:12px;
+            border-radius:10px;
+            margin-bottom:16px;
+            display:none;
+            font-size:14px;
         }
         .footer {
-            margin-top: 30px;
+            margin-top: 26px;
             text-align: center;
-            color: #95a5a6;
-            font-size: 12px;
+            color: #7f8fb3;
+            font-size: 13px;
         }
     </style>
 </head>
@@ -120,14 +109,15 @@
         <div class="login-header">
             <div class="icon">⚕️</div>
             <h1>SailingMedAdvisor</h1>
-            <p class="tagline">MedGemma-Powered Clinical Intelligence for the High Seas</p>
+            <p class="tagline">Offline emergency medical guidance for offshore sailors,<br>powered by MedGemma (HAI-DEF)</p>
             <div class="description">
-                Tactical medical autonomy starts here. Unlike general-purpose AI, SailingMedAdvisor is tuned specifically to the rigors of the offshore environment. By analyzing your vessel's unique pharmacy and equipment through the lens of MedGemma's specialized clinical reasoning, we provide precision triage when you are thousands of miles from the nearest shore.
+                SailingMedAdvisor is a fully-offline, AI-assisted medical support system designed specifically for offshore sailing vessels operating without reliable internet access. It reflects the practical constraints of life at sea: a fixed crew, limited medical supplies, constrained hardware, and high-stress decision-making during medical events.
             </div>
         </div>
-        
+
+        <div id="banner" class="info-banner" style="display:none;"></div>
         <div id="error" class="error-message"></div>
-        
+
         <form id="loginForm">
             <div class="form-group" id="user-row">
                 <label for="username">Username</label>
@@ -137,9 +127,9 @@
                 <label for="password">Access Password</label>
                 <input type="password" id="password" name="password" required autofocus placeholder="Enter your password">
             </div>
-            <button type="submit" class="btn-login" id="login-btn">Access System</button>
+            <button type="submit" class="btn-login" id="login-btn">Enter System</button>
         </form>
-        
+
         <div class="footer">
             Crew credentials are managed on the Settings page under "Crew Login Credentials."
         </div>
@@ -153,6 +143,7 @@
         const userRow = document.getElementById('user-row');
         const passRow = document.getElementById('pass-row');
         const loginBtn = document.getElementById('login-btn');
+        const banner = document.getElementById('banner');
         let credentialsRequired = true;
 
         async function hydrateAuthUI() {
@@ -165,10 +156,11 @@
                     usernameInput.required = false;
                     passwordInput.required = false;
                     loginBtn.textContent = 'Enter System';
-                    errorDiv.style.display = 'block';
-                    errorDiv.style.background = '#eef9f1';
-                    errorDiv.style.color = '#1a5490';
-                    errorDiv.textContent = 'No crew login credentials are configured. Click Enter System to proceed.';
+                    banner.style.display = 'block';
+                    banner.textContent = "Click Enter System to proceed. Configure crew login credentials in Settings.";
+                    banner.style.textAlign = 'center';
+                } else {
+                    banner.style.display = 'none';
                 }
             } catch (e) {
                 // If meta fails, fall back to showing the form

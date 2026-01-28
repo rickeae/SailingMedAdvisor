@@ -1,3 +1,10 @@
+"""
+File: app.py
+Author notes: FastAPI entrypoint for SailingMedAdvisor. I define all routes,
+startup wiring, and UI-serving helpers here. Keeps the rest of the codebase
+focused on domain logic while this file glues HTTP -> db_store + static assets.
+"""
+
 import os
 import json
 import uuid
@@ -12,13 +19,57 @@ import time
 import re
 import subprocess
 import io
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
-from db_store import configure_db, init_workspaces, ensure_workspace, get_doc, set_doc
-import base64
+from db_store import (
+    configure_db,
+    ensure_store,
+    get_vessel,
+    set_vessel,
+    get_patients,
+    set_patients,
+    delete_patients_doc,
+    update_patient_fields,
+    upsert_vaccine,
+    delete_vaccine,
+    get_credentials_rows,
+    verify_password,
+    replace_vaccine_types,
+    replace_pharmacy_labels,
+    load_vaccine_types,
+    load_pharmacy_labels,
+    get_model_params,
+    set_model_params,
+    get_inventory_items,
+    set_inventory_items,
+    get_tool_items,
+    set_tool_items,
+    get_history_entries,
+    set_history_entries,
+    get_who_medicines,
+    get_chats,
+    set_chats,
+    get_chat_metrics,
+    set_chat_metrics,
+    get_triage_samples,
+    set_triage_samples,
+    get_triage_options,
+    set_triage_options,
+    get_settings_meta,
+    set_settings_meta,
+    get_med_photo_queue_rows,
+    set_med_photo_queue_rows,
+    get_med_photo_jobs_rows,
+    set_med_photo_jobs_rows,
+    get_context_payload,
+    set_context_payload,
+)
 
-# Optional startup cleanup (disabled by default to speed launch)
+logger = logging.getLogger("uvicorn.error")
+
+# --- Optional startup cleanup (disabled by default to speed launch) ---
 def _cleanup_and_report():
     try:
         import subprocess as _sp
@@ -30,8 +81,11 @@ def _cleanup_and_report():
 if os.environ.get("STARTUP_CLEANUP") == "1":
     _cleanup_and_report()
 
+# --- Environment tuning for model runtime (VRAM, offline flags, cache paths) ---
 # Encourage less fragmentation on GPUs with limited VRAM (e.g., RTX 5000)
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+# Use the current environment variable name to avoid deprecation warnings
+os.environ.pop("PYTORCH_CUDA_ALLOC_CONF", None)
+os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 # Allow online downloads by default (HF Spaces first run needs this). You can set these to "1" after caches are warm.
 os.environ.setdefault("HF_HUB_OFFLINE", "0")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "0")
@@ -41,7 +95,12 @@ VERIFY_MODELS_ON_START = os.environ.get("VERIFY_MODELS_ON_START", "0") == "1"
 # Background model verification/download when online (non-blocking) — default off for speed
 AUTO_VERIFY_ONLINE = os.environ.get("AUTO_VERIFY_ONLINE", "0") == "1"
 # On HF Spaces, avoid local inference; edge/offline installs keep it enabled.
-IS_HF_SPACE = bool(os.environ.get("HUGGINGFACE_SPACE_ID"))
+IS_HF_SPACE = bool(
+    os.environ.get("HUGGINGFACE_SPACE_ID")
+    or os.environ.get("SPACE_ID")
+    or os.environ.get("HF_SPACE")
+    or os.environ.get("HUGGINGFACE_SPACE")
+)
 DISABLE_LOCAL_INFERENCE = os.environ.get("DISABLE_LOCAL_INFERENCE") == "1" or IS_HF_SPACE
 
 # Remote inference (used when local is disabled, e.g., on HF Space)
@@ -75,9 +134,11 @@ from huggingface_hub import snapshot_download
 from huggingface_hub import InferenceClient
 
 # Core config
+# Use the repo directory as the application home to avoid unwritable mount points
 BASE_DIR = Path(__file__).parent.resolve()
-APP_HOME = Path("/home/user/app").resolve()
-PERSIST_ROOT = Path(os.environ.get("PERSIST_ROOT", "/data")).resolve()
+APP_HOME = BASE_DIR
+# Default persistence root to a writable local data directory unless explicitly overridden
+PERSIST_ROOT = Path(os.environ.get("PERSIST_ROOT") or (BASE_DIR / "data")).resolve()
 
 
 def _choose_root(preferred: Path, fallback: Path) -> Path:
@@ -101,17 +162,22 @@ UPLOAD_ROOT = BASE_STORE / "uploads"
 UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
 SECRET_KEY = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
 
+# Model cache/offload locations (I keep these stable so downloads are reusable)
 OFFLOAD_DIR = APP_HOME / "offload"
 OFFLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 CACHE_DIR = BASE_STORE / "models_cache"
+# Prefer external mounted cache if present
+EXTERNAL_CACHE = Path("/mnt/modelcache/models_cache")
+if EXTERNAL_CACHE.exists() and EXTERNAL_CACHE.is_dir():
+    CACHE_DIR = EXTERNAL_CACHE
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
-# Point Hugging Face cache to a local directory to avoid network dependency
+# Point Hugging Face cache to the chosen directory to avoid network dependency
 os.environ["HF_HOME"] = str(CACHE_DIR)
 os.environ["HUGGINGFACE_HUB_CACHE"] = str(CACHE_DIR / "hub")
 (CACHE_DIR / "hub").mkdir(parents=True, exist_ok=True)
 LEGACY_CACHE = APP_HOME / "models_cache"
-if LEGACY_CACHE.exists() and not (CACHE_DIR / ".migrated").exists():
+if LEGACY_CACHE.exists() and not (CACHE_DIR / ".migrated").exists() and CACHE_DIR != LEGACY_CACHE:
     try:
         shutil.copytree(LEGACY_CACHE, CACHE_DIR, dirs_exist_ok=True)
         (CACHE_DIR / ".migrated").write_text("ok", encoding="utf-8")
@@ -122,11 +188,13 @@ if LEGACY_CACHE.exists() and not (CACHE_DIR / ".migrated").exists():
 
 BACKUP_ROOT = BASE_STORE / "backups"
 BACKUP_ROOT.mkdir(parents=True, exist_ok=True)
-# Prefer persisted DB; migrate/seed if missing
-DB_PATH = DATA_ROOT / "app.db"
+# Prefer keeping the DB alongside app.py; migrate from legacy data/ path if present
+DB_PATH = APP_HOME / "app.db"
 LEGACY_DB = APP_HOME / "data" / "app.db"
+PREVIOUS_DATA_ROOT_DB = DATA_ROOT / "app.db"
 SEED_DB_LOCAL = APP_HOME / "seed" / "app.db"
-SEED_DB_URL = os.environ.get("SEED_DB_URL") or "https://huggingface.co/spaces/rickescher/SailingMedAdvisor/resolve/main/seed/app.db"
+# Remote seeding disabled by default to avoid unintended downloads; set SEED_DB_URL to enable.
+SEED_DB_URL = os.environ.get("SEED_DB_URL") or None
 
 
 def _is_valid_sqlite(path: Path) -> bool:
@@ -142,16 +210,29 @@ def _db_is_populated(path: Path) -> bool:
     try:
         conn = sqlite3.connect(path)
         cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM documents")
-        docs = cur.fetchone()[0]
+        vessel_rows = 0
+        crew_rows = 0
+        try:
+            cur.execute("SELECT COUNT(*) FROM vessel")
+            vessel_rows = cur.fetchone()[0] or 0
+        except Exception:
+            pass
+        try:
+            cur.execute("SELECT COUNT(*) FROM crew")
+            crew_rows = cur.fetchone()[0] or 0
+        except Exception:
+            pass
         conn.close()
-        return docs > 0
+        return (vessel_rows + crew_rows) > 0
     except Exception:
         return False
 
 
 def _bootstrap_db(force: bool = False):
-    """Ensure /data/app.db exists; try legacy, bundled seed, then remote seed."""
+    """
+    Ensure app.db sits beside app.py. I prefer existing data, fall back to local seeds,
+    and intentionally skip remote seeding unless explicitly enabled.
+    """
     if DB_PATH.exists():
         if (
             not force
@@ -166,7 +247,20 @@ def _bootstrap_db(force: bool = False):
         except Exception:
             pass
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    # 1) migrate legacy packaged DB
+    # 1) migrate from the previous persisted location (data/data/app.db)
+    if (
+        PREVIOUS_DATA_ROOT_DB != DB_PATH
+        and PREVIOUS_DATA_ROOT_DB.exists()
+        and PREVIOUS_DATA_ROOT_DB.stat().st_size > 0
+        and _is_valid_sqlite(PREVIOUS_DATA_ROOT_DB)
+    ):
+        try:
+            shutil.copy2(PREVIOUS_DATA_ROOT_DB, DB_PATH)
+            print(f"[startup] migrated DB from previous data root {PREVIOUS_DATA_ROOT_DB}")
+            return
+        except Exception as exc:
+            print(f"[startup] failed previous data-root DB copy: {exc}")
+    # 2) migrate legacy packaged DB
     if LEGACY_DB.exists() and LEGACY_DB.stat().st_size > 0 and _is_valid_sqlite(LEGACY_DB):
         try:
             shutil.copy2(LEGACY_DB, DB_PATH)
@@ -174,7 +268,7 @@ def _bootstrap_db(force: bool = False):
             return
         except Exception as exc:
             print(f"[startup] failed legacy DB copy: {exc}")
-    # 2) bundled seed
+    # 3) bundled seed
     if SEED_DB_LOCAL.exists() and SEED_DB_LOCAL.stat().st_size > 0 and _is_valid_sqlite(SEED_DB_LOCAL):
         try:
             shutil.copy2(SEED_DB_LOCAL, DB_PATH)
@@ -182,127 +276,35 @@ def _bootstrap_db(force: bool = False):
             return
         except Exception as exc:
             print(f"[startup] failed local seed DB copy: {exc}")
-    # 3) remote seed (requires internet)
-    if SEED_DB_URL:
-        try:
-            import requests
-
-            resp = requests.get(SEED_DB_URL, timeout=30, stream=True)
-            if resp.ok:
-                with open(DB_PATH, "wb") as f:
-                    for chunk in resp.iter_content(chunk_size=1024 * 1024):
-                        if chunk:
-                            f.write(chunk)
-                if DB_PATH.stat().st_size > 0:
-                    print(f"[startup] downloaded seed DB from {SEED_DB_URL}")
-                    return
-            else:
-                print(f"[startup] seed DB download failed: status {resp.status_code}")
-        except Exception as exc:
-            print(f"[startup] seed DB download error: {exc}")
-    print("[startup] no seed DB found; creating new empty DB")
+    print("[startup] no seed DB found; creating new empty DB (remote seed disabled)")
 
 
 _bootstrap_db()
 configure_db(DB_PATH)
+
+DEFAULT_store_LABEL = "Default"
+DEFAULT_store = None
+
+def _list_stores():
+    """Legacy shim: single store only."""
+    return [DEFAULT_store] if DEFAULT_store else []
+
+
+
+
+
 REQUIRED_MODELS = [
     "google/medgemma-1.5-4b-it",
     "google/medgemma-27b-text-it",
     "Qwen/Qwen2.5-VL-7B-Instruct",
 ]
-
-WORKSPACE_NAMES = sorted(
-    [
-        "Darlene&Neal",
-        "Rick",
-        "Lorraine",
-        "Wayne",
-        "DaveG",
-        "Dave&Nathalie",
-        "Tracy&John",
-        "Julia&Jeff",
-        "Carl",
-        "Jeremy",
-        "Pamela",
-    ],
-    key=lambda s: s.lower(),
-)
-init_workspaces(WORKSPACE_NAMES)
+# Photo job worker is currently disabled; keep flags to avoid accidental startup.
 PHOTO_JOB_WORKER_STARTED = False
 PHOTO_JOB_LOCK = threading.Lock()
 
 
-def _abs_upload_path(path_str: str) -> Path:
-    """Resolve a stored /uploads/... path to an absolute path under UPLOAD_ROOT."""
-    rel = path_str.lstrip("/")
-    if rel.startswith("uploads/"):
-        rel = rel[len("uploads/") :]
-    return UPLOAD_ROOT / rel
-
-
-def _encode_photo_data_url(image_path: Path, max_dim: int = 900, quality: int = 80) -> Optional[str]:
-    """Downsample an image and return a base64 data URL for DB embedding."""
-    try:
-        img = Image.open(image_path).convert("RGB")
-        img.thumbnail((max_dim, max_dim))
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=quality, optimize=True)
-        b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-        return f"data:image/jpeg;base64,{b64}"
-    except Exception as exc:
-        print(f"[photo-encode] failed for {image_path}: {exc}")
-        return None
-
-
-def _restore_inventory_photos():
-    """Ensure photo files exist by rehydrating from embedded data URLs."""
-    try:
-        total_restored = 0
-        for label in WORKSPACE_NAMES:
-            try:
-                ws = _workspace_dirs(label)
-                inv = get_doc(ws["db_id"], "inventory") or []
-                restored_ws = 0
-                for item in inv:
-                    if not isinstance(item, dict):
-                        continue
-                    photos = item.get("photos") or []
-                    embeds = item.get("photoDataUrls") or []
-                    if not photos or not embeds:
-                        continue
-                    for idx, path in enumerate(photos):
-                        if idx >= len(embeds):
-                            break
-                        data_url = embeds[idx]
-                        if not path or not data_url:
-                            continue
-                        dest = _abs_upload_path(path)
-                        if dest.exists():
-                            continue
-                        try:
-                            if "," in data_url:
-                                _, b64data = data_url.split(",", 1)
-                            else:
-                                b64data = data_url
-                            raw = base64.b64decode(b64data)
-                            dest.parent.mkdir(parents=True, exist_ok=True)
-                            with open(dest, "wb") as f:
-                                f.write(raw)
-                            total_restored += 1
-                            restored_ws += 1
-                        except Exception:
-                            continue
-            except Exception:
-                continue
-            if restored_ws:
-                print(f"[photo-restore] {label}: restored {restored_ws} photos")
-        print(f"[photo-restore] total restored: {total_restored}")
-    except Exception as exc:
-        print(f"[photo-restore] failed: {exc}")
-
-
-def _update_chat_metrics(workspace, model_name: str, duration_ms: int):
-    metrics = db_op("chat_metrics", workspace=workspace)
+def _update_chat_metrics(store, model_name: str, duration_ms: int):
+    metrics = db_op("chat_metrics", store=store)
     if not isinstance(metrics, dict):
         metrics = {}
     rec = metrics.get(model_name) or {"count": 0, "total_ms": 0, "avg_ms": 0}
@@ -310,54 +312,13 @@ def _update_chat_metrics(workspace, model_name: str, duration_ms: int):
     rec["total_ms"] = rec.get("total_ms", 0) + duration_ms
     rec["avg_ms"] = rec["total_ms"] / rec["count"]
     metrics[model_name] = rec
-    db_op("chat_metrics", metrics, workspace=workspace)
+    db_op("chat_metrics", metrics, store=store)
     return rec
 
 
-def _rehydrate_inventory_photos(workspaces=None):
-    """Restores missing photo files for selected workspaces and reports stats."""
-    results = []
-    labels = workspaces or WORKSPACE_NAMES
-    for label in labels:
-        restored = 0
-        missing = 0
-        try:
-            ws = _workspace_dirs(label)
-            inv = get_doc(ws["db_id"], "inventory") or []
-            for item in inv:
-                if not isinstance(item, dict):
-                    continue
-                photos = item.get("photos") or []
-                embeds = item.get("photoDataUrls") or []
-                if not photos:
-                    continue
-                if len(embeds) < len(photos):
-                    embeds = (embeds or []) + [None] * (len(photos) - len(embeds or []))
-                for idx, p in enumerate(photos):
-                    dest = _abs_upload_path(p)
-                    if dest.exists():
-                        continue
-                    missing += 1
-                    data_url = embeds[idx] if idx < len(embeds) else None
-                    if not data_url:
-                        continue
-                    try:
-                        b64data = data_url.split(",", 1)[1] if "," in data_url else data_url
-                        raw = base64.b64decode(b64data)
-                        dest.parent.mkdir(parents=True, exist_ok=True)
-                        with open(dest, "wb") as f:
-                            f.write(raw)
-                        restored += 1
-                    except Exception:
-                        continue
-        except Exception:
-            pass
-        results.append({"workspace": label, "restored": restored, "missing_after": max(missing - restored, 0)})
-    return results
-
-IS_HF_SPACE = bool(os.environ.get("SPACE_ID") or os.environ.get("HF_SPACE") or os.environ.get("HUGGINGFACE_SPACE"))
-PHOTO_JOB_WORKER_STARTED = False
-PHOTO_JOB_LOCK = threading.Lock()
+def _strip_inventory_photos(stores=None):
+    """No-op placeholder; photo retention is disabled."""
+    return []
 
 
 def log_job(msg: str):
@@ -375,6 +336,14 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_ROOT)), name="uploads")
 templates = Jinja2Templates(directory="templates")
 templates.env.auto_reload = True
+
+@app.on_event("startup")
+async def _log_db_path():
+    """Print the fully-resolved database path at startup for operational visibility."""
+    try:
+        print(f"[startup] Database path: {DB_PATH.resolve()}", flush=True)
+    except Exception as exc:
+        print(f"[startup] Database path unavailable: {exc}", flush=True)
 
 # Model state
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -399,22 +368,19 @@ if device == "cuda":
     torch.backends.cuda.matmul.allow_tf32 = True
 
 
-def _sanitize_workspace(name: str) -> str:
+def _sanitize_store(name: str) -> str:
     slug = "".join(ch if ch.isalnum() else "-" for ch in (name or ""))
     slug = re.sub("-+", "-", slug).strip("-").lower()
     return slug or "default"
 
 def _label_from_slug(slug: str) -> str:
-    cleaned = _sanitize_workspace(slug)
-    for name in WORKSPACE_NAMES:
-        if _sanitize_workspace(name) == cleaned:
-            return name
-    return ""
+    cleaned = _sanitize_store(slug)
+    return DEFAULT_store_LABEL if _sanitize_store(DEFAULT_store_LABEL) == cleaned else ""
 
 
-def _workspace_dirs(workspace_label: str):
-    slug = _sanitize_workspace(workspace_label)
-    ws_rec = ensure_workspace(workspace_label, slug)
+def _store_dirs(store_label: str):
+    slug = _sanitize_store(store_label)
+    ws_rec = ensure_store(store_label, slug)
     data_dir = DATA_ROOT / slug
     uploads_dir = UPLOAD_ROOT / slug
     med_dir = uploads_dir / "medicines"
@@ -422,7 +388,7 @@ def _workspace_dirs(workspace_label: str):
     for path in [data_dir, uploads_dir, med_dir, backup_dir]:
         path.mkdir(parents=True, exist_ok=True)
     return {
-        "label": workspace_label,
+        "label": store_label,
         "slug": slug,
         "data": data_dir,
         "uploads": uploads_dir,
@@ -431,45 +397,25 @@ def _workspace_dirs(workspace_label: str):
         "db_id": ws_rec["id"],
     }
 
+DEFAULT_store = _store_dirs(DEFAULT_store_LABEL)
+_migrate_existing_to_default(DEFAULT_store)
 
-def _get_workspace(request: Request, required: bool = True):
-    label = request.session.get("workspace_label") or request.session.get("workspace")
-    # Global workspace override via settings (allows single-workspace mode for judging)
+def _apply_offline_env_from_settings():
+    """Honor persisted offline flags at startup so model loading respects cached-only mode."""
     try:
-        settings_ws_label = "Rick" if "Rick" in WORKSPACE_NAMES else WORKSPACE_NAMES[0]
-        settings_ws = _workspace_dirs(settings_ws_label)
-        app_settings = db_op("settings", workspace=settings_ws)
+        settings = db_op("settings", store=DEFAULT_store) or {}
+        if settings.get("offline_force_flags"):
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
     except Exception:
-        app_settings = get_defaults()
-    workspaces_enabled = app_settings.get("workspaces_enabled", True)
-    active_label = app_settings.get("workspaces_active_label") or ("Rick" if "Rick" in WORKSPACE_NAMES else WORKSPACE_NAMES[0])
-    if not workspaces_enabled:
-        label = active_label
-    if not label:
-        # Allow fallbacks from headers/query to reduce UX dead-ends
-        label = (
-            request.headers.get("x-workspace")
-            or request.headers.get("x-workspace-label")
-            or request.headers.get("x-workspace-slug")
-            or request.query_params.get("workspace")
-            or request.query_params.get("workspace_label")
-            or request.query_params.get("workspace_slug")
-        )
-    # Map slugs back to labels if needed
-    if label and label not in WORKSPACE_NAMES:
-        mapped = _label_from_slug(label)
-        if mapped:
-            label = mapped
-    if not label:
-        if required:
-            # When workspaces are enabled, require explicit selection to show the login/crew password page
-            if workspaces_enabled:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Workspace not selected")
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Workspace not selected")
-        return None
-    if label not in WORKSPACE_NAMES:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid workspace")
-    return _workspace_dirs(label)
+        pass
+
+_apply_offline_env_from_settings()
+
+
+def _get_store(_request: Request = None, required: bool = True):
+    """Return the single store used by the app."""
+    return DEFAULT_store
 
 
 def _startup_model_check():
@@ -513,18 +459,8 @@ def _background_verify_models():
 
 
 def _heartbeat(label: str, interval: float = 2.0, stop_event: threading.Event = None):
-    """Print progress dots while long startup tasks run."""
-    if stop_event is None:
-        stop_event = threading.Event()
-    def _runner():
-        print(label, end='', flush=True)
-        while not stop_event.is_set():
-            time.sleep(interval)
-            print('.', end='', flush=True)
-        print(" done", flush=True)
-    th = threading.Thread(target=_runner, daemon=True)
-    th.start()
-    return stop_event
+    """No-op heartbeat placeholder (previously printed progress dots)."""
+    return stop_event or threading.Event()
 
 def unload_model():
     """Free GPU/CPU memory for previously loaded model."""
@@ -656,15 +592,34 @@ def get_defaults():
             "generic_name, brand_name, form, strength, expiry_date, batch_lot, "
             "storage_location, manufacturer, indication, allergy_warnings, dosage, notes."
         ),
-        "vaccine_types": ["MMR", "DTaP", "HepB", "HepA", "Td/Tdap", "Influenza", "COVID-19"],
-        "workspaces_enabled": True,
-        "workspaces_active_label": "Rick",
+        "vaccine_types": [
+            "Diphtheria, Tetanus, and Pertussis (DTaP/Tdap)",
+            "Polio (IPV/OPV)",
+            "Measles, Mumps, Rubella (MMR)",
+            "HPV (Human Papillomavirus)",
+            "Influenza",
+            "Haemophilus influenzae type b (Hib)",
+            "Hepatitis B",
+            "Varicella (Chickenpox)",
+            "Pneumococcal (PCV)",
+            "Rotavirus",
+            "COVID-19",
+            "Yellow Fever",
+            "Typhoid",
+            "Hepatitis A",
+            "Japanese Encephalitis",
+            "Rabies",
+            "Cholera",
+        ],
     }
 
 
-def db_op(cat, data=None, workspace=None):
-    if workspace is None:
-        raise ValueError("Workspace is required for data operations.")
+def db_op(cat, data=None, store=None):
+    """
+    Central shim for data access. Everything is single-store now; I keep the
+    existing signature so the rest of the app doesn't need to change. Each
+    category maps straight to SQL tables in db_store (no documents table).
+    """
     allowed_categories = [
         "settings",
         "patients",
@@ -672,17 +627,13 @@ def db_op(cat, data=None, workspace=None):
         "tools",
         "history",
         "chats",
-        "vessel",
         "med_photo_queue",
         "med_photo_jobs",
         "chat_metrics",
+        "vessel",
     ]
     if cat not in allowed_categories:
         raise ValueError(f"Invalid category: {cat}")
-
-    workspace_id = workspace.get("db_id")
-    if not workspace_id:
-        raise ValueError("Workspace database id missing")
 
     def default_for(category):
         if category == "settings":
@@ -703,12 +654,15 @@ def db_op(cat, data=None, workspace=None):
                 "portEngine": "",
                 "portEngineSn": "",
                 "ribSn": "",
-                "crewCapacity": "",
             }
+        if category == "chat_metrics":
+            return {}
+        if category == "chats":
+            return []
         return []
 
     def load_legacy(category):
-        legacy_path = workspace["data"] / f"{category}.json"
+        legacy_path = (DEFAULT_store or {}).get("data", DATA_ROOT) / f"{category}.json"
         if legacy_path.exists():
             try:
                 return json.loads(legacy_path.read_text() or "[]")
@@ -716,26 +670,160 @@ def db_op(cat, data=None, workspace=None):
                 return None
         return None
 
+    if cat == "vessel":
+        if data is not None:
+            if not isinstance(data, dict):
+                raise ValueError("Vessel payload must be a JSON object.")
+            merged = {**default_for("vessel"), **(data or {})}
+            set_vessel(merged)
+            return merged
+        loaded = get_vessel() or {}
+        merged = {**default_for("vessel"), **(loaded if isinstance(loaded, dict) else {})}
+        set_vessel(merged)
+        return merged
+
+    if cat == "patients":
+        if data is not None:
+            if not isinstance(data, list):
+                raise ValueError("Patients payload must be a JSON array.")
+            try:
+                set_patients(data)
+                delete_patients_doc()
+                return data
+            except Exception:
+                logger.exception("patients save failed", extra={"db_path": str(DB_PATH)})
+                raise
+        try:
+            loaded = get_patients()
+        except Exception:
+            logger.exception("patients load failed", extra={"db_path": str(DB_PATH)})
+            raise
+        if loaded is None:
+            legacy = load_legacy(cat)
+            loaded = legacy if legacy is not None else default_for(cat)
+            set_patients(loaded)
+        delete_patients_doc()
+        return loaded
+
     if data is not None:
         if cat == "settings":
             if not isinstance(data, dict):
                 raise ValueError("Settings payload must be a JSON object.")
-            existing = get_doc(workspace_id, cat) or {}
-            merged = {**get_defaults(), **existing, **data}
-            set_doc(workspace_id, cat, merged)
-            return merged
-        set_doc(workspace_id, cat, data)
+            # Persist lookup lists to their own tables
+            if "vaccine_types" in data:
+                replace_vaccine_types(data.get("vaccine_types") or [])
+            if "pharmacy_labels" in data:
+                replace_pharmacy_labels(data.get("pharmacy_labels") or [])
+            # Persist model params to table
+            set_model_params(data)
+            # Persist meta settings to table
+            set_settings_meta(
+                user_mode=data.get("user_mode"),
+                offline_force_flags=data.get("offline_force_flags"),
+            )
+            return {**get_defaults(), **data}
+        if cat == "inventory":
+            if not isinstance(data, list):
+                raise ValueError("Inventory payload must be a JSON array.")
+            set_inventory_items(data)
+            return data
+        if cat == "tools":
+            if not isinstance(data, list):
+                raise ValueError("Tools payload must be a JSON array.")
+            set_tool_items(data)
+            return data
+        if cat == "history":
+            if not isinstance(data, list):
+                raise ValueError("History payload must be a JSON array.")
+            set_history_entries(data)
+            return data
+        if cat == "chats":
+            if not isinstance(data, list):
+                raise ValueError("Chats payload must be a JSON array.")
+            set_chats(data)
+            return data
+        if cat == "chat_metrics":
+            if not isinstance(data, dict):
+                raise ValueError("Chat metrics payload must be a JSON object.")
+            set_chat_metrics(data)
+            return data
+        if cat == "med_photo_queue":
+            if not isinstance(data, list):
+                raise ValueError("med_photo_queue payload must be a JSON array.")
+            set_med_photo_queue_rows(data)
+            return data
+        if cat == "med_photo_jobs":
+            if not isinstance(data, list):
+                raise ValueError("med_photo_jobs payload must be a JSON array.")
+            set_med_photo_jobs_rows(data)
+            return data
+        if cat == "context":
+            if not isinstance(data, dict):
+                raise ValueError("Context payload must be a JSON object.")
+            set_context_payload(data)
+            return data
         return data
 
-    loaded = get_doc(workspace_id, cat)
-    if loaded is None:
-        legacy = load_legacy(cat)
-        loaded = legacy if legacy is not None else default_for(cat)
-        set_doc(workspace_id, cat, loaded)
+    loaded = None
+    # For legacy compatibility, load JSON once if present, then migrate to tables where applicable
+    legacy = load_legacy(cat)
+    loaded = legacy if legacy is not None else default_for(cat)
+    if cat == "chats":
+        set_chats(loaded if isinstance(loaded, list) else [])
+        return get_chats()
+    if cat == "chat_metrics":
+        set_chat_metrics(loaded if isinstance(loaded, dict) else {})
+        return get_chat_metrics()
 
     if cat == "settings":
-        if not isinstance(loaded, dict):
-            loaded = {}
+        loaded = {}
+        # Overlay lookup lists from tables
+        try:
+            vt = load_vaccine_types()
+            if vt:
+                loaded["vaccine_types"] = vt
+        except Exception:
+            pass
+        try:
+            pl = load_pharmacy_labels()
+            if pl:
+                loaded["pharmacy_labels"] = pl
+        except Exception:
+            pass
+        try:
+            mp = get_model_params()
+            loaded.update({k: v for k, v in mp.items() if v is not None})
+        except Exception:
+            pass
+        try:
+            meta = get_settings_meta()
+            loaded.update({k: v for k, v in meta.items() if v is not None})
+        except Exception:
+            pass
+        return {**get_defaults(), **loaded}
+    if cat == "inventory":
+        return get_inventory_items()
+    if cat == "tools":
+        return get_tool_items()
+    if cat == "history":
+        return get_history_entries()
+    if cat == "chats":
+        chats = get_chats()
+        if not chats:
+            return default_for(cat)
+        return chats
+    if cat == "chat_metrics":
+        metrics = get_chat_metrics()
+        if not metrics:
+            return default_for(cat)
+        return metrics
+    if cat == "med_photo_queue":
+        return get_med_photo_queue_rows()
+    if cat == "med_photo_jobs":
+        return get_med_photo_jobs_rows()
+    if cat == "context":
+        return get_context_payload()
+    if cat == "settings":
         return {**get_defaults(), **loaded}
     return loaded
 
@@ -776,11 +864,11 @@ def _patient_display_name(record, fallback):
     return combined or fallback
 
 
-def lookup_patient_display_name(p_name, workspace, default="Unnamed Crew"):
+def lookup_patient_display_name(p_name, store, default="Unnamed Crew"):
     if not p_name:
         return default
     try:
-        patients = db_op("patients", workspace=workspace)
+        patients = db_op("patients", store=store)
     except Exception:
         return default
     rec = next(
@@ -795,7 +883,7 @@ def lookup_patient_display_name(p_name, workspace, default="Unnamed Crew"):
     return _patient_display_name(rec, p_name or default)
 
 
-def build_prompt(settings, mode, msg, p_name, workspace):
+def build_prompt(settings, mode, msg, p_name, store):
     rep_penalty = safe_float(settings.get("rep_penalty", 1.1) or 1.1, 1.1)
     mission_context = settings.get("mission_context", "")
 
@@ -817,7 +905,7 @@ def build_prompt(settings, mode, msg, p_name, workspace):
         pharma_items = {}
         equip_items = {}
         consumable_items = {}
-        for m in db_op("inventory", workspace=workspace):
+        for m in db_op("inventory", store=store):
             item_name = m.get("name") or m.get("genericName") or m.get("brandName")
             if _is_resource_excluded(m):
                 continue
@@ -844,7 +932,7 @@ def build_prompt(settings, mode, msg, p_name, workspace):
         consumable_str = ", ".join(consumable_list)
 
         tool_items = []
-        for t in db_op("tools", workspace=workspace):
+        for t in db_op("tools", store=store):
             tool_name = t.get("name")
             if tool_name:
                 tool_items.append(tool_name)
@@ -854,7 +942,7 @@ def build_prompt(settings, mode, msg, p_name, workspace):
         patient_record = next(
             (
                 p
-                for p in db_op("patients", workspace=workspace)
+                for p in db_op("patients", store=store)
                 if (p_name and p.get("id") == p_name) or (p_name and p.get("name") == p_name)
             ),
             {},
@@ -937,26 +1025,24 @@ def build_prompt(settings, mode, msg, p_name, workspace):
     return prompt, cfg
 
 
-def get_credentials(workspace):
+def get_credentials(store):
     """Return list of crew entries that have username/password set."""
-    return [p for p in db_op("patients", workspace=workspace) if p.get("username") and p.get("password")]
+    return get_credentials_rows()
 
 
-def load_context(workspace):
-    """Load context/sidebar content from data/context.json, ensure file exists."""
-    path = workspace["data"] / "context.json"
-    if not path.exists():
-        path.write_text(json.dumps({}, indent=4))
-    return json.loads(path.read_text() or "{}")
+def load_context(store):
+    """Return static/inline sidebar context; external context.json no longer used."""
+    return {}
 
 
-def get_med_photo_queue(workspace):
-    queue = db_op("med_photo_queue", workspace=workspace)
+def get_med_photo_queue(store):
+    queue = db_op("med_photo_queue", store=store)
     return queue if isinstance(queue, list) else []
 
 
-def _resolve_med_model(workspace):
-    settings = db_op("settings", workspace=workspace)
+def _resolve_med_model(store):
+    """Pick a preferred vision model for medicine photo parsing; fall back if cache missing."""
+    settings = db_op("settings", store=store)
     model_pref = (settings.get("med_photo_model") or "qwen").lower()
     primary = "Qwen/Qwen2.5-VL-7B-Instruct"
     has_cache, _ = model_cache_status(primary)
@@ -965,78 +1051,64 @@ def _resolve_med_model(workspace):
     return primary
 
 
-def _merge_inventory_record(med_record: dict, photo_urls: List[str], workspace):
-    inventory = db_op("inventory", workspace=workspace)
+def _merge_inventory_record(med_record: dict, photo_urls: List[str], store):
+    inventory = db_op("inventory", store=store)
     existing = next((m for m in inventory if _same_med(m, med_record)), None)
-    new_data_urls = med_record.get("photoDataUrls") or []
-    entry = {"status": "completed", "urls": photo_urls}
+    entry = {"status": "completed", "urls": []}
     if existing:
-        existing.setdefault("photos", [])
-        existing.setdefault("photoDataUrls", [])
-        while len(existing["photoDataUrls"]) < len(existing["photos"]):
-            existing["photoDataUrls"].append(None)
-        for idx, url in enumerate(photo_urls or []):
-            data_url = new_data_urls[idx] if idx < len(new_data_urls) else None
-            if url in existing["photos"]:
-                pos = existing["photos"].index(url)
-                if pos >= len(existing["photoDataUrls"]):
-                    existing["photoDataUrls"].extend([None] * (pos + 1 - len(existing["photoDataUrls"])))
-                if data_url and not existing["photoDataUrls"][pos]:
-                    existing["photoDataUrls"][pos] = data_url
-            else:
-                existing["photos"].append(url)
-                existing["photoDataUrls"].append(data_url)
         existing.setdefault("purchaseHistory", [])
         med_record_ph = med_record.get("purchaseHistory") or []
         if med_record_ph:
             existing["purchaseHistory"].extend(med_record_ph)
         for key, val in med_record.items():
-            if key in {"id", "photos", "purchaseHistory"}:
+            if key in {"id", "purchaseHistory"}:
                 continue
             if _is_blank(existing.get(key)) and not _is_blank(val):
                 existing[key] = val
         entry["inventory_id"] = existing.get("id")
     else:
-        med_record.setdefault("photoDataUrls", new_data_urls)
-        if len(med_record.get("photoDataUrls", [])) < len(med_record.get("photos") or []):
-            padding = len(med_record.get("photos", [])) - len(med_record.get("photoDataUrls", []))
-            med_record["photoDataUrls"].extend([None] * padding)
         inventory.append(med_record)
         entry["inventory_id"] = med_record["id"]
-    db_op("inventory", inventory, workspace=workspace)
+    db_op("inventory", inventory, store=store)
     return entry
 
 
-def _load_photo_jobs(workspace):
-    jobs = db_op("med_photo_jobs", workspace=workspace)
+def _load_photo_jobs(store):
+    jobs = db_op("med_photo_jobs", store=store)
     if not isinstance(jobs, list):
         jobs = []
     return jobs
 
 
-def _save_photo_jobs(workspace, jobs):
-    db_op("med_photo_jobs", jobs, workspace=workspace)
-    log_job(f"[{workspace['label']}] saved {len(jobs)} job(s)")
+def _save_photo_jobs(store, jobs):
+    db_op("med_photo_jobs", jobs, store=store)
+    log_job(f"[{store['label']}] saved {len(jobs)} job(s)")
 
 
-def _update_job(workspace, job_id, updater):
-    jobs = _load_photo_jobs(workspace)
+def _update_job(store, job_id, updater):
+    jobs = _load_photo_jobs(store)
     updated = None
     for job in jobs:
         if job.get("id") == job_id:
             updated = updater(job)
             break
-    _save_photo_jobs(workspace, jobs)
+    _save_photo_jobs(store, jobs)
     return updated, jobs
 
 
-def _process_photo_job(job, workspace):
+def _process_photo_job(job, store):
     paths = [Path(p) for p in job.get("paths") or [] if p]
     urls = job.get("urls") or []
     if not paths:
         raise RuntimeError("No image paths found for job")
-    log_job(f"[{workspace['label']}] processing job {job.get('id')} ({len(paths)} photo(s), mode={job.get('mode')})")
-    entry = asyncio.run(_process_photo_group(paths, urls, workspace))
+    log_job(f"[{store['label']}] processing job {job.get('id')} ({len(paths)} photo(s), mode={job.get('mode')})")
+    entry = asyncio.run(_process_photo_group(paths, urls, store))
+    for path in paths:
+        try:
+            if path.exists():
+                path.unlink()
+        except Exception:
+            continue
     job.update(
         {
             "status": "completed",
@@ -1044,54 +1116,54 @@ def _process_photo_job(job, workspace):
             "result": entry.get("result") or {},
             "inventory_id": entry.get("inventory_id"),
             "used_model": entry.get("used_model"),
+            "paths": [],
+            "urls": [],
             "error": "",
         }
     )
-    log_job(f"[{workspace['label']}] job {job.get('id')} completed; inventory_id={job.get('inventory_id')}")
+    log_job(f"[{store['label']}] job {job.get('id')} completed; inventory_id={job.get('inventory_id')}")
 
 
 def _photo_job_worker():
     while True:
         processed = False
-        for name in WORKSPACE_NAMES:
-            try:
-                ws = _workspace_dirs(name)
-                jobs = _load_photo_jobs(ws)
-                job = next((j for j in jobs if j.get("status") == "queued"), None)
-                if not job:
-                    # prune old completed jobs to keep file small
-                    now = datetime.now()
-                    filtered = []
-                    for j in jobs:
-                        if j.get("status") != "completed":
+        try:
+            ws = DEFAULT_store
+            jobs = _load_photo_jobs(ws)
+            job = next((j for j in jobs if j.get("status") == "queued"), None)
+            if not job:
+                # prune old completed jobs to keep file small
+                now = datetime.now()
+                filtered = []
+                for j in jobs:
+                    if j.get("status") != "completed":
+                        filtered.append(j)
+                        continue
+                    try:
+                        ts = datetime.fromisoformat(j.get("completed_at", ""))
+                        # keep recent completions for UI refresh (approx 2 minutes)
+                        if (now - ts).total_seconds() < 120:
                             filtered.append(j)
-                            continue
-                        try:
-                            ts = datetime.fromisoformat(j.get("completed_at", ""))
-                            # keep recent completions for UI refresh (approx 2 minutes)
-                            if (now - ts).total_seconds() < 120:
-                                filtered.append(j)
-                        except Exception:
-                            # if timestamp missing, keep it so UI can see it once
-                            filtered.append(j)
-                    if len(filtered) != len(jobs):
-                        _save_photo_jobs(ws, filtered)
-                    continue
-                processed = True
-                job["status"] = "processing"
-                job["started_at"] = datetime.now().isoformat()
-                _save_photo_jobs(ws, jobs)
-                try:
-                    _process_photo_job(job, ws)
-                except Exception as e:
-                    job["status"] = "failed"
-                    job["error"] = str(e)
-                    log_job(f"[{ws['label']}] job {job.get('id')} failed: {e}")
-                _save_photo_jobs(ws, jobs)
-                break
-            except Exception:
-                # Avoid worker crash; continue to next workspace
+                    except Exception:
+                        # if timestamp missing, keep it so UI can see it once
+                        filtered.append(j)
+                if len(filtered) != len(jobs):
+                    _save_photo_jobs(ws, filtered)
                 continue
+            processed = True
+            job["status"] = "processing"
+            job["started_at"] = datetime.now().isoformat()
+            _save_photo_jobs(ws, jobs)
+            try:
+                _process_photo_job(job, ws)
+            except Exception as e:
+                job["status"] = "failed"
+                job["error"] = str(e)
+                log_job(f"[{ws['label']}] job {job.get('id')} failed: {e}")
+            _save_photo_jobs(ws, jobs)
+        except Exception:
+            # Avoid worker crash; sleep briefly then retry
+            pass
         if not processed:
             time.sleep(2)
 
@@ -1163,13 +1235,11 @@ def normalize_medicine_fields(raw: dict, fallback_notes: str):
 def build_inventory_record(extracted: dict, photo_urls: List[str]):
     now_id = f"med-{int(datetime.now().timestamp() * 1000)}"
     note = extracted.get("notes") or "Imported from medication photo."
-    primary_photo = photo_urls[0] if photo_urls else ""
     purchase_row = {
         "id": f"ph-{uuid.uuid4().hex}",
         "date": datetime.now().strftime("%Y-%m-%d"),
         "quantity": "",
         "notes": note,
-        "photos": photo_urls or [],
     }
     # Tag source for traceability without polluting the display name
     source = "photo_import"
@@ -1190,7 +1260,6 @@ def build_inventory_record(extracted: dict, photo_urls: List[str]):
         "primaryIndication": extracted.get("primaryIndication") or "",
         "allergyWarnings": extracted.get("allergyWarnings") or "",
         "standardDosage": extracted.get("standardDosage") or "",
-        "photos": photo_urls or ([] if not primary_photo else [primary_photo]),
         "purchaseHistory": [purchase_row],
         "source": source,
         "photoImported": True,
@@ -1278,21 +1347,18 @@ def run_medicine_photo_inference(image_path: Path, model_name: str, prompt_text:
     return normalized
 
 
-def _has_creds(workspace):
-    if not workspace:
+def _has_creds(store):
+    if not store:
         return False
-    creds = get_credentials(workspace)
+    creds = get_credentials(store)
     return bool(creds)
 
 
 def require_auth(request: Request):
     """Enforce auth only when credentials are configured."""
-    path = request.url.path
-    workspace_optional_paths = ("/api/offline/check", "/api/offline/ensure", "/api/offline/flags")
-    workspace_required = not any(path.startswith(p) for p in workspace_optional_paths)
-    workspace = _get_workspace(request, required=workspace_required)
-    request.state.workspace = workspace
-    if not _has_creds(workspace):
+    store = DEFAULT_store
+    request.state.store = store
+    if not _has_creds(store):
         # No credentials configured, allow pass-through
         return True
     if not request.session.get("authenticated"):
@@ -1300,71 +1366,12 @@ def require_auth(request: Request):
     return True
 
 
-@app.get("/workspace", response_class=HTMLResponse)
-async def workspace_page(request: Request):
-    current = request.session.get("workspace_label") or ""
-    ctx = {"request": request, "workspaces": WORKSPACE_NAMES, "selected": current}
-    return templates.TemplateResponse("workspace.html", ctx)
-
-
-@app.post("/workspace")
-async def set_workspace(request: Request):
-    try:
-        payload = {}
-        if request.headers.get("content-type", "").startswith("application/json"):
-            payload = await request.json()
-        else:
-            form = await request.form()
-            payload = dict(form)
-        chosen = (payload.get("workspace") or "").strip()
-        password = (payload.get("password") or "").strip()
-        if password != "Aphrodite":
-            return JSONResponse({"error": "Invalid workspace password"}, status_code=status.HTTP_401_UNAUTHORIZED)
-        if chosen not in WORKSPACE_NAMES:
-            return JSONResponse({"error": "Invalid workspace selected"}, status_code=status.HTTP_400_BAD_REQUEST)
-        # Reset session to avoid cross-workspace bleed
-        request.session.clear()
-        request.session["workspace"] = _sanitize_workspace(chosen)
-        request.session["workspace_label"] = chosen
-        if request.headers.get("accept", "").startswith("application/json"):
-            return {"success": True, "workspace": chosen}
-        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
-    except Exception as e:
-        return JSONResponse({"error": f"Unable to set workspace: {e}"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-@app.post("/api/workspace/reset")
-async def reset_workspace(request: Request):
-    try:
-        workspace = _get_workspace(request, required=False)
-        if not workspace:
-            return JSONResponse({"error": "Workspace not set"}, status_code=status.HTTP_400_BAD_REQUEST)
-        try:
-            payload = await request.json()
-        except Exception:
-            payload = {}
-        action = (payload.get("action") or "").lower()
-        if action == "clear":
-            _clear_workspace_data(workspace)
-            return {"status": "cleared"}
-        if action == "sample":
-            # Placeholder: waiting for provided sample data to load
-            _clear_workspace_data(workspace)
-            _apply_default_dataset(workspace)
-            return {"status": "sample_loaded"}
-        if action == "keep":
-            return {"status": "kept"}
-        return JSONResponse({"error": "Invalid action"}, status_code=status.HTTP_400_BAD_REQUEST)
-    except Exception as e:
-        return JSONResponse({"error": f"Unable to reset workspace: {e}"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
 @app.post("/api/default/export")
 async def export_default_dataset(request: Request, _=Depends(require_auth)):
     try:
-        workspace = request.state.workspace
-        if not workspace:
-            return JSONResponse({"error": "Workspace not set"}, status_code=status.HTTP_400_BAD_REQUEST)
+        store = request.state.store
+        if not store:
+            return JSONResponse({"error": "store not set"}, status_code=status.HTTP_400_BAD_REQUEST)
         default_root = DATA_ROOT / "default"
         default_root.mkdir(parents=True, exist_ok=True)
         default_uploads = default_root / "uploads" / "medicines"
@@ -1372,12 +1379,12 @@ async def export_default_dataset(request: Request, _=Depends(require_auth)):
         categories = ["settings", "patients", "inventory", "tools", "history", "vessel", "chats", "med_photo_queue", "med_photo_jobs", "context"]
         written = []
         for cat in categories:
-            data = db_op(cat, workspace=workspace)
+            data = db_op(cat, store=store)
             dest = default_root / f"{cat}.json"
             dest.write_text(json.dumps(data, indent=4))
             written.append(dest.name)
         # Copy medicine uploads
-        src_med = workspace["uploads"] / "medicines"
+        src_med = store["uploads"] / "medicines"
         if src_med.exists():
             for item in src_med.iterdir():
                 if item.is_file():
@@ -1389,18 +1396,15 @@ async def export_default_dataset(request: Request, _=Depends(require_auth)):
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
-    workspace = _get_workspace(request, required=False)
-    if not workspace:
-        return RedirectResponse(url="/workspace", status_code=status.HTTP_302_FOUND)
-    request.state.workspace = workspace
-    return templates.TemplateResponse("login.html", {"request": request, "workspace": workspace})
+    store = DEFAULT_store
+    request.state.store = store
+    return templates.TemplateResponse("login.html", {"request": request, "store": store})
 
 
 @app.post("/login")
 async def login(request: Request):
-    workspace = _get_workspace(request, required=False)
-    if not workspace:
-        return JSONResponse({"error": "Select a workspace before logging in."}, status_code=status.HTTP_400_BAD_REQUEST)
+    # Auth model: if no crew credentials configured, auto-admit; otherwise require username/password
+    store = DEFAULT_store
     payload = {}
     if request.headers.get("content-type", "").startswith("application/json"):
         payload = await request.json()
@@ -1408,13 +1412,11 @@ async def login(request: Request):
         form = await request.form()
         payload = dict(form)
 
-    crew_creds = get_credentials(workspace)
+    crew_creds = get_credentials(store)
     # If no credentials are configured, transparently log in.
     if not crew_creds:
         request.session["authenticated"] = True
         request.session["user"] = "auto"
-        request.session["workspace"] = workspace["slug"]
-        request.session["workspace_label"] = workspace["label"]
         return {"success": True, "auto": True}
 
     username = payload.get("username", "").strip()
@@ -1423,7 +1425,7 @@ async def login(request: Request):
         return JSONResponse({"error": "Username and password required"}, status_code=status.HTTP_400_BAD_REQUEST)
 
     match = next(
-        (p for p in crew_creds if p.get("username") == username and p.get("password") == password),
+        (p for p in crew_creds if p.get("username") == username and verify_password(password, p.get("password"))),
         None,
     )
     if not match:
@@ -1431,8 +1433,6 @@ async def login(request: Request):
 
     request.session["authenticated"] = True
     request.session["user"] = username
-    request.session["workspace"] = workspace["slug"]
-    request.session["workspace_label"] = workspace["label"]
     return {"success": True}
 
 
@@ -1444,92 +1444,107 @@ async def logout(request: Request):
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    workspace = _get_workspace(request, required=False)
-    if not workspace:
-        return RedirectResponse(url="/workspace", status_code=status.HTTP_302_FOUND)
-    request.state.workspace = workspace
+    store = DEFAULT_store
+    request.state.store = store
+    # Preload vessel data so UI can render even if API fetch fails
+    try:
+        vessel_prefill = db_op("vessel", store=store) or {}
+    except Exception:
+        vessel_prefill = {}
     if not request.session.get("authenticated"):
-        if _has_creds(workspace):
+        if _has_creds(store):
             return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
-        # Auto-admit when no credentials exist; avoid login loop on Spaces
-        request.session["authenticated"] = True
-        request.session["user"] = "auto"
-    return templates.TemplateResponse("index.html", {"request": request, "workspace": workspace})
+        # When no credentials, show onboarding/login screen instead of auto-admit
+        return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
+    return templates.TemplateResponse(
+        "index.html",
+        {"request": request, "store": store, "vessel_prefill": vessel_prefill},
+    )
 
 
 @app.get("/api/auth/meta")
 async def auth_meta(request: Request):
-    workspace = _get_workspace(request, required=False)
-    if not workspace:
-        return JSONResponse({"error": "Workspace not selected"}, status_code=status.HTTP_400_BAD_REQUEST)
-    creds = get_credentials(workspace)
-    return {"has_credentials": bool(creds), "count": len(creds), "workspace": workspace["label"]}
-
-
-@app.get("/api/workspaces")
-async def workspace_meta(request: Request):
-    """Return available workspaces and current selection (no auth required)."""
-    current = request.session.get("workspace_label") or ""
-    return {"workspaces": WORKSPACE_NAMES, "current": current}
+    store = DEFAULT_store
+    creds = get_credentials(store)
+    return {"has_credentials": bool(creds), "count": len(creds), "store": store["label"]}
 
 
 @app.get("/api/chat/metrics")
 async def chat_metrics(request: Request, _=Depends(require_auth)):
+    """Quick peek at per-model latency/count stats collected during chats."""
     try:
-        workspace = _get_workspace(request, required=False)
-        if not workspace:
-            return {"metrics": {}}
-        metrics = db_op("chat_metrics", workspace=workspace)
+        store = DEFAULT_store
+        metrics = db_op("chat_metrics", store=store)
         return {"metrics": metrics if isinstance(metrics, dict) else {}}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.get("/api/triage/samples")
+async def triage_samples(_=Depends(require_auth)):
+    """Expose triage test cases (now stored in triage_samples table)."""
+    try:
+        return get_triage_samples()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.post("/api/triage/samples")
+async def triage_samples_save(request: Request, _=Depends(require_auth)):
+    try:
+        payload = await request.json()
+        if not isinstance(payload, list):
+            return JSONResponse({"error": "Payload must be an array"}, status_code=status.HTTP_400_BAD_REQUEST)
+        set_triage_samples(payload)
+        return {"status": "ok", "count": len(payload)}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.get("/api/triage/options")
+async def triage_options(_=Depends(require_auth)):
+    """Expose dropdown options for triage form (table-backed)."""
+    try:
+        return get_triage_options()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.post("/api/triage/options")
+async def triage_options_save(request: Request, _=Depends(require_auth)):
+    try:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            return JSONResponse({"error": "Payload must be an object"}, status_code=status.HTTP_400_BAD_REQUEST)
+        set_triage_options(payload)
+        return {"status": "ok", "fields": list(payload.keys())}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @app.get("/api/db/status")
 async def db_status():
-    """Report whether the primary SQLite DB exists and has workspaces."""
+    """Health check for DB presence and a quick row count sanity check."""
     try:
         exists = DB_PATH.exists()
         size = DB_PATH.stat().st_size if exists else 0
-        workspaces = 0
-        documents = 0
-        rick_patients = 0
+        crew = vessel = 0
         if exists and size > 0:
             try:
                 with sqlite3.connect(DB_PATH) as conn:
                     cur = conn.cursor()
-                    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='workspaces'")
-                    if cur.fetchone():
-                        cur.execute("SELECT COUNT(*) FROM workspaces")
-                        workspaces = cur.fetchone()[0] or 0
-                    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='documents'")
-                    if cur.fetchone():
-                        cur.execute("SELECT COUNT(*) FROM documents")
-                        documents = cur.fetchone()[0] or 0
-                        cur.execute("SELECT id FROM workspaces WHERE lower(label)=?", ("rick",))
-                        row = cur.fetchone()
-                        if row:
-                            wid = row[0]
-                            cur.execute(
-                                "SELECT payload FROM documents WHERE workspace_id=? AND category='patients'",
-                                (wid,),
-                            )
-                            prow = cur.fetchone()
-                            if prow and prow[0]:
-                                try:
-                                    pdata = json.loads(prow[0])
-                                    if isinstance(pdata, list):
-                                        rick_patients = len(pdata)
-                                except Exception:
-                                    pass
+                    cur.execute("SELECT COUNT(*) FROM crew")
+                    crew = cur.fetchone()[0] or 0
+                    cur.execute("SELECT COUNT(*) FROM vessel")
+                    vessel = cur.fetchone()[0] or 0
             except Exception:
                 pass
         return {
             "exists": bool(exists and size > 0),
             "size": size,
-            "workspaces": workspaces,
-            "documents": documents,
-            "rick_patients": rick_patients,
+            "stores": 1,
+            "crew_rows": crew,
+            "vessel_rows": vessel,
         }
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -1537,26 +1552,24 @@ async def db_status():
 
 @app.post("/api/db/seed")
 async def db_seed():
-    """Force reseed from bundled/remote seed DB and rehydrate photos."""
+    """Force reseed from bundled/remote seed DB."""
     try:
         _bootstrap_db(force=True)
-        init_workspaces(WORKSPACE_NAMES)
-        restore = _rehydrate_inventory_photos()
-        restored = sum(r.get("restored", 0) for r in restore)
-        return {"status": "seeded", "restored_photos": restored, "details": restore}
+        _store_dirs(DEFAULT_store_LABEL)
+        return {"status": "seeded"}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @app.post("/api/db/create")
 async def db_create():
-    """Create a fresh database and seed workspaces."""
+    """Create a fresh database and seed stores."""
     try:
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         if DB_PATH.exists():
             DB_PATH.unlink()
         configure_db(DB_PATH)
-        init_workspaces(WORKSPACE_NAMES)
+        _store_dirs(DEFAULT_store_LABEL)
         return {"status": "created"}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -1586,39 +1599,59 @@ async def db_upload(file: UploadFile = File(...)):
             tmp.close()
         shutil.move(tmp.name, DB_PATH)
         configure_db(DB_PATH)
-        init_workspaces(WORKSPACE_NAMES)
-        restore_results = _rehydrate_inventory_photos()
-        restored_total = sum(r.get("restored", 0) for r in restore_results)
-        return {"status": "uploaded", "restored_photos": restored_total, "details": restore_results}
+        _store_dirs(DEFAULT_store_LABEL)
+        return {"status": "uploaded"}
     except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.get("/api/who/medicines")
+async def who_medicines(_=Depends(require_auth)):
+    """Return WHO ship medicine list sourced from the database table."""
+    try:
+        meds = get_who_medicines()
+        return meds
+    except Exception as e:
+        logger.exception("who_medicines failed")
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @app.api_route("/api/data/{cat}", methods=["GET", "POST"])
 async def manage(cat: str, request: Request, _=Depends(require_auth)):
+    """Generic data endpoint; delegates to db_op which is table-backed."""
     try:
-        workspace = request.state.workspace
         if request.method == "POST":
             try:
                 payload = await request.json()
             except Exception:
                 form = await request.form()
                 payload = dict(form)
-            return JSONResponse(db_op(cat, payload, workspace=workspace))
-        return JSONResponse(db_op(cat, workspace=workspace))
+            if cat == "vessel":
+                try:
+                    from db_store import DB_PATH as _DB_PATH
+                    logger.info(f"[vessel] save request payload={payload} db_path={_DB_PATH}")
+                except Exception:
+                    logger.info(f"[vessel] save request payload={payload}")
+            return JSONResponse(db_op(cat, payload))
+        result = db_op(cat)
+        if cat == "vessel":
+            try:
+                from db_store import DB_PATH as _DB_PATH
+                logger.info(f"[vessel] load result={result} db_path={_DB_PATH}")
+            except Exception:
+                logger.info(f"[vessel] load result={result}")
+        return JSONResponse(result)
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_400_BAD_REQUEST)
     except Exception:
+        logger.exception("api/data failed", extra={"cat": cat, "db_path": str(DB_PATH)})
         return JSONResponse({"error": "Server error"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @app.get("/api/context")
 async def get_context(request: Request, _=Depends(require_auth)):
-    try:
-        workspace = request.state.workspace
-        return JSONResponse(load_context(workspace))
-    except Exception:
-        return JSONResponse({"error": "Unable to load context"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    """Context endpoint retained for compatibility; now returns empty payload since sidebar content is static."""
+    return {}
 
 
 @app.get("/api/medicines/queue")
@@ -1632,28 +1665,95 @@ async def get_medicine_queue(request: Request, _=Depends(require_auth)):
 
 @app.get("/api/medicines/jobs")
 async def list_photo_jobs(request: Request, _=Depends(require_auth)):
+    """Legacy endpoint for medicine photo jobs; returns queue from table (may be empty)."""
     try:
-        workspace = request.state.workspace
-        jobs = _load_photo_jobs(workspace)
+        store = request.state.store
+        jobs = _load_photo_jobs(store)
         return {"jobs": jobs}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+@app.post("/api/crew/photo")
+async def update_crew_photo(request: Request, _=Depends(require_auth)):
+    try:
+        payload = await request.json()
+        crew_id = str(payload.get("id") or "").strip()
+        field = payload.get("field")
+        data = payload.get("data") or ""
+        if field not in {"passportHeadshot", "passportPage"}:
+            return JSONResponse({"error": "Invalid field"}, status_code=status.HTTP_400_BAD_REQUEST)
+        if not crew_id:
+            return JSONResponse({"error": "Missing id"}, status_code=status.HTTP_400_BAD_REQUEST)
+        ok = update_patient_fields(crew_id, {field: data})
+        if not ok:
+            return JSONResponse({"error": "Update failed"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return {"status": "ok"}
+    except Exception as e:
+        logger.exception("crew photo update failed")
+        return JSONResponse({"error": "Server error"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.post("/api/crew/credentials")
+async def update_crew_credentials(request: Request, _=Depends(require_auth)):
+    """Update plaintext crew credentials (per owner request)."""
+    try:
+        payload = await request.json()
+        crew_id = str(payload.get("id") or "").strip()
+        username = payload.get("username")
+        password = payload.get("password")
+        if not crew_id:
+            return JSONResponse({"error": "Missing id"}, status_code=status.HTTP_400_BAD_REQUEST)
+        ok = update_patient_fields(crew_id, {"username": username, "password": password})
+        if not ok:
+            return JSONResponse({"error": "Update failed"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return {"status": "ok"}
+    except Exception:
+        logger.exception("crew credential update failed")
+        return JSONResponse({"error": "Server error"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.post("/api/crew/vaccine")
+async def upsert_crew_vaccine(request: Request, _=Depends(require_auth)):
+    try:
+        payload = await request.json()
+        crew_id = str(payload.get("crew_id") or "").strip()
+        if not crew_id:
+            return JSONResponse({"error": "Missing crew_id"}, status_code=status.HTTP_400_BAD_REQUEST)
+        vaccine = payload.get("vaccine") or {}
+        rec = upsert_vaccine(crew_id, vaccine)
+        return {"vaccine": rec}
+    except Exception:
+        logger.exception("crew vaccine upsert failed")
+        return JSONResponse({"error": "Server error"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.delete("/api/crew/vaccine/{crew_id}/{vaccine_id}")
+async def delete_crew_vaccine(crew_id: str, vaccine_id: str, _=Depends(require_auth)):
+    try:
+        ok = delete_vaccine(crew_id, vaccine_id)
+        if not ok:
+            return JSONResponse({"error": "Not found"}, status_code=status.HTTP_404_NOT_FOUND)
+        return {"status": "ok"}
+    except Exception:
+        logger.exception("crew vaccine delete failed")
+        return JSONResponse({"error": "Server error"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 @app.delete("/api/medicines/jobs/{job_id}")
 async def delete_photo_job(job_id: str, request: Request, _=Depends(require_auth)):
-    workspace = request.state.workspace
-    jobs = _load_photo_jobs(workspace)
+    store = request.state.store
+    jobs = _load_photo_jobs(store)
     jobs = [j for j in jobs if j.get("id") != job_id]
-    _save_photo_jobs(workspace, jobs)
+    _save_photo_jobs(store, jobs)
     return {"jobs": jobs}
 
 
 @app.post("/api/medicines/jobs/{job_id}/retry")
 async def retry_photo_job(job_id: str, request: Request, _=Depends(require_auth)):
-    workspace = request.state.workspace
+    store = request.state.store
     updated, jobs = _update_job(
-        workspace,
+        store,
         job_id,
         lambda j: j.update(
             {
@@ -1669,10 +1769,10 @@ async def retry_photo_job(job_id: str, request: Request, _=Depends(require_auth)
     return {"jobs": jobs}
 
 
-async def _process_photo_group(photo_paths: List[Path], photo_urls: List[str], workspace):
-    primary_model = _resolve_med_model(workspace)
+async def _process_photo_group(photo_paths: List[Path], photo_urls: List[str], store):
+    primary_model = _resolve_med_model(store)
     image_path = Path(photo_paths[0])
-    settings = db_op("settings", workspace=workspace)
+    settings = db_op("settings", store=store)
     photo_prompt = settings.get("med_photo_prompt") or get_defaults().get("med_photo_prompt", "")
 
     try:
@@ -1681,16 +1781,8 @@ async def _process_photo_group(photo_paths: List[Path], photo_urls: List[str], w
     except Exception as e:
         raise RuntimeError(f"Photo inference failed for {primary_model}: {e}") from e
 
-    photo_data_urls = []
-    for p in photo_paths:
-        data_url = _encode_photo_data_url(p)
-        if data_url:
-            photo_data_urls.append(data_url)
-
     med_record = build_inventory_record(result, photo_urls)
-    if photo_data_urls:
-        med_record["photoDataUrls"] = photo_data_urls
-    entry = _merge_inventory_record(med_record, photo_urls, workspace)
+    entry = _merge_inventory_record(med_record, photo_urls, store)
     entry.update({"result": result, "used_model": used_model})
     return entry
 
@@ -1698,15 +1790,15 @@ async def _process_photo_group(photo_paths: List[Path], photo_urls: List[str], w
 @app.post("/api/medicines/photos")
 async def enqueue_medicine_photos(request: Request, files: List[UploadFile] = File(...), group: bool = False, _=Depends(require_auth)):
     try:
-        workspace = request.state.workspace
-        med_dir = workspace["med_uploads"]
+        store = request.state.store
+        med_dir = store["med_uploads"]
         if not files:
             return JSONResponse({"error": "No files uploaded"}, status_code=status.HTTP_400_BAD_REQUEST)
 
         mode = request.query_params.get("mode") or ("grouped" if group else "single")
         grouped = mode.lower().startswith("group")
         new_jobs = []
-        selected_model = _resolve_med_model(workspace)
+        selected_model = _resolve_med_model(store)
         if grouped:
             filenames = []
             paths = []
@@ -1725,7 +1817,7 @@ async def enqueue_medicine_photos(request: Request, files: List[UploadFile] = Fi
                 save_path.write_bytes(raw)
                 filenames.append(filename)
                 paths.append(str(save_path))
-                urls.append(f"/uploads/{workspace['slug']}/medicines/{filename}")
+                urls.append(f"/uploads/{store['slug']}/medicines/{filename}")
             if not urls:
                 return JSONResponse({"error": "No valid image files were uploaded"}, status_code=status.HTTP_400_BAD_REQUEST)
             job_id = f"job-{uuid.uuid4().hex}"
@@ -1742,7 +1834,7 @@ async def enqueue_medicine_photos(request: Request, files: List[UploadFile] = Fi
                     "result": {},
                 }
             )
-            log_job(f"[{workspace['label']}] queued grouped job {job_id} with {len(paths)} photo(s)")
+            log_job(f"[{store['label']}] queued grouped job {job_id} with {len(paths)} photo(s)")
         else:
             for idx, file in enumerate(files):
                 content_type = (file.content_type or "").lower()
@@ -1756,7 +1848,7 @@ async def enqueue_medicine_photos(request: Request, files: List[UploadFile] = Fi
                     continue
                 save_path = med_dir / filename
                 save_path.write_bytes(raw)
-                url = f"/uploads/{workspace['slug']}/medicines/{filename}"
+                url = f"/uploads/{store['slug']}/medicines/{filename}"
                 job_id = f"job-{uuid.uuid4().hex}"
                 new_jobs.append(
                     {
@@ -1771,13 +1863,13 @@ async def enqueue_medicine_photos(request: Request, files: List[UploadFile] = Fi
                         "result": {},
                     }
                 )
-                log_job(f"[{workspace['label']}] queued single job {job_id} for photo {filename}")
+                log_job(f"[{store['label']}] queued single job {job_id} for photo {filename}")
             if not new_jobs:
                 return JSONResponse({"error": "No valid image files were uploaded"}, status_code=status.HTTP_400_BAD_REQUEST)
-        jobs = _load_photo_jobs(workspace)
+        jobs = _load_photo_jobs(store)
         jobs.extend(new_jobs)
-        _save_photo_jobs(workspace, jobs)
-        log_job(f"[{workspace['label']}] total jobs queued: {len(jobs)}")
+        _save_photo_jobs(store, jobs)
+        log_job(f"[{store['label']}] total jobs queued: {len(jobs)}")
         return {"jobs": new_jobs}
     except Exception as e:
         # Return the underlying error so the client can surface a useful message
@@ -1808,9 +1900,9 @@ def _decode_data_url(data_str: str, fallback_mime: str = "image/png"):
 @app.post("/api/medicines/photos/base64")
 async def enqueue_medicine_photos_base64(request: Request, payload: dict = Body(...), group: bool = False, _=Depends(require_auth)):
     try:
-        workspace = request.state.workspace
-        med_dir = workspace["med_uploads"]
-        selected_model = _resolve_med_model(workspace)
+        store = request.state.store
+        med_dir = store["med_uploads"]
+        selected_model = _resolve_med_model(store)
         files = payload.get("files") if isinstance(payload, dict) else None
         if not files or not isinstance(files, list):
             return JSONResponse({"error": "No files uploaded"}, status_code=status.HTTP_400_BAD_REQUEST)
@@ -1841,7 +1933,7 @@ async def enqueue_medicine_photos_base64(request: Request, payload: dict = Body(
                 save_path.write_bytes(raw)
                 filenames.append(filename)
                 paths.append(str(save_path))
-                urls.append(f"/uploads/{workspace['slug']}/medicines/{filename}")
+                urls.append(f"/uploads/{store['slug']}/medicines/{filename}")
             if not urls:
                 return JSONResponse({"error": "No valid image files were uploaded"}, status_code=status.HTTP_400_BAD_REQUEST)
             job_id = f"job-{uuid.uuid4().hex}"
@@ -1858,7 +1950,7 @@ async def enqueue_medicine_photos_base64(request: Request, payload: dict = Body(
                     "result": {},
                 }
             ]
-            log_job(f"[{workspace['label']}] queued grouped job {job_id} with {len(paths)} photo(s)")
+            log_job(f"[{store['label']}] queued grouped job {job_id} with {len(paths)} photo(s)")
         else:
             for idx, file in enumerate(files):
                 name = ""
@@ -1878,7 +1970,7 @@ async def enqueue_medicine_photos_base64(request: Request, payload: dict = Body(
                 filename = f"{new_id}{suffix}"
                 save_path = med_dir / filename
                 save_path.write_bytes(raw)
-                url = f"/uploads/{workspace['slug']}/medicines/{filename}"
+                url = f"/uploads/{store['slug']}/medicines/{filename}"
                 jobs_to_add.append(
                     {
                         "id": f"job-{uuid.uuid4().hex}",
@@ -1892,13 +1984,13 @@ async def enqueue_medicine_photos_base64(request: Request, payload: dict = Body(
                         "result": {},
                     }
                 )
-                log_job(f"[{workspace['label']}] queued single job for photo {filename}")
+                log_job(f"[{store['label']}] queued single job for photo {filename}")
             if not jobs_to_add:
                 return JSONResponse({"error": "No valid image files were uploaded"}, status_code=status.HTTP_400_BAD_REQUEST)
-        jobs = _load_photo_jobs(workspace)
+        jobs = _load_photo_jobs(store)
         jobs.extend(jobs_to_add)
-        _save_photo_jobs(workspace, jobs)
-        log_job(f"[{workspace['label']}] total jobs queued: {len(jobs)}")
+        _save_photo_jobs(store, jobs)
+        log_job(f"[{store['label']}] total jobs queued: {len(jobs)}")
         return {"jobs": jobs_to_add}
     except Exception as e:
         return JSONResponse({"error": f"Unable to queue photos: {e}"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -1976,8 +2068,9 @@ def _generate_response(model_choice: str, force_cpu_slow: bool, prompt: str, cfg
 
 @app.post("/api/chat")
 async def chat(request: Request, _=Depends(require_auth)):
+    """Main chat endpoint (triage + inquiry); logs history and updates chat metrics."""
     try:
-        workspace = request.state.workspace
+        store = request.state.store
         start_time = datetime.now()
         form = await request.form()
         msg = form.get("message")
@@ -1995,7 +2088,7 @@ async def chat(request: Request, _=Depends(require_auth)):
         triage_temperature = form.get("triage_temperature") or ""
         triage_circulation = form.get("triage_circulation") or ""
         triage_cause = form.get("triage_cause") or ""
-        s = db_op("settings", workspace=workspace)
+        s = db_op("settings", store=store)
 
         if mode == "triage":
             meta_lines = []
@@ -2017,7 +2110,7 @@ async def chat(request: Request, _=Depends(require_auth)):
                 meta_text = "\n".join(f"- {line}" for line in meta_lines)
                 msg = f"{msg}\n\nTRIAGE INTAKE:\n{meta_text}"
 
-        prompt, cfg = build_prompt(s, mode, msg, p_name, workspace)
+        prompt, cfg = build_prompt(s, mode, msg, p_name, store)
         if override_prompt.strip():
             prompt = override_prompt.strip()
 
@@ -2039,32 +2132,31 @@ async def chat(request: Request, _=Depends(require_auth)):
                 )
             return JSONResponse({"error": str(e)}, status_code=status.HTTP_400_BAD_REQUEST)
         elapsed_ms = max(int((datetime.now() - start_time).total_seconds() * 1000), 0)
-        metrics = _update_chat_metrics(workspace, models["active_name"], elapsed_ms)
+        metrics = _update_chat_metrics(store, models["active_name"], elapsed_ms)
 
         if not is_priv:
-            h = db_op("history", workspace=workspace)
             patient_display = (
-                lookup_patient_display_name(p_name, workspace, default="Unnamed Crew")
+                lookup_patient_display_name(p_name, store, default="Unnamed Crew")
                 if mode == "triage"
                 else "Inquiry"
             )
-            h.append(
-                {
-                    "id": datetime.now().isoformat(),
-                    "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    "patient": patient_display,
-                    "patient_id": p_name or "",
-                    "mode": mode,
-                    "query": msg,
-                    "user_query": user_msg_raw,
-                    "response": res,
-                    "model": models["active_name"],
-                    "duration_ms": elapsed_ms,
-                    "prompt": prompt,
-                    "injected_prompt": prompt,
-                }
-            )
-            db_op("history", h, workspace=workspace)
+            entry = {
+                "id": datetime.now().isoformat(),
+                "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "patient": patient_display,
+                "patient_id": p_name or "",
+                "mode": mode,
+                "query": msg,
+                "user_query": user_msg_raw,
+                "response": res,
+                "model": models["active_name"],
+                "duration_ms": elapsed_ms,
+                "prompt": prompt,
+                "injected_prompt": prompt,
+            }
+            existing = db_op("history", store=store)
+            existing.append(entry)
+            db_op("history", existing, store=store)
 
         return JSONResponse(
             {
@@ -2084,7 +2176,7 @@ async def chat_preview(request: Request, _=Depends(require_auth)):
     msg = form.get("message")
     p_name = form.get("patient")
     mode = form.get("mode")
-    workspace = request.state.workspace
+    store = request.state.store
     if mode == "triage":
         triage_consciousness = form.get("triage_consciousness") or ""
         triage_breathing_status = form.get("triage_breathing_status") or ""
@@ -2111,8 +2203,8 @@ async def chat_preview(request: Request, _=Depends(require_auth)):
         if meta_lines:
             meta_text = "\n".join(f"- {line}" for line in meta_lines)
             msg = f"{msg}\n\nTRIAGE INTAKE:\n{meta_text}"
-    s = db_op("settings", workspace=workspace)
-    prompt, cfg = build_prompt(s, mode, msg, p_name, workspace)
+    s = db_op("settings", store=store)
+    prompt, cfg = build_prompt(s, mode, msg, p_name, store)
     return {"prompt": prompt, "mode": mode, "patient": p_name, "cfg": cfg}
 
 
@@ -2122,6 +2214,7 @@ def has_model_cache(model_name: str):
 
 
 def model_cache_status(model_name: str):
+    """Lightweight check: is the huggingface snapshot for this model present locally?"""
     safe = model_name.replace("/", "--")
     base = CACHE_DIR / "hub" / f"models--{safe}"
     if not base.exists():
@@ -2239,7 +2332,8 @@ def verify_required_models(download_missing: bool = False):
         cached, cache_err = model_cache_status(m)
         downloaded = False
         error = ""
-        if not cached and download_missing and not offline and AUTO_DOWNLOAD_MODELS:
+        # Allow download attempt unless offline flags are set
+        if not cached and download_missing and AUTO_DOWNLOAD_MODELS and not offline:
             downloaded, error = download_model_cache(m)
             cached, cache_err = model_cache_status(m)
         if not cached and not error:
@@ -2250,6 +2344,7 @@ def verify_required_models(download_missing: bool = False):
 
 @app.get("/api/offline/check")
 async def offline_check(_=Depends(require_auth)):
+    """Report cache status/disk usage without downloading models."""
     try:
         model_status = verify_required_models(download_missing=False)
         usage = shutil.disk_usage(CACHE_DIR)
@@ -2296,13 +2391,14 @@ def _parse_bool(val):
 
 @app.post("/api/offline/backup")
 async def offline_backup(request: Request, _=Depends(require_auth)):
+    """Zip the model cache so it can be carried onboard or restored later."""
     try:
-        workspace = request.state.workspace
+        store = request.state.store
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        dest = workspace["backup"] / f"offline_backup_{ts}.zip"
+        dest = store["backup"] / f"offline_backup_{ts}.zip"
         base = APP_HOME.resolve()
         with zipfile.ZipFile(dest, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            for root in [workspace["data"], workspace["uploads"], CACHE_DIR]:
+            for root in [store["data"], store["uploads"], CACHE_DIR]:
                 for path in root.rglob("*"):
                     if path.is_file():
                         try:
@@ -2334,6 +2430,13 @@ async def offline_flags(request: Request, _=Depends(require_auth)):
         val = "1" if enable else "0"
         os.environ["HF_HUB_OFFLINE"] = val
         os.environ["TRANSFORMERS_OFFLINE"] = val
+        # Persist preference in settings so it sticks across restarts
+        try:
+            existing = db_op("settings", store=request.state.store) or {}
+            existing["offline_force_flags"] = enable
+            db_op("settings", existing, store=request.state.store)
+        except Exception:
+            pass
         # Return a status payload identical to offline_check for UI reuse
         model_status = verify_required_models(download_missing=False)
         usage = shutil.disk_usage(CACHE_DIR)
@@ -2366,14 +2469,14 @@ async def offline_flags(request: Request, _=Depends(require_auth)):
 async def offline_restore(request: Request, _=Depends(require_auth)):
     """Restore the latest offline backup (or a specified one) into the app root."""
     try:
-        workspace = request.state.workspace
+        store = request.state.store
         payload = {}
         try:
             payload = await request.json()
         except Exception:
             payload = {}
         filename = (payload.get("filename") or "").strip()
-        backup_dir = workspace["backup"]
+        backup_dir = store["backup"]
         candidates = sorted(backup_dir.glob("offline_backup_*.zip"))
         target = None
         if filename:
@@ -2408,49 +2511,17 @@ async def offline_ensure(_=Depends(require_auth)):
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-@app.post("/api/photos/restore")
-async def restore_photos():
-    """Manually trigger inventory photo restore from embedded data URLs."""
-    try:
-        results = _rehydrate_inventory_photos()
-        total = sum(r.get("restored", 0) for r in results)
-        return {"restored": total, "details": results}
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-@app.get("/api/photos/status")
-async def photo_status():
-    """Report photo file presence for inventories."""
-    try:
-        reports = []
-        for label in WORKSPACE_NAMES:
-            ws = _workspace_dirs(label)
-            inv = get_doc(ws["db_id"], "inventory") or []
-            missing = 0
-            total = 0
-            for item in inv:
-                if not isinstance(item, dict):
-                    continue
-                photos = item.get("photos") or []
-                for p in photos:
-                    total += 1
-                    dest = _abs_upload_path(p)
-                    if not dest.exists():
-                        missing += 1
-            reports.append({"workspace": label, "total": total, "missing": missing})
-        return {"reports": reports}
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+@app.post("/api/photos/cleanup")
+async def cleanup_pharmacy_photos():
+    """Legacy endpoint retained for compatibility; no action needed."""
+    return {"cleared": 0, "details": []}
 
 
 hb_models = _heartbeat("Housekeeping", interval=2.0)
-_restore_inventory_photos()
 _startup_model_check()
 _background_verify_models()
 _start_photo_worker()
 hb_models.set()
-print("[startup] Housekeeping complete", flush=True)
 
 if __name__ == "__main__":
     import uvicorn
@@ -2458,16 +2529,18 @@ if __name__ == "__main__":
     print("=" * 50)
     print("🏥 SailingMedAdvisor Starting (FastAPI)...")
     print("=" * 50)
+    # Surface the absolute database location on startup for debugging/ops visibility
+    print(f"Database path: {DB_PATH.resolve()}")
     print("Access via: http://0.0.0.0:5000 (all network interfaces)")
     print("=" * 50)
 
     uvicorn.run("app:app", host="0.0.0.0", port=5000, reload=False)
-def _clear_workspace_data(workspace):
-    """Remove data and uploads for a workspace to start fresh."""
-    if not workspace:
+def _clear_store_data(store):
+    """Remove data and uploads for a store to start fresh."""
+    if not store:
         return
     # Clear data directory
-    for path in workspace["data"].iterdir():
+    for path in store["data"].iterdir():
         try:
             if path.is_file() or path.is_symlink():
                 path.unlink()
@@ -2476,7 +2549,7 @@ def _clear_workspace_data(workspace):
         except Exception:
             continue
     # Clear uploads (including medicine photos)
-    for path in workspace["uploads"].iterdir():
+    for path in store["uploads"].iterdir():
         try:
             if path.is_file() or path.is_symlink():
                 path.unlink()
@@ -2485,21 +2558,21 @@ def _clear_workspace_data(workspace):
         except Exception:
             continue
     # Recreate expected files with defaults
-    db_op("settings", get_defaults(), workspace=workspace)
-    db_op("patients", [], workspace=workspace)
-    db_op("inventory", [], workspace=workspace)
-    db_op("tools", [], workspace=workspace)
-    db_op("history", [], workspace=workspace)
-    db_op("vessel", {}, workspace=workspace)
-    db_op("med_photo_queue", [], workspace=workspace)
-    db_op("med_photo_jobs", [], workspace=workspace)
-    db_op("chats", [], workspace=workspace)
-    db_op("context", {}, workspace=workspace)
+    db_op("settings", get_defaults(), store=store)
+    db_op("patients", [], store=store)
+    db_op("inventory", [], store=store)
+    db_op("tools", [], store=store)
+    db_op("history", [], store=store)
+    db_op("vessel", {}, store=store)
+    db_op("med_photo_queue", [], store=store)
+    db_op("med_photo_jobs", [], store=store)
+    db_op("chats", [], store=store)
+    db_op("context", {}, store=store)
 
 
-def _apply_default_dataset(workspace):
-    """Copy default data + uploads into the given workspace."""
-    if not workspace:
+def _apply_default_dataset(store):
+    """Copy default data + uploads into the given store."""
+    if not store:
         return
     default_root = DATA_ROOT / "default"
     default_uploads = default_root / "uploads"
@@ -2509,12 +2582,12 @@ def _apply_default_dataset(workspace):
     # Copy data files
     for name in ["settings", "patients", "inventory", "tools", "history", "vessel", "chats", "med_photo_queue", "med_photo_jobs", "context"]:
         src = default_root / f"{name}.json"
-        dest = workspace["data"] / f"{name}.json"
+        dest = store["data"] / f"{name}.json"
         if src.exists():
             dest.write_text(src.read_text())
     # Copy uploads (medicines)
     src_med = default_uploads / "medicines"
-    dest_med = workspace["uploads"] / "medicines"
+    dest_med = store["uploads"] / "medicines"
     if src_med.exists():
         dest_med.mkdir(parents=True, exist_ok=True)
         for item in src_med.iterdir():

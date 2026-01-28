@@ -2,16 +2,26 @@
 
 // Reuse the chat dropdown storage key without redefining the global constant
 const CREW_LAST_PATIENT_KEY = typeof LAST_PATIENT_KEY !== 'undefined' ? LAST_PATIENT_KEY : 'sailingmed:lastPatient';
-const DEFAULT_VACCINE_TYPES = [];
+const DEFAULT_VACCINE_TYPES = [
+    'Diphtheria, Tetanus, and Pertussis (DTaP/Tdap)',
+    'Polio (IPV/OPV)',
+    'Measles, Mumps, Rubella (MMR)',
+    'HPV (Human Papillomavirus)',
+    'Influenza',
+    'Haemophilus influenzae type b (Hib)',
+    'Hepatitis B',
+    'Varicella (Chickenpox)',
+    'Pneumococcal (PCV)',
+    'Rotavirus',
+    'COVID-19',
+    'Yellow Fever',
+    'Typhoid',
+    'Hepatitis A',
+    'Japanese Encephalitis',
+    'Rabies',
+    'Cholera',
+];
 
-function escapeHtml(str) {
-    return (str || '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-}
 let historyStore = [];
 let historyStoreById = {};
 
@@ -114,10 +124,6 @@ function getCrewFullName(crew) {
         return `${crew.firstName} ${crew.lastName}`;
     }
     return crew.name || 'Unknown';
-}
-
-function escapeHtml(str) {
-    return (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 function groupHistoryByPatient(history) {
@@ -346,7 +352,12 @@ function loadCrewData(data, history = [], settings = {}) {
     // Update patient select dropdown
     const pSelect = document.getElementById('p-select');
     if (pSelect) {
-        const storedValue = localStorage.getItem(CREW_LAST_PATIENT_KEY);
+        let storedValue = null;
+        try {
+            storedValue = localStorage.getItem(CREW_LAST_PATIENT_KEY);
+        } catch (err) {
+            console.warn('[DEBUG] Unable to read last patient from storage:', err);
+        }
         const options = data
             .map((p) => {
                 const fullName = escapeHtml(getCrewFullName(p) || 'Unnamed Crew');
@@ -438,7 +449,7 @@ function loadCrewData(data, history = [], settings = {}) {
         const hasData = p.firstName && p.lastName && p.citizenship;
         
         return `
-        <div class="collapsible history-item">
+        <div class="collapsible history-item" data-crew-id="${p.id}">
             <div class="col-header crew-med-header" onclick="toggleCrewSection(this)" style="justify-content:flex-start;">
                 <span class="dev-tag">dev:crew-profile</span>
                 <span class="toggle-label history-arrow" style="font-size:18px; margin-right:8px;">▸</span>
@@ -447,7 +458,7 @@ function loadCrewData(data, history = [], settings = {}) {
                 <button onclick="event.stopPropagation(); exportCrew('${p.id}', '${getCrewFullName(p).replace(/'/g, "\\'")}')" class="btn btn-sm history-action-btn" style="background:var(--inquiry); visibility:hidden;">📤 Export</button>
                 <button onclick="event.stopPropagation(); deleteCrewMember('patients','${p.id}', '${getCrewFullName(p).replace(/'/g, "\\'")}')" class="btn btn-sm history-action-btn" style="background:var(--red); visibility:hidden;">🗑 Delete</button>
             </div>
-            <div class="col-body" style="padding:10px;">
+            <div class="col-body" style="padding:10px; display:none;">
                 <div style="display:flex; align-items:center; gap:6px; margin-bottom:6px;">
                     <span class="dev-tag">dev:crew-profile-fields</span>
                 </div>
@@ -509,9 +520,9 @@ function loadCrewData(data, history = [], settings = {}) {
                 </div>
                     <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-bottom:8px;">
                         <div style="border:1px solid #ddd; padding:8px; border-radius:4px; background:#f9f9f9;">
-                            <label style="margin-bottom:4px; display:block; font-weight:bold; font-size:11px;">Passport Photo:</label>
-                            ${p.passportPhoto ? (p.passportPhoto.startsWith('data:image/') ? `<div style="margin-bottom:4px;"><img src="${p.passportPhoto}" style="max-width:100%; max-height:120px; border:1px solid #ccc; border-radius:4px; cursor:pointer;" onclick="window.open('${p.passportPhoto}', '_blank')"><div style="margin-top:4px;"><button onclick="deleteDocument('${p.id}', 'passportPhoto')" style="background:var(--red); color:white; border:none; padding:2px 8px; border-radius:3px; cursor:pointer; font-size:10px;">🗑 Delete</button></div></div>` : `<div style="margin-bottom:4px;"><a href="${p.passportPhoto}" target="_blank" style="color:var(--inquiry); font-size:11px;">📎 View PDF</a> | <button onclick="deleteDocument('${p.id}', 'passportPhoto')" style="background:none; border:none; color:var(--red); cursor:pointer; font-size:10px;">🗑</button></div>`) : ''}
-                            <input type="file" id="pp-${p.id}" accept="image/*,.pdf" onchange="uploadDocument('${p.id}', 'passportPhoto', this)" style="font-size:10px; width:100%;">
+                            <label style="margin-bottom:4px; display:block; font-weight:bold; font-size:11px;">Passport Head Shot Photo:</label>
+                            ${p.passportHeadshot ? (p.passportHeadshot.startsWith('data:image/') ? `<div style="margin-bottom:4px;"><img src="${p.passportHeadshot}" style="max-width:100%; max-height:120px; border:1px solid #ccc; border-radius:4px; cursor:pointer;" onclick="window.open('${p.passportHeadshot}', '_blank')"><div style="margin-top:4px;"><button onclick="deleteDocument('${p.id}', 'passportHeadshot')" style="background:var(--red); color:white; border:none; padding:2px 8px; border-radius:3px; cursor:pointer; font-size:10px;">🗑 Delete</button></div></div>` : `<div style="margin-bottom:4px;"><a href="${p.passportHeadshot}" target="_blank" style="color:var(--inquiry); font-size:11px;">📎 View PDF</a> | <button onclick="deleteDocument('${p.id}', 'passportHeadshot')" style="background:none; border:none; color:var(--red); cursor:pointer; font-size:10px;">🗑</button></div>`) : ''}
+                            <input type="file" id="pp-${p.id}" accept="image/*,.pdf" onchange="uploadDocument('${p.id}', 'passportHeadshot', this)" style="font-size:10px; width:100%;">
                         </div>
                         <div style="border:1px solid #ddd; padding:8px; border-radius:4px; background:#f9f9f9;">
                             <label style="margin-bottom:4px; display:block; font-weight:bold; font-size:11px;">Passport Page Photo:</label>
@@ -563,6 +574,12 @@ function loadCrewData(data, history = [], settings = {}) {
         </div>`}).join('');
     }
 }
+
+// Expose for other scripts during startup
+window.loadCrewData = loadCrewData;
+
+// Ensure availability for other scripts that call it during startup
+window.loadCrewData = loadCrewData;
 
 // Expose for other scripts that call loadData() before bundling
 window.loadCrewData = loadCrewData;
@@ -623,7 +640,7 @@ async function addCrew() {
         emergencyContactNotes: emergencyContactNotes,
         phoneNumber: phoneNumber,
         vaccines: [],
-        passportPhoto: '',
+        passportHeadshot: '',
         passportPage: '',
         history: '' 
     });
@@ -685,20 +702,19 @@ async function addVaccine(crewId) {
         remarks: document.getElementById(`vx-remarks-${crewId}`)?.value.trim() || ''
     };
 
-    const data = await (await fetch('/api/data/patients', { credentials: 'same-origin' })).json();
-    const patient = data.find((p) => p.id === crewId);
-    if (!patient) {
-        alert('Crew member not found.');
+    try {
+        const res = await fetch('/api/crew/vaccine', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ crew_id: crewId, vaccine: entry })
+        });
+        const text = await res.text();
+        if (!res.ok) throw new Error(text || `Status ${res.status}`);
+    } catch (err) {
+        alert(`Failed to save vaccine: ${err.message}`);
         return;
     }
-    patient.vaccines = Array.isArray(patient.vaccines) ? patient.vaccines : [];
-    patient.vaccines.push(entry);
-    await fetch('/api/data/patients', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-        credentials: 'same-origin',
-    });
     clearVaccineInputs(crewId);
     loadData();
 }
@@ -706,19 +722,17 @@ async function addVaccine(crewId) {
 async function deleteVaccine(crewId, vaccineId) {
     if (!vaccineId) return;
     if (!confirm('Delete this vaccine record?')) return;
-    const data = await (await fetch('/api/data/patients', { credentials: 'same-origin' })).json();
-    const patient = data.find((p) => p.id === crewId);
-    if (!patient || !Array.isArray(patient.vaccines)) {
-        alert('Vaccine record not found.');
+    try {
+        const res = await fetch(`/api/crew/vaccine/${crewId}/${vaccineId}`, {
+            method: 'DELETE',
+            credentials: 'same-origin'
+        });
+        const text = await res.text();
+        if (!res.ok) throw new Error(text || `Status ${res.status}`);
+    } catch (err) {
+        alert(`Failed to delete vaccine: ${err.message}`);
         return;
     }
-    patient.vaccines = patient.vaccines.filter((v) => v.id !== vaccineId);
-    await fetch('/api/data/patients', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-        credentials: 'same-origin',
-    });
     loadData();
 }
 
@@ -820,15 +834,24 @@ async function uploadDocument(id, fieldName, inputElement) {
     const reader = new FileReader();
     reader.onload = async function(e) {
         const base64Data = e.target.result;
-        
-        // Save to crew member data
-        const data = await (await fetch('/api/data/patients', {credentials:'same-origin'})).json();
-        const patient = data.find(p => p.id === id);
-        if (patient) {
-            patient[fieldName] = base64Data;
-            await fetch('/api/data/patients', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data), credentials:'same-origin'});
+        try { localStorage.setItem('sailingmed:lastOpenCrew', id); } catch (err) { /* ignore */ }
+        try {
+            const resp = await fetch('/api/crew/photo', {
+                method:'POST',
+                headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({id, field: fieldName, data: base64Data}),
+                credentials:'same-origin'
+            });
+            const txt = await resp.text();
+            if (!resp.ok) {
+                console.warn('[crew] uploadDocument failed', resp.status, txt.slice(0,200));
+                alert('Upload failed. Please try again.');
+                return;
+            }
             loadData(); // Refresh to show the new document
-            alert('Document uploaded successfully!');
+        } catch (err) {
+            console.warn('[crew] uploadDocument error', err);
+            alert('Upload failed. Please try again.');
         }
     };
     reader.readAsDataURL(file);
@@ -838,13 +861,31 @@ async function uploadDocument(id, fieldName, inputElement) {
 async function deleteDocument(id, fieldName) {
     if (!confirm('Are you sure you want to delete this document?')) return;
     
-    const data = await (await fetch('/api/data/patients', {credentials:'same-origin'})).json();
-    const patient = data.find(p => p.id === id);
-    if (patient) {
-        patient[fieldName] = '';
-        await fetch('/api/data/patients', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data), credentials:'same-origin'});
+    try {
+        const resp = await fetch('/api/crew/photo', {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({id, field: fieldName, data: ''}),
+            credentials:'same-origin'
+        });
+        const txt = await resp.text();
+        if (!resp.ok) {
+            console.warn('[crew] delete document failed', resp.status, txt.slice(0,200));
+            alert('Delete failed. Please try again.');
+            return;
+        }
+        try { localStorage.setItem('sailingmed:lastOpenCrew', id); } catch (err) { /* ignore */ }
+        const card = document.querySelector(`.collapsible[data-crew-id="${id}"]`);
+        if (card) {
+            const img = card.querySelector('img[src]');
+            if (img && img.parentElement) img.parentElement.innerHTML = '';
+            const link = card.querySelector('a[target="_blank"]');
+            if (link && link.parentElement) link.parentElement.innerHTML = '';
+        }
         loadData();
-        alert('Document deleted.');
+    } catch (err) {
+        console.warn('[crew] delete document error', err);
+        alert('Delete failed. Please try again.');
     }
 }
 
@@ -1044,25 +1085,68 @@ async function exportCrewList() {
 
 // Vessel info load/save
 async function loadVesselInfo() {
-    const v = await (await fetch('/api/data/vessel', {credentials:'same-origin'})).json();
+    console.log('[VESSEL] loadVesselInfo invoked');
     const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val || ''; };
-    setVal('vessel-name', v.vesselName);
-    setVal('vessel-registration', v.registrationNumber);
-    setVal('vessel-flag', v.flagCountry);
-    setVal('vessel-homeport', v.homePort);
-    setVal('vessel-callsign', v.callSign);
-    setVal('vessel-tonnage', v.tonnage);
-    setVal('vessel-net-tonnage', v.netTonnage);
-    setVal('vessel-mmsi', v.mmsi);
-    setVal('vessel-hull-number', v.hullNumber);
-    setVal('vessel-starboard-engine', v.starboardEngine);
-    setVal('vessel-starboard-sn', v.starboardEngineSn);
-    setVal('vessel-port-engine', v.portEngine);
-    setVal('vessel-port-sn', v.portEngineSn);
-    setVal('vessel-rib-sn', v.ribSn);
+
+    // 1) use preloaded data if present (server-rendered)
+    if (window.VESSEL_PREFILL && typeof window.VESSEL_PREFILL === 'object') {
+        console.log('[VESSEL] prefill available', window.VESSEL_PREFILL);
+        const p = window.VESSEL_PREFILL;
+        const map = {
+            'vessel-name': p.vesselName,
+            'vessel-registration': p.registrationNumber,
+            'vessel-flag': p.flagCountry,
+            'vessel-homeport': p.homePort,
+            'vessel-callsign': p.callSign,
+            'vessel-tonnage': p.tonnage,
+            'vessel-net-tonnage': p.netTonnage,
+            'vessel-mmsi': p.mmsi,
+            'vessel-hull-number': p.hullNumber,
+            'vessel-starboard-engine': p.starboardEngine,
+            'vessel-starboard-sn': p.starboardEngineSn,
+            'vessel-port-engine': p.portEngine,
+            'vessel-port-sn': p.portEngineSn,
+            'vessel-rib-sn': p.ribSn,
+        };
+        Object.entries(map).forEach(([id, val]) => {
+            setVal(id, val);
+            console.log('[VESSEL] prefill set', id, '->', val);
+        });
+    }
+
+    // 2) fetch latest from API (overwrites prefill)
+    try {
+        const resp = await fetch('/api/data/vessel', {credentials:'same-origin'});
+        const text = await resp.text();
+        console.log('[VESSEL] loadVesselInfo fetch status', resp.status, 'body', text.slice(0,200));
+        const v = text ? JSON.parse(text) : {};
+        const map = {
+            'vessel-name': v.vesselName,
+            'vessel-registration': v.registrationNumber,
+            'vessel-flag': v.flagCountry,
+            'vessel-homeport': v.homePort,
+            'vessel-callsign': v.callSign,
+            'vessel-tonnage': v.tonnage,
+            'vessel-net-tonnage': v.netTonnage,
+            'vessel-mmsi': v.mmsi,
+            'vessel-hull-number': v.hullNumber,
+            'vessel-starboard-engine': v.starboardEngine,
+            'vessel-starboard-sn': v.starboardEngineSn,
+            'vessel-port-engine': v.portEngine,
+            'vessel-port-sn': v.portEngineSn,
+            'vessel-rib-sn': v.ribSn,
+        };
+        Object.entries(map).forEach(([id, val]) => {
+            setVal(id, val);
+            console.log('[VESSEL] API load set', id, '->', val);
+        });
+    } catch (err) {
+        console.warn('[VESSEL] loadVesselInfo fetch failed', err);
+    }
 }
 
 async function saveVesselInfo() {
+    console.log('[VESSEL] saveVesselInfo start');
     const v = {
         vesselName: document.getElementById('vessel-name')?.value || '',
         registrationNumber: document.getElementById('vessel-registration')?.value || '',
@@ -1079,17 +1163,67 @@ async function saveVesselInfo() {
         portEngineSn: document.getElementById('vessel-port-sn')?.value || '',
         ribSn: document.getElementById('vessel-rib-sn')?.value || ''
     };
-    await fetch('/api/data/vessel', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(v), credentials:'same-origin'});
+    console.log('[VESSEL] saveVesselInfo payload', v);
+    const resp = await fetch('/api/data/vessel', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(v), credentials:'same-origin'});
+    const respText = await resp.text();
+    console.log('[VESSEL] saveVesselInfo resp', resp.status, respText.slice(0,200));
+    if (!resp.ok) {
+        console.warn('[VESSEL] saveVesselInfo failed', resp.status, respText);
+        throw new Error(`Save failed (${resp.status})`);
+    }
+    const statusEl = document.getElementById('vessel-save-status');
+    if (statusEl) {
+        statusEl.textContent = 'Saved at ' + new Date().toLocaleTimeString();
+        statusEl.style.color = '#2e7d32';
+        setTimeout(() => { statusEl.textContent = ''; }, 4000);
+    }
+    // After save, pull latest to ensure UI matches persisted state
+    try {
+        const latestResp = await fetch('/api/data/vessel', {credentials:'same-origin'});
+        const latestText = await latestResp.text();
+        console.log('[VESSEL] post-save fetch status', latestResp.status, 'body', latestText.slice(0,200));
+        const latest = latestText ? JSON.parse(latestText) : {};
+        const map = {
+            'vessel-name': latest.vesselName,
+            'vessel-registration': latest.registrationNumber,
+            'vessel-flag': latest.flagCountry,
+            'vessel-homeport': latest.homePort,
+            'vessel-callsign': latest.callSign,
+            'vessel-tonnage': latest.tonnage,
+            'vessel-net-tonnage': latest.netTonnage,
+            'vessel-mmsi': latest.mmsi,
+            'vessel-hull-number': latest.hullNumber,
+            'vessel-starboard-engine': latest.starboardEngine,
+            'vessel-starboard-sn': latest.starboardEngineSn,
+            'vessel-port-engine': latest.portEngine,
+            'vessel-port-sn': latest.portEngineSn,
+            'vessel-rib-sn': latest.ribSn,
+        };
+        const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val || ''; };
+        Object.entries(map).forEach(([id, val]) => {
+            setVal(id, val);
+            console.log('[VESSEL] post-save set', id, '->', val);
+        });
+    } catch (err) {
+        console.warn('[VESSEL] post-save refresh failed', err);
+    }
+    // Clear user-edited flags after successful save so subsequent loads can refresh
+    ['vessel-name','vessel-registration','vessel-flag','vessel-homeport','vessel-callsign','vessel-tonnage','vessel-net-tonnage','vessel-mmsi','vessel-hull-number','vessel-starboard-engine','vessel-starboard-sn','vessel-port-engine','vessel-port-sn','vessel-rib-sn'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.dataset.userEdited = '';
+    });
 }
 
 let vesselSaveTimer = null;
 function scheduleVesselSave() {
     if (vesselSaveTimer) clearTimeout(vesselSaveTimer);
-    vesselSaveTimer = setTimeout(() => saveVesselInfo().catch(() => {}), 400);
+    vesselSaveTimer = setTimeout(() => {
+        console.log('[VESSEL] autosave triggered');
+        saveVesselInfo().catch(err => console.warn('[VESSEL] autosave failed', err));
+    }, 200);
 }
 
-// bind autosave listeners once DOM is ready
-document.addEventListener('DOMContentLoaded', () => {
+function bindVesselAutosave() {
     const ids = [
         'vessel-name','vessel-registration','vessel-flag','vessel-homeport','vessel-callsign',
         'vessel-tonnage','vessel-net-tonnage','vessel-mmsi','vessel-hull-number',
@@ -1099,8 +1233,38 @@ document.addEventListener('DOMContentLoaded', () => {
         const el = document.getElementById(id);
         if (el && !el.dataset.vesselAutosave) {
             el.dataset.vesselAutosave = '1';
-            el.addEventListener('input', () => scheduleVesselSave());
-            el.addEventListener('change', () => scheduleVesselSave());
+            const logVal = (evType) => console.log('[VESSEL] field event', evType, id, 'value=', el.value);
+            el.addEventListener('input', () => { el.dataset.userEdited = '1'; logVal('input'); scheduleVesselSave(); });
+            el.addEventListener('change', () => { el.dataset.userEdited = '1'; logVal('change'); scheduleVesselSave(); });
+            el.addEventListener('mouseleave', () => {
+                if (el.dataset.userEdited) {
+                    logVal('mouseleave');
+                    console.log('[VESSEL] mouseleave -> immediate save');
+                    saveVesselInfo().catch(err => console.warn('[VESSEL] mouseleave save failed', err));
+                }
+            });
+            console.log('[VESSEL] autosave bound to', id);
         }
     });
-});
+}
+
+function initVessel() {
+    if (typeof loadVesselInfo === 'function') {
+        console.log('[VESSEL] initVessel: loading initial data');
+        loadVesselInfo().catch(err => console.warn('[VESSEL] initial loadVesselInfo failed:', err));
+    }
+    bindVesselAutosave();
+    window.VESSEL_DEBUG = true;
+    window.forceSaveVessel = saveVesselInfo;
+    console.log('[VESSEL] initVessel complete; VESSEL_DEBUG=true');
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initVessel);
+} else {
+    initVessel();
+}
+
+// Expose for other scripts
+window.loadVesselInfo = loadVesselInfo;
+window.saveVesselInfo = saveVesselInfo;

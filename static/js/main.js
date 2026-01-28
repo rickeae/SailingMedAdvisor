@@ -1,4 +1,8 @@
-// Main utilities and navigation - Cleaned up
+/*
+File: static/js/main.js
+Author notes: Core UI utilities (tab switching, collapsibles, sidebar) shared
+across pages. Keeps global behaviors lightweight and reusable.
+*/
 
 const SIDEBAR_STATE_KEY = 'sailingmed:sidebarCollapsed';
 let globalSidebarCollapsed = false;
@@ -25,6 +29,18 @@ function toggleSection(el) {
     const isExpanded = body.style.display === "block";
     body.style.display = isExpanded ? "none" : "block";
     if (icon) icon.textContent = isExpanded ? "▸" : "▾";
+    // Show/hide crew sort control only when crew list expanded
+    const sortWrap = el.querySelector('#crew-sort-wrap');
+    if (sortWrap) {
+        sortWrap.style.display = isExpanded ? "none" : "flex";
+    }
+    // Hide inline triage sample selector when collapsed
+    const sampleInline = el.querySelector('.triage-sample-inline');
+    if (sampleInline) {
+        const isAdvanced = document.body.classList.contains('mode-advanced') || document.body.classList.contains('mode-developer');
+        // Always hide until DOMContentLoaded applies user mode; then re-check class
+        sampleInline.style.display = (isExpanded && isAdvanced) ? "flex" : "none";
+    }
     if (el.dataset && el.dataset.sidebarId) {
         syncSidebarSections(el.dataset.sidebarId, !isExpanded);
     }
@@ -40,7 +56,7 @@ function toggleDetailSection(el) {
     const isExpanded = body.style.display === "block";
     
     body.style.display = isExpanded ? "none" : "block";
-    icon.textContent = isExpanded ? "▸" : "▾";
+    icon.textContent = isExpanded ? ">" : "v";
 }
 
 // Crew-specific toggle with icon change
@@ -55,6 +71,34 @@ function toggleCrewSection(el) {
     actionBtns.forEach(btn => { btn.style.visibility = isExpanded ? "hidden" : "visible"; });
     if (el.dataset && el.dataset.sidebarId) {
         syncSidebarSections(el.dataset.sidebarId, !isExpanded);
+    }
+    // If this header participates in a collapse group, close siblings in the same group when opening
+    const group = el.querySelector('.toggle-label')?.dataset?.collapseGroup || el.dataset.collapseGroup;
+    if (!isExpanded && group) {
+        const container = el.closest('#pharmacy-list') || el.parentElement;
+        if (container) {
+            container.querySelectorAll(`.toggle-label[data-collapse-group="${group}"]`).forEach(lbl => {
+                const header = lbl.closest('.col-header');
+                if (!header || header === el) return;
+                const b = header.nextElementSibling;
+                if (b && b.style.display !== "none") {
+                    b.style.display = "none";
+                    lbl.textContent = ">";
+                    const btns = header.querySelectorAll('.history-action-btn');
+                    btns.forEach(btn => { btn.style.visibility = "hidden"; });
+                }
+            });
+        }
+    }
+    // Remember last opened crew card so we can restore after reloads (e.g., after uploads)
+    if (!isExpanded) {
+        try {
+            const parent = el.closest('.collapsible[data-crew-id]');
+            if (parent) {
+                const crewId = parent.getAttribute('data-crew-id');
+                localStorage.setItem('sailingmed:lastOpenCrew', crewId || '');
+            }
+        } catch (err) { /* ignore */ }
     }
 }
 
@@ -115,9 +159,17 @@ async function showTab(e, n) {
         }
         loadContext('Settings');
     } else if(n === 'CrewMedical' || n === 'VesselCrewInfo') { 
-        loadData(); 
+        try {
+            await loadData();
+        } catch (err) {
+            console.warn('[DEBUG] showTab loadData failed:', err);
+        }
         if (typeof loadVesselInfo === 'function') {
-            loadVesselInfo();
+            try {
+                await loadVesselInfo();
+            } catch (err) {
+                console.warn('[DEBUG] showTab loadVesselInfo failed:', err);
+            }
         }
         loadContext(n);
     } else if (n === 'OnboardEquipment') {
@@ -153,20 +205,58 @@ async function loadData() {
         ]);
         console.log('[DEBUG] loadData: status patients', res.status, 'history', historyRes.status, 'settings', settingsRes.status);
         if (!res.ok) throw new Error(`Patients request failed: ${res.status}`);
-        if (!historyRes.ok) throw new Error(`History request failed: ${historyRes.status}`);
         if (!settingsRes.ok) console.warn('Settings request failed:', settingsRes.status);
+
+        // Parse patients (hard requirement)
         const data = await res.json();
-        const history = await historyRes.json();
+
+        // Parse history, but never block crew rendering if it fails
+        let history = [];
+        if (historyRes.ok) {
+            try {
+                const parsedHistory = await historyRes.json();
+                history = Array.isArray(parsedHistory) ? parsedHistory : [];
+            } catch (err) {
+                console.warn('History parse failed; continuing without history.', err);
+                history = [];
+            }
+        } else {
+            console.warn('History request failed; continuing without history. Status:', historyRes.status);
+        }
+
+        // Parse settings (optional)
         let settings = {};
         try {
-            settings = await settingsRes.json();
+            settings = settingsRes.ok ? await settingsRes.json() : {};
         } catch (err) {
             console.warn('Settings parse failed, using defaults.', err);
         }
         window.CACHED_SETTINGS = settings || {};
         console.log('[DEBUG] loadData: patients length', Array.isArray(data) ? data.length : 'n/a');
         if (!Array.isArray(data)) throw new Error('Unexpected patients data format');
-        loadCrewData(data, Array.isArray(history) ? history : [], settings || {});
+
+        // Ensure crew renderer is ready; retry briefly if the script is still loading
+        if (typeof loadCrewData !== 'function') {
+            console.warn('[DEBUG] loadCrewData missing; retrying shortly…');
+            setTimeout(() => {
+                if (typeof loadCrewData === 'function') {
+                    loadCrewData(data, history, settings || {});
+                } else {
+                    console.error('[DEBUG] loadCrewData still missing after retry.');
+                }
+            }, 150);
+            return;
+        }
+        loadCrewData(data, history, settings || {});
+
+        // Also refresh vessel info so fields populate when the tab is opened
+        if (typeof loadVesselInfo === 'function') {
+            try {
+                await loadVesselInfo();
+            } catch (err) {
+                console.warn('[DEBUG] loadVesselInfo failed:', err);
+            }
+        }
     } catch (err) {
         console.error('[DEBUG] Failed to load crew data', err);
         window.CACHED_SETTINGS = window.CACHED_SETTINGS || {};
@@ -227,29 +317,8 @@ function restoreCollapsibleState(headerId, defaultOpen = true) {
 
 // Context loader
 async function loadContext(tabName) {
-    try {
-        const res = await fetch('/api/context', { credentials: 'same-origin' });
-        if (!res.ok) throw new Error(`Context load failed: ${res.status}`);
-        const data = await res.json();
-        const tabData = data[tabName];
-        if (!tabData || !tabData.sections) return;
-        tabData.sections.forEach((section) => {
-            const el = document.querySelector(`[data-sidebar-section="${section.id}"] .sidebar-body`);
-            if (el) {
-                el.textContent = section.body || '';
-                const titleEl = el.parentElement.querySelector('.sidebar-title');
-                if (titleEl && section.title) {
-                    titleEl.childNodes.forEach(node => {
-                        if (node.nodeType === Node.TEXT_NODE) {
-                            node.textContent = ` ${section.title}`;
-                        }
-                    });
-                }
-            }
-        });
-    } catch (err) {
-        console.warn('Context load error', err);
-    }
+    // Sidebars are now fully static HTML; no remote context to fetch.
+    return;
 }
 
 // Restore last chat so the triage page shows the most recent response on load
@@ -257,6 +326,10 @@ async function restoreLastChatView() {
     try {
         const display = document.getElementById('display');
         if (!display || display.children.length > 0) return;
+        try {
+            const skip = localStorage.getItem('sailingmed:skipLastChat');
+            if (skip === '1') return;
+        } catch (err) { /* ignore */ }
         const res = await fetch('/api/data/history', { credentials: 'same-origin' });
         if (!res.ok) return;
         const history = await res.json();

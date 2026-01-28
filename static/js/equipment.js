@@ -1,5 +1,13 @@
 // Equipment management for onboard medical gear
 
+const workspaceHeaders = (window.Utils && window.Utils.workspaceHeaders) ? window.Utils.workspaceHeaders : (extra = {}) => extra;
+const fetchJson = (window.Utils && window.Utils.fetchJson) ? window.Utils.fetchJson : async (url, options = {}) => {
+    const res = await fetch(url, { credentials: 'same-origin', ...options });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error) throw new Error(data.error || `Status ${res.status}`);
+    return data;
+};
+
 let equipmentCache = [];
 let phoneSelectedFiles = [];
 let desktopSelectedFiles = [];
@@ -10,15 +18,7 @@ const equipmentSaveTimers = {};
 let medPhotoDropBound = false;
 let medPhotoMode = 'single'; // 'single' or 'grouped'
 
-function eqWorkspaceHeaders(extra = {}) {
-    const label = (window.WORKSPACE_LABEL || localStorage.getItem('workspace_label') || '').trim();
-    const headers = { ...extra };
-    if (label) {
-        headers['x-workspace'] = label;
-        headers['x-workspace-slug'] = label;
-    }
-    return headers;
-}
+const eqWorkspaceHeaders = workspaceHeaders;
 
 function updateSectionCount(id, count) {
     const el = document.getElementById(id);
@@ -74,9 +74,7 @@ async function loadEquipment(expandId = null) {
     if (!list) return;
     list.innerHTML = '';
     try {
-        const res = await fetch('/api/data/tools', { credentials: 'same-origin' });
-        if (!res.ok) throw new Error(`Status ${res.status}`);
-        const data = await res.json();
+        const data = await fetchJson('/api/data/tools');
         equipmentCache = (Array.isArray(data) ? data : []).map(ensureEquipmentDefaults);
         renderEquipment(equipmentCache, expandId);
     } catch (err) {
@@ -222,9 +220,7 @@ async function loadMedPhotoQueue() {
     bindMedPhotoDrop();
     const fetchJobs = async () => {
         try {
-            const res = await fetch('/api/medicines/jobs', { credentials: 'same-origin', headers: eqWorkspaceHeaders() });
-            const data = await res.json();
-            if (!res.ok || data.error) throw new Error(data.error || `Status ${res.status}`);
+            const data = await fetchJson('/api/medicines/jobs', { headers: eqWorkspaceHeaders() });
             medPhotoJobs = Array.isArray(data.jobs) ? data.jobs : [];
             renderMedPhotoJobs();
             const newlyCompleted = medPhotoJobs.filter((j) => j.status === 'completed' && j.inventory_id && !syncedInventoryJobIds.has(j.id));
@@ -395,9 +391,7 @@ function showImportStatus(id, message, isError = false) {
 
 async function ensureEquipmentCacheLoaded() {
     if (equipmentCache.length) return equipmentCache;
-    const res = await fetch('/api/data/tools', { credentials: 'same-origin' });
-    if (!res.ok) throw new Error(`Status ${res.status}`);
-    const data = await res.json();
+    const data = await fetchJson('/api/data/tools');
     equipmentCache = (Array.isArray(data) ? data : []).map(ensureEquipmentDefaults);
     return equipmentCache;
 }
@@ -575,9 +569,7 @@ async function mergeConsumableImports(entries, statusId) {
         return;
     }
     const normalized = entries.map((entry) => ensureEquipmentDefaults({ ...entry, type: 'consumable' }));
-    const res = await fetch('/api/data/tools', { credentials: 'same-origin' });
-    if (!res.ok) throw new Error(`Status ${res.status}`);
-    const data = await res.json();
+    const data = await fetchJson('/api/data/tools');
     const existing = Array.isArray(data) ? data.map(ensureEquipmentDefaults) : [];
     const entryMap = buildEntryMap(normalized);
     const merged = mergeEntriesByName(existing, entryMap, 'consumable');
@@ -608,9 +600,7 @@ async function mergeEquipmentImports(entries, statusId) {
         return;
     }
     const normalized = entries.map((entry) => ensureEquipmentDefaults({ ...entry, type: 'durable' }));
-    const res = await fetch('/api/data/tools', { credentials: 'same-origin' });
-    if (!res.ok) throw new Error(`Status ${res.status}`);
-    const data = await res.json();
+    const data = await fetchJson('/api/data/tools');
     const existing = Array.isArray(data) ? data.map(ensureEquipmentDefaults) : [];
     const entryMap = buildEntryMap(normalized);
     const merged = mergeEntriesByName(existing, entryMap, 'equipment');
@@ -890,8 +880,7 @@ async function saveEquipment(id) {
         const el = document.getElementById(elementId);
         return el ? el.value : fallback;
     };
-    const res = await fetch('/api/data/tools', { credentials: 'same-origin' });
-    const data = await res.json();
+    const data = await fetchJson('/api/data/tools');
     const items = Array.isArray(data) ? data.map(ensureEquipmentDefaults) : [];
     const eq = items.find((i) => i.id === id);
     if (!eq) return;
@@ -976,8 +965,7 @@ async function addMedicalStore() {
         excludeFromResources: exclude,
     });
 
-    const res = await fetch('/api/data/tools', { credentials: 'same-origin' });
-    const data = await res.json();
+    const data = await fetchJson('/api/data/tools');
     const items = Array.isArray(data) ? data.map(ensureEquipmentDefaults) : [];
     items.push(newItem);
     await fetch('/api/data/tools', {
@@ -1038,8 +1026,7 @@ async function addMedicationItem() {
         excludeFromResources: exclude,
     };
 
-    const res = await fetch('/api/data/inventory', { credentials: 'same-origin' });
-    const data = await res.json();
+    const data = await fetchJson('/api/data/inventory');
     const items = Array.isArray(data) ? data : [];
     items.push(newMed);
     await fetch('/api/data/inventory', {

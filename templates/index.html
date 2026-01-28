@@ -220,8 +220,6 @@
     @keyframes spin { to { transform: rotate(360deg); } }
     </style>
     <script>
-        window.WORKSPACE_LABEL = "{{ workspace.label if workspace else '' }}";
-        try { if (window.WORKSPACE_LABEL) localStorage.setItem('workspace_label', window.WORKSPACE_LABEL); } catch (e) { /* ignore */ }
         (function primeUserMode() {
             try {
                 const stored = localStorage.getItem('user_mode') || 'user';
@@ -243,7 +241,7 @@
 
 <div class="nav">
     <button class="tab tab-triage active" onclick="showTab(event, 'Chat')">MEDGEMMA CHAT</button>
-    <button class="tab tab-nowrap" onclick="showTab(event, 'CrewMedical')">CREW HEALTH LOG</button>
+    <button class="tab tab-nowrap" onclick="showTab(event, 'CrewMedical')">CONSULTATION LOG</button>
     <button class="tab" onclick="showTab(event, 'OnboardEquipment')">MEDICAL CHEST</button>
     <button class="tab" onclick="showTab(event, 'VesselCrewInfo')">VESSEL & CREW</button>
     <button class="tab tab-config" onclick="showTab(event, 'Settings')">SETTINGS</button>
@@ -262,12 +260,6 @@
         </div>
         <div id="banner-controls-crew" class="banner-controls" style="justify-content:space-between; gap:12px;">
             <div style="display:flex; gap:12px; align-items:center; flex:1;">
-                <select id="crew-sort" onchange="loadData()" style="padding:10px; font-size:15px;">
-                <option value="last">Sort: Last Name</option>
-                <option value="first">Sort: First Name</option>
-                <option value="birthdate-asc">Sort: Birthdate (Youngest First)</option>
-                <option value="birthdate-desc">Sort: Birthdate (Oldest First)</option>
-            </select>
                 <button id="crew-med-export-all-btn" onclick="exportAllMedical()" class="btn btn-sm" style="background:var(--inquiry); display:none;">📤 Export All Medical</button>
             </div>
             <button id="crew-csv-btn" onclick="exportCrewList()" class="btn btn-sm" style="background:var(--inquiry); display:none; align-self:center;">📋 Crew List CSV</button>
@@ -282,9 +274,16 @@
                         <div class="triage-wrapper">
                             <div class="chat-area">
                     <div class="collapsible" style="margin-bottom:12px;">
-                        <div id="query-form-header" class="col-header crew-med-header" data-pref-key="query-form-open" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start; align-items:center;">
+                        <div id="query-form-header" class="col-header crew-med-header" data-pref-key="query-form-open" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start; align-items:center; gap:12px;">
                             <span class="dev-tag">dev:triage-form</span>
-                            <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▾</span><span id="query-form-title" style="font-weight:700;">Triage Chat Prompt Detail</span>
+                            <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▾</span>
+                            <span id="query-form-title" style="font-weight:700; white-space:nowrap;">Triage Chat Prompt Detail</span>
+                            <div class="triage-sample-inline" style="margin-left:auto; display:none; align-items:center; gap:8px; flex-wrap:wrap;">
+                                <label for="triage-sample-select" style="font-size:12px; color:#333; font-weight:700; margin:0;">Select a Test Case:</label>
+                                <select id="triage-sample-select" style="padding:8px; min-width:200px;" onchange="applyTriageSample(this.value)">
+                                    <option value="">Select a Test Case</option>
+                                </select>
+                            </div>
                         </div>
                         <div id="query-form-body" class="col-body" style="padding:16px; background:#f4f4f4; display:block;">
                             <div style="margin-bottom:12px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
@@ -299,94 +298,48 @@
                                 </select>
                                 <button onclick="togglePriv()" id="priv-btn" class="btn" style="background:#555; min-width:140px;">LOGGING: ON</button>
                             </div>
-                            <div style="display:flex; gap:10px; align-items:center; margin-bottom:8px; flex-wrap:wrap;">
-                                <label for="triage-sample-select" style="font-size:12px; color:#333; font-weight:700;">Select a Test Case:</label>
-                                <select id="triage-sample-select" style="padding:8px; min-width:220px;" onchange="applyTriageSample(this.value)">
-                                    <option value="">Select a Test Case</option>
-                                </select>
-                            </div>
                             <textarea id="msg" style="height:105px;" placeholder="Describe what's happening"></textarea>
                             <div id="triage-meta-selects" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:10px; margin-top:10px;">
                                 <div>
                                     <label for="triage-consciousness" style="font-size:12px; color:#333;">Is the person awake/responsive?</label>
                                     <select id="triage-consciousness" style="padding:8px; width:100%;">
                                         <option value="">Select...</option>
-                                        <option value="Awake and acting normally">Awake and acting normally</option>
-                                        <option value="Awake but confused or very drowsy">Awake but confused or very drowsy</option>
-                                        <option value="Responds only when spoken to">Responds only when spoken to</option>
-                                        <option value="Responds only to pain (pinch, pressure)">Responds only to pain (pinch, pressure)</option>
-                                        <option value="Not responding at all">Not responding at all</option>
                                     </select>
                                 </div>
                                 <div>
                                     <label for="triage-breathing-status" style="font-size:12px; color:#333;">Breathing right now</label>
                                     <select id="triage-breathing-status" style="padding:8px; width:100%;">
                                         <option value="">Select...</option>
-                                        <option value="Breathing normally on their own">Breathing normally on their own</option>
-                                        <option value="Breathing fast or struggling">Breathing fast or struggling</option>
-                                        <option value="Wheezing / gasping / very noisy">Wheezing / gasping / very noisy</option>
-                                        <option value="Using oxygen (nasal prongs or mask)">Using oxygen (nasal prongs or mask)</option>
-                                        <option value="On breathing machine (CPAP / ventilator)">On breathing machine (CPAP / ventilator)</option>
-                                        <option value="Not breathing">Not breathing</option>
                                     </select>
                                 </div>
                                 <div>
                                     <label for="triage-pain-level" style="font-size:12px; color:#333;">How bad is the pain?</label>
                                     <select id="triage-pain-level" style="padding:8px; width:100%;">
                                         <option value="">Select...</option>
-                                        <option value="No pain">No pain</option>
-                                        <option value="Mild pain">Mild pain</option>
-                                        <option value="Moderate pain">Moderate pain</option>
-                                        <option value="Severe pain">Severe pain</option>
-                                        <option value="Worst pain imaginable">Worst pain imaginable</option>
                                     </select>
                                 </div>
                                 <div>
                                     <label for="triage-main-problem" style="font-size:12px; color:#333;">Main problem right now</label>
                                     <select id="triage-main-problem" style="padding:8px; width:100%;">
                                         <option value="">Select...</option>
-                                        <option value="Chest pain / heart problem">Chest pain / heart problem</option>
-                                        <option value="Trouble breathing">Trouble breathing</option>
-                                        <option value="Stroke-like symptoms (weakness, speech, face)">Stroke-like symptoms (weakness, speech, face)</option>
-                                        <option value="Severe headache or seizure">Severe headache or seizure</option>
-                                        <option value="Abdominal pain / vomiting / bleeding">Abdominal pain / vomiting / bleeding</option>
-                                        <option value="Injury or trauma">Injury or trauma</option>
-                                        <option value="Fever or infection">Fever or infection</option>
-                                        <option value="Other / unsure">Other / unsure</option>
                                     </select>
                                 </div>
                                 <div>
                                     <label for="triage-temperature" style="font-size:12px; color:#333;">Body temperature</label>
                                     <select id="triage-temperature" style="padding:8px; width:100%;">
                                         <option value="">Select...</option>
-                                        <option value="Normal">Normal</option>
-                                        <option value="Fever (hot to touch or >38C / 100.4F)">Fever (hot to touch or >38C / 100.4F)</option>
-                                        <option value="Very cold (<36C / 96.8F)">Very cold (<36C / 96.8F)</option>
-                                        <option value="Unknown / not checked">Unknown / not checked</option>
                                     </select>
                                 </div>
                                 <div>
                                     <label for="triage-circulation" style="font-size:12px; color:#333;">Circulation and blood pressure signs</label>
                                     <select id="triage-circulation" style="padding:8px; width:100%;">
                                         <option value="">Select...</option>
-                                        <option value="Looks stable">Looks stable</option>
-                                        <option value="Very fast heartbeat">Very fast heartbeat</option>
-                                        <option value="Very weak or faint">Very weak or faint</option>
-                                        <option value="Cold, pale, clammy skin">Cold, pale, clammy skin</option>
-                                        <option value="Known very low blood pressure">Known very low blood pressure</option>
-                                        <option value="Known very high blood pressure">Known very high blood pressure</option>
                                     </select>
                                 </div>
                                 <div>
                                     <label for="triage-cause" style="font-size:12px; color:#333;">What caused this?</label>
                                     <select id="triage-cause" style="padding:8px; width:100%;">
                                         <option value="">Select...</option>
-                                        <option value="Sudden illness">Sudden illness</option>
-                                        <option value="Fall or accident">Fall or accident</option>
-                                        <option value="Assault">Assault</option>
-                                        <option value="Drowning / near drowning">Drowning / near drowning</option>
-                                        <option value="Poisoning / overdose">Poisoning / overdose</option>
-                                        <option value="Unknown">Unknown</option>
                                     </select>
                                 </div>
                             </div>
@@ -410,7 +363,7 @@
                         </div>
                     </div>
                     <div style="display:flex; justify-content:flex-end; margin-bottom:6px;">
-                        <button onclick="clearDisplay()" class="btn btn-sm" style="background:#c62828;">Clear</button>
+                                <button onclick="clearDisplay()" class="btn btn-sm" style="background:#c62828;">Clear Previous Chat Response</button>
                     </div>
                     <div style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">
                         <span class="dev-tag">dev:triage-display</span>
@@ -781,77 +734,88 @@
                     </div>
                     <div class="col-body" style="padding:15px; background:#f5faff; border:1px solid #c5ddf8; border-top:none;">
                         <div class="dev-tag" style="margin-bottom:6px;">dev:vessel-fields</div>
+                        <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+                            <span id="vessel-save-status" style="font-size:12px; color:#2e7d32;"></span>
+                        </div>
                         <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-bottom:12px; font-size:15px;">
                             <div>
                                 <div class="dev-tag">dev:vessel-name</div>
                                 <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">Vessel Name</label>
-                                <input type="text" id="vessel-name" style="padding:8px; width:100%;">
+                                <input type="text" id="vessel-name" value="{{ vessel_prefill.vesselName | default('') }}" style="padding:8px; width:100%;">
                             </div>
                             <div>
                                 <div class="dev-tag">dev:vessel-registration</div>
                                 <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">Registration Number</label>
-                                <input type="text" id="vessel-registration" style="padding:8px; width:100%;">
+                                <input type="text" id="vessel-registration" value="{{ vessel_prefill.registrationNumber | default('') }}" style="padding:8px; width:100%;">
                             </div>
                             <div>
                                 <div class="dev-tag">dev:vessel-flag</div>
                                 <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">Flag Country</label>
-                                <input type="text" id="vessel-flag" style="padding:8px; width:100%;">
+                                <input type="text" id="vessel-flag" value="{{ vessel_prefill.flagCountry | default('') }}" style="padding:8px; width:100%;">
                             </div>
                             <div>
                                 <div class="dev-tag">dev:vessel-homeport</div>
                                 <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">Home Port</label>
-                                <input type="text" id="vessel-homeport" style="padding:8px; width:100%;">
+                                <input type="text" id="vessel-homeport" value="{{ vessel_prefill.homePort | default('') }}" style="padding:8px; width:100%;">
                             </div>
                             <div>
                                 <div class="dev-tag">dev:vessel-tonnage</div>
                                 <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">Gross Tonnage</label>
-                                <input type="text" id="vessel-tonnage" style="padding:8px; width:100%;">
+                                <input type="text" id="vessel-tonnage" value="{{ vessel_prefill.tonnage | default('') }}" style="padding:8px; width:100%;">
                             </div>
                             <div>
                                 <div class="dev-tag">dev:vessel-net-tonnage</div>
                                 <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">Net/Register Tonnage</label>
-                                <input type="text" id="vessel-net-tonnage" style="padding:8px; width:100%;">
+                                <input type="text" id="vessel-net-tonnage" value="{{ vessel_prefill.netTonnage | default('') }}" style="padding:8px; width:100%;">
                             </div>
                             <div>
                                 <div class="dev-tag">dev:vessel-callsign</div>
                                 <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">Call Sign</label>
-                                <input type="text" id="vessel-callsign" style="padding:8px; width:100%;">
+                                <input type="text" id="vessel-callsign" value="{{ vessel_prefill.callSign | default('') }}" style="padding:8px; width:100%;">
                             </div>
                             <div>
                                 <div class="dev-tag">dev:vessel-mmsi</div>
                                 <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">MMSI Number</label>
-                                <input type="text" id="vessel-mmsi" style="padding:8px; width:100%;">
+                                <input type="text" id="vessel-mmsi" value="{{ vessel_prefill.mmsi | default('') }}" style="padding:8px; width:100%;">
                             </div>
                             <div>
                                 <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">Vessel Hull Number</label>
-                                <input type="text" id="vessel-hull-number" style="padding:8px; width:100%;">
+                                <input type="text" id="vessel-hull-number" value="{{ vessel_prefill.hullNumber | default('') }}" style="padding:8px; width:100%;">
                             </div>
                             <div>
                                 <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">Starboard Engine Brand/Model/Size</label>
-                                <input type="text" id="vessel-starboard-engine" style="padding:8px; width:100%;">
+                                <input type="text" id="vessel-starboard-engine" value="{{ vessel_prefill.starboardEngine | default('') }}" style="padding:8px; width:100%;">
                             </div>
                             <div>
                                 <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">Starboard Engine S/N</label>
-                                <input type="text" id="vessel-starboard-sn" style="padding:8px; width:100%;">
+                                <input type="text" id="vessel-starboard-sn" value="{{ vessel_prefill.starboardEngineSn | default('') }}" style="padding:8px; width:100%;">
                             </div>
                             <div>
                                 <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">Port Engine Brand/Model/Size</label>
-                                <input type="text" id="vessel-port-engine" style="padding:8px; width:100%;">
+                                <input type="text" id="vessel-port-engine" value="{{ vessel_prefill.portEngine | default('') }}" style="padding:8px; width:100%;">
                             </div>
                             <div>
                                 <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">Port Engine S/N</label>
-                                <input type="text" id="vessel-port-sn" style="padding:8px; width:100%;">
+                                <input type="text" id="vessel-port-sn" value="{{ vessel_prefill.portEngineSn | default('') }}" style="padding:8px; width:100%;">
                             </div>
                             <div>
                                 <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">RIB S/N</label>
-                                <input type="text" id="vessel-rib-sn" style="padding:8px; width:100%;">
+                                <input type="text" id="vessel-rib-sn" value="{{ vessel_prefill.ribSn | default('') }}" style="padding:8px; width:100%;">
                             </div>
                         </div>
                                 </div>
                             </div>
                 <div class="collapsible" style="margin-bottom:15px;">
-                    <div class="col-header crew-med-header" data-sidebar-id="crew-info" onclick="toggleSection(this)" style="background:#e8f7ef; border:1px solid #c8e8d6; justify-content:flex-start;">
+                    <div class="col-header crew-med-header" data-sidebar-id="crew-info" onclick="toggleSection(this)" style="background:#e8f7ef; border:1px solid #c8e8d6; justify-content:flex-start; align-items:center;">
                         <span class="dev-tag">dev:crew-info-shell</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Crew Information</span>
+                        <div id="crew-sort-wrap" style="display:none; margin-left:auto;" onclick="event.stopPropagation();" onmousedown="event.stopPropagation();">
+                            <select id="crew-sort" onchange="event.stopPropagation(); loadData()" onclick="event.stopPropagation();" onmousedown="event.stopPropagation();" style="padding:8px; font-size:13px;">
+                                <option value="last">Sort: Last Name</option>
+                                <option value="first">Sort: First Name</option>
+                                <option value="birthdate-asc">Sort: Birthdate (Youngest First)</option>
+                                <option value="birthdate-desc">Sort: Birthdate (Oldest First)</option>
+                            </select>
+                        </div>
                     </div>
                     <div class="col-body" style="padding:15px; background:#f7fffb; border:1px solid #c8e8d6; border-top:none;">
                         <div class="collapsible" style="margin-bottom:15px;">
@@ -891,7 +855,7 @@
                                 </div>
                             <div style="display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap:8px; margin-bottom:8px; font-size:15px;">
                                 <div><div class="dev-tag">dev:crew-add-phone</div><label style="font-size:13px; margin-bottom:2px;">Cell/WhatsApp</label><input type="text" id="cn-phone" placeholder="+1234567890" style="padding:6px; width:100%;"></div>
-                                <div><div class="dev-tag">dev:crew-add-passport-photo</div><label style="font-size:13px; margin-bottom:2px;">Passport Photo/PDF</label><input type="file" id="cn-passport-photo" accept="image/*,.pdf" style="padding:4px; width:100%; font-size:13px;"></div>
+                                <div><div class="dev-tag">dev:crew-add-passport-photo</div><label style="font-size:13px; margin-bottom:2px;">Passport Head Shot Photo/PDF</label><input type="file" id="cn-passport-photo" accept="image/*,.pdf" style="padding:4px; width:100%; font-size:13px;"></div>
                                 <div><div class="dev-tag">dev:crew-add-passport-page</div><label style="font-size:13px; margin-bottom:2px;">Passport Page Photo/PDF</label><input type="file" id="cn-passport-page" accept="image/*,.pdf" style="padding:4px; width:100%; font-size:13px;"></div>
                             </div>
                             <div style="margin-bottom:8px;"><label style="font-size:12px; font-weight:bold;">Emergency Contact</label></div>
@@ -937,45 +901,29 @@
                 <div class="panel-wrapper">
                     <div class="collapsible" style="margin-bottom:12px;">
                         <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                            <span class="dev-tag">dev:settings-workspace</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Workspace</span>
-                        </div>
-                        <div class="col-body" style="padding:12px; background:#f8f9fa;">
-                            <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-bottom:10px;">
-                                <label style="display:flex; align-items:center; gap:6px; font-weight:700;">
-                                    <input type="checkbox" id="workspaces_enabled" onchange="scheduleAutoSave('workspace-toggle')">
-                                    Enable workspaces
-                                </label>
-                                <div style="display:flex; align-items:center; gap:8px;">
-                                    <span style="font-weight:700;">Active workspace when disabled:</span>
-                                    <select id="workspaces_active_label" style="padding:8px; min-width:180px; display:none;" onchange="scheduleAutoSave('workspace-active')"></select>
-                                </div>
-                            </div>
-                            <div id="workspace-switch-row" style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
-                                Loading workspaces…
-                            </div>
-                            <div id="workspace-switch-status" style="margin-top:8px; font-size:12px; color:#555;"></div>
-                            <div style="margin-top:6px; font-size:12px; color:#666;">Switching workspace will log you out and reload the app with isolated data for that workspace.</div>
-                        </div>
-                    </div>
-                    <div class="collapsible" style="margin-bottom:12px;">
-                        <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
                             <span class="dev-tag">dev:settings-offline</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Offline Readiness</span>
+                            <span id="offline-meta" style="margin-left:auto; font-size:12px; color:#4a5568;"></span>
                         </div>
                         <div class="col-body" style="padding:12px; background:#f8f9fa;">
                             <div id="offline-status" style="font-size:13px; color:#2c3e50; margin-bottom:10px;">Not checked yet.</div>
                             <div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:8px;">
-                                <button class="btn btn-sm" style="background:var(--inquiry);" onclick="runOfflineCheck(false)">Check cache status</button>
-                                <button class="btn btn-sm" style="background:#1f2d3d;" onclick="runOfflineCheck(true)">Download missing models</button>
-                                <button class="btn btn-sm" style="background:#00695c;" onclick="createOfflineBackup()">Backup cache</button>
-                                <button class="btn btn-sm" style="background:#8e44ad;" onclick="restoreOfflineBackup()">Restore last backup</button>
+                                <button id="offline-check-btn" class="btn btn-sm" style="background:var(--inquiry);" onclick="runOfflineCheck(false)">Check cache status</button>
+                                <button id="offline-download-btn" class="btn btn-sm" style="background:#1f2d3d;" onclick="runOfflineCheck(true)">Download missing models</button>
+                                <button id="offline-backup-btn" class="btn btn-sm" style="background:#00695c;" onclick="createOfflineBackup()">Backup cache</button>
+                                <button id="offline-restore-btn" class="btn btn-sm" style="background:#8e44ad;" onclick="restoreOfflineBackup()">Restore last backup</button>
                                 <button id="offline-flag-btn" class="btn btn-sm" style="background:#b26a00;" onclick="toggleOfflineFlags()">Enable offline flags</button>
                             </div>
+                            <label style="display:flex; align-items:center; gap:8px; font-size:12px; color:#333; margin-bottom:6px;">
+                                <input type="checkbox" id="offline-force-flags" onclick="toggleOfflineFlags(this.checked)" />
+                                Keep offline flags enabled until I turn them off
+                            </label>
                             <div style="font-size:12px; color:#555;">Ensures all required models are cached and lets you back up/restore the cache before going offline.</div>
                         </div>
                     </div>
                     <div class="collapsible" style="margin-bottom:12px;">
                         <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
                             <span class="dev-tag">dev:settings-vax-types</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Vaccine Type Dropdown</span>
+                            <span id="vax-meta" style="margin-left:auto; font-size:12px; color:#4a5568;"></span>
                         </div>
                         <div class="col-body" style="padding:12px; background:#f8f9fa; display:none;">
                             <div style="margin-bottom:8px; font-size:12px; color:#2c3e50;">Manage the Vaccine Type/Disease options shown in Crew Vaccines. An "Other" option is always available for ad-hoc entries.</div>
@@ -985,12 +933,13 @@
                             </div>
                             <div class="dev-tag" style="margin-bottom:6px;">dev:settings-vax-list</div>
                             <div id="vaccine-types-list"></div>
-                            <div id="vaccine-types-status" style="margin-top:8px; font-size:12px; color:#555;">Saved with workspace settings.</div>
+                            <div id="vaccine-types-status" style="margin-top:8px; font-size:12px; color:#555;">Saved with app settings.</div>
                         </div>
                     </div>
                     <div class="collapsible" style="margin-bottom:12px;">
                         <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
                             <span class="dev-tag">dev:settings-pharmacy-labels</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Pharmaceutical User Labels</span>
+                            <span id="pharm-meta" style="margin-left:auto; font-size:12px; color:#4a5568;"></span>
                         </div>
                         <div class="col-body" style="padding:12px; background:#f8f9fa; display:none;">
                             <div style="margin-bottom:8px; font-size:12px; color:#2c3e50;">Define the User Labels used on Pharmaceuticals. These power the dropdown next to Verified in the Medical Chest.</div>
@@ -1000,7 +949,7 @@
                             </div>
                             <div class="dev-tag" style="margin-bottom:6px;">dev:settings-pharmacy-label-list</div>
                             <div id="pharmacy-labels-list"></div>
-                            <div id="pharmacy-labels-status" style="margin-top:8px; font-size:12px; color:#555;">Saved with workspace settings.</div>
+                            <div id="pharmacy-labels-status" style="margin-top:8px; font-size:12px; color:#555;">Saved with app settings.</div>
                         </div>
                     </div>
                     <div class="collapsible developer-only" style="margin-bottom:12px; display:none;">
@@ -1008,7 +957,7 @@
                             <span class="dev-tag">dev:settings-default-export</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Export Default Dataset (Dev)</span>
                         </div>
                         <div class="col-body" style="padding:12px; background:#f8f9fa;">
-                            <div style="margin-bottom:8px; font-size:12px; color:#555;">Exports the current workspace data as default JSON files into <code>data/default/</code>.</div>
+                            <div style="margin-bottom:8px; font-size:12px; color:#555;">Exports the current data as default JSON files into <code>data/default/</code>.</div>
                             <button class="btn btn-sm" style="background:#0b8457;" onclick="exportDefaultDataset()">Export JSON Defaults</button>
                             <div id="default-export-status" style="margin-top:8px; font-size:12px; color:#555;"></div>
                         </div>
@@ -1016,6 +965,7 @@
                     <div class="collapsible" style="margin-bottom:12px;">
                         <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
                             <span class="dev-tag">dev:settings-usermode</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">User Mode</span>
+                            <span id="user-mode-meta" style="margin-left:auto; font-size:12px; color:#4a5568;"></span>
                         </div>
                         <div class="col-body" style="padding:12px; background:#f8f9fa;">
                             <label for="user_mode">User Mode</label>
@@ -1035,6 +985,7 @@
                     <div class="collapsible">
                     <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
                         <span class="dev-tag">dev:settings-crew-creds</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Crew Login Credentials</span>
+                        <span id="crew-creds-meta" style="margin-left:auto; font-size:12px; color:#4a5568;"></span>
                     </div>
                         <div class="col-body" style="padding:12px; background:#f8f9fa;">
                             <div id="crew-credentials"></div>
@@ -1043,6 +994,7 @@
                     <div class="collapsible" style="margin-top:12px;">
                         <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
                             <span class="dev-tag">dev:settings-models</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">MedGemma Model Parameters</span>
+                            <span id="model-meta" style="margin-left:auto; font-size:12px; color:#4a5568;"></span>
                         </div>
                         <div class="col-body" style="padding:12px; background:#f8f9fa;">
                             <div class="collapsible" style="margin-bottom:12px;">
@@ -1165,7 +1117,7 @@
             <div class="phone-import-frame">
                 <div class="phone-import-frame-title">Import photos</div>
                 <button class="btn" style="background:var(--inquiry);" onclick="importPhoneMedicinePhotos()" data-med-photo-mode-label>Import photos</button>
-                <div id="phone-photo-status" style="font-size:12px; color:#555; margin-top:6px;">Reads packaging, creates inventory item, stores photo in record.</div>
+                <div id="phone-photo-status" style="font-size:12px; color:#555; margin-top:6px;">Reads packaging, creates inventory item, and discards the photo after import.</div>
             </div>
         </div>
     </div>
@@ -1183,26 +1135,31 @@
             <input id="db-upload-input" type="file" accept=".db" style="display:none;" onchange="uploadDbFile(event)">
             <button class="btn" style="background:#2e7d32; color:#fff;" onclick="createNewDb()">Create new database</button>
         </div>
-        <div style="font-size:12px; color:#5b6675;">Uploaded files replace the current database. Creating new will seed default workspaces.</div>
+        <div style="font-size:12px; color:#5b6675;">Uploaded files replace the current database. Creating new will seed the default dataset.</div>
     </div>
 </div>
 
-<div id="chat-blocker">
-    <div class="modal">
-        <div class="spinner"></div>
-        <h3>Processing Triage Chat…</h3>
+    <div id="chat-blocker">
+        <div class="modal">
+            <div class="spinner"></div>
+            <h3>Processing Triage Chat…</h3>
         <p id="chat-model-line" style="margin:6px 0; font-weight:700; color:#122b4d;">Model: …</p>
         <p id="chat-eta-line" style="margin:0 0 8px 0; color:#2c3e50;">ETA: calculating…</p>
         <p>Please wait. Navigation or edits in SailingMedAdvisor are temporarily paused until this response completes.</p>
+        </div>
     </div>
-</div>
 
-<script src="/static/js/chat.js?v=2017"></script>
-<script src="/static/js/crew.js?v=2025"></script>
+    <script>
+        // Preload vessel data from server-rendered context to avoid empty fields if API fetch is delayed or fails
+        window.VESSEL_PREFILL = {{ vessel_prefill|tojson|safe }};
+    </script>
+    <script src="/static/js/utils.js?v=2027"></script>
+    <script src="/static/js/chat.js?v=2017"></script>
+    <script src="/static/js/crew.js?v=2045"></script>
 <script src="/static/js/pharmacy.js?v=2026"></script>
 <script src="/static/js/equipment.js?v=2038"></script>
 <script src="/static/js/settings.js?v=2026"></script>
-<script src="/static/js/main.js?v=2021"></script>
+    <script src="/static/js/main.js?v=2024"></script>
 <script>
     function showDbModal(message) {
         const modal = document.getElementById('db-modal');

@@ -1,84 +1,19 @@
-// Pharmacy inventory management
+/*
+File: static/js/pharmacy.js
+Author notes: Client-side controller for the Medical Chest (pharmaceuticals).
+I handle rendering, edits, autosave, WHO imports, expiry tracking, and
+single-card expansion behavior.
+*/
 
 let pharmacyCache = [];
 const pharmacySaveTimers = {};
 const DEFAULT_USER_LABELS = ['Antibiotic', 'Analgesic', 'Cardiac', 'Respiratory', 'Gastrointestinal', 'Endocrine', 'Emergency'];
 let pharmacyLabelsCache = null;
-let WHO_RECOMMENDED_MEDS = [
-    {
-        id: 'who-1',
-        genericName: 'Amoxicillin',
-        alsoKnownAs: 'Trimox, Amoxil',
-        formStrength: 'Capsule, 500 mg',
-        indications: 'Broad-spectrum antibiotic for common infections on board',
-        contraindications: 'Penicillin allergy',
-        consultDoctor: 'If severe infection or allergy history',
-        adultDosage: '500 mg every 8 hours for 5–7 days (per infection protocol)',
-        unwantedEffects: 'Rash, diarrhoea',
-        remarks: 'First-line oral antibiotic',
-    },
-    {
-        id: 'who-2',
-        genericName: 'Ciprofloxacin',
-        alsoKnownAs: 'Cipro',
-        formStrength: 'Tablet, 500 mg',
-        indications: 'GI/urinary infections when culture not available',
-        contraindications: 'Pregnancy, tendon disorders',
-        consultDoctor: 'If QT risk or major comorbidities',
-        adultDosage: '500 mg every 12 hours',
-        unwantedEffects: 'Nausea, tendon pain',
-        remarks: 'Reserve for indicated cases',
-    },
-    {
-        id: 'who-3',
-        genericName: 'Paracetamol',
-        alsoKnownAs: 'Acetaminophen',
-        formStrength: 'Tablet, 500 mg',
-        indications: 'Pain, fever',
-        contraindications: 'Severe liver disease',
-        consultDoctor: 'If fever >48h or hepatic disease',
-        adultDosage: '500–1000 mg every 6–8 hours (max 4 g/day)',
-        unwantedEffects: 'Rare at normal dose; hepatic injury if overdosed',
-        remarks: 'Preferred first-line analgesic/antipyretic',
-    },
-    {
-        id: 'who-4',
-        genericName: 'Ibuprofen',
-        alsoKnownAs: 'Advil, Nurofen',
-        formStrength: 'Tablet, 400 mg',
-        indications: 'Pain, inflammation',
-        contraindications: 'Peptic ulcer, renal impairment',
-        consultDoctor: 'If renal disease or anticoagulants',
-        adultDosage: '400 mg every 6–8 hours with food',
-        unwantedEffects: 'GI upset, renal stress',
-        remarks: 'Use with food; avoid prolonged use',
-    },
-    {
-        id: 'who-5',
-        genericName: 'Salbutamol',
-        alsoKnownAs: 'Albuterol',
-        formStrength: 'Inhaler, 100 mcg per dose',
-        indications: 'Bronchospasm/asthma',
-        contraindications: 'Severe tachyarrhythmia',
-        consultDoctor: 'If no relief after 2–3 doses',
-        adultDosage: '1–2 puffs every 4–6 hours as needed',
-        unwantedEffects: 'Tremor, tachycardia',
-        remarks: 'Ensure spacer use if available',
-    },
-];
-
-function workspaceHeaders(extra = {}) {
-    const label = (window.WORKSPACE_LABEL || localStorage.getItem('workspace_label') || '').trim();
-    const headers = { ...extra };
-    if (label) {
-        headers['x-workspace'] = label;
-        headers['x-workspace-slug'] = label;
-    }
-    return headers;
-}
+let WHO_RECOMMENDED_MEDS = [];
+let whoMedLoaded = false;
 
 function fetchInventory(options = {}) {
-    const headers = workspaceHeaders(options.headers || {});
+    const headers = { ...(options.headers || {}) };
     return fetch('/api/data/inventory', { credentials: 'same-origin', ...options, headers });
 }
 
@@ -142,10 +77,10 @@ async function ensurePharmacyLabels() {
     }
     if (pharmacyLabelsCache && pharmacyLabelsCache.length) return pharmacyLabelsCache;
     try {
-        const res = await fetch('/api/data/settings', { credentials: 'same-origin' });
-        if (res.ok) {
-            const s = await res.json();
-            pharmacyLabelsCache = normalizeUserLabels(s.pharmacy_labels);
+        const url = '/api/data/settings';
+        const data = await fetchJson(url);
+        if (data && Array.isArray(data.pharmacy_labels)) {
+            pharmacyLabelsCache = normalizeUserLabels(data.pharmacy_labels);
         }
     } catch (err) {
         console.warn('[pharmacy] failed to load user labels, using defaults', err);
@@ -233,18 +168,21 @@ function toggleCustomSortField() {
 }
 
 function ensurePurchaseDefaults(p, open = false) {
+    // Normalize a purchase/expiry entry and keep manufacturer/batch alongside the expiry.
     return {
         id: p.id || `ph-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
         date: p.date || '',
         quantity: p.quantity || '',
         notes: p.notes || '',
-        photos: Array.isArray(p.photos) ? p.photos : [],
+        manufacturer: p.manufacturer || '',
+        batchLot: p.batchLot || '',
         _open: open
     };
 }
 
 function ensurePharmacyDefaults(item) {
-    return {
+    // Normalize a med record; if legacy top-level manufacturer/batch exists, push into first expiry row.
+    const med = {
         id: item.id || `med-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
         genericName: item.genericName || '',
         brandName: item.brandName || '',
@@ -255,26 +193,31 @@ function ensurePharmacyDefaults(item) {
         unit: item.unit || '',
         storageLocation: item.storageLocation || '',
         expiryDate: item.expiryDate || '',
-        batchLot: item.batchLot || '',
         controlled: !!item.controlled,
-        manufacturer: item.manufacturer || '',
         primaryIndication: item.primaryIndication || '',
         allergyWarnings: item.allergyWarnings || '',
         standardDosage: item.standardDosage || '',
         sortCategory: item.sortCategory || '',
         verified: !!item.verified,
-        photos: Array.isArray(item.photos) ? item.photos : [],
         purchaseHistory: Array.isArray(item.purchaseHistory)
             ? item.purchaseHistory.map(ensurePurchaseDefaults)
             : [ensurePurchaseDefaults({})],
         source: item.source || '',
         photoImported: !!item.photoImported,
-        photoDataUrls: Array.isArray(item.photoDataUrls) ? item.photoDataUrls : [],
         excludeFromResources: Boolean(item.excludeFromResources),
     };
+    // Backfill manufacturer/batchLot into first purchase entry if present on legacy record
+    if (item.manufacturer && med.purchaseHistory.length && !med.purchaseHistory[0].manufacturer) {
+        med.purchaseHistory[0].manufacturer = item.manufacturer;
+    }
+    if (item.batchLot && med.purchaseHistory.length && !med.purchaseHistory[0].batchLot) {
+        med.purchaseHistory[0].batchLot = item.batchLot;
+    }
+    return med;
 }
 
 function scheduleSaveMedication(id, rerender = false) {
+    // Debounce saves so quick typing doesn't flood the backend; rerender when structure changes.
     if (pharmacySaveTimers[id]) {
         clearTimeout(pharmacySaveTimers[id]);
     }
@@ -293,7 +236,7 @@ function getMedicationDisplayName(med) {
         primary = med.primaryIndication || med.manufacturer || 'Medication';
     }
     const showBrand = brand && !isPlaceholder(brand) && brand.toLowerCase() !== primary.toLowerCase();
-    return `${primary}${showBrand ? ' — ' + brand : ''}`;
+    return `${primary}${showBrand ? ' - ' + brand : ''}`;
 }
 
 function getExpiryDate(med) {
@@ -355,6 +298,7 @@ async function loadPharmacy() {
     const list = document.getElementById('pharmacy-list');
     if (!list) return;
     await ensurePharmacyLabels();
+    await loadWhoMedsFromServer();
     populateNewMedUserLabelSelect();
     observePharmacyList();
     list.innerHTML = '<div style="color:#666;">Loading inventory...</div>';
@@ -409,35 +353,31 @@ function renderPharmacy(items, openIds = [], textHeights = {}) {
 }
 
 function renderPurchaseRows(med) {
+    // Each expiry row now carries manufacturer + batch/lot so those details stay tied to specific stock.
     const rows = med.purchaseHistory.length ? med.purchaseHistory : [ensurePurchaseDefaults({}, true)];
     return rows
         .map((p) => {
-            const photos = (p.photos || []).map(
-                (src, idx) => `
-                    <div style="display:flex; flex-direction:column; gap:4px; align-items:flex-start; border:1px solid #e0e0e0; padding:6px; border-radius:4px; background:#f9fbff;">
-                        <div style="font-size:12px; font-weight:600;">Photo ${idx + 1}</div>
-                        <img src="${src}" data-src="${src}" alt="Photo ${idx + 1}" loading="lazy" style="max-width:120px; max-height:120px; border:1px solid #ccc; border-radius:4px; cursor:pointer;" onclick="window.open('${src}','_blank')" onerror="pharmacyPhotoFallback(this, '${med.id}', ${idx}, '${src}')">
-                        <button class="btn btn-sm" style="background:var(--red);" onclick="removePurchasePhoto('${med.id}', '${p.id}', ${idx}); return false;">🗑 Delete</button>
-                    </div>`
-            );
             return `
                 <div class="purchase-row" data-med-id="${med.id}" data-ph-id="${p.id || ''}" style="border:1px solid #d9e5f7; padding:10px; border-radius:6px; margin-bottom:10px; background:#f5f9ff;">
                 <div style="display:grid; grid-template-columns: repeat(2, minmax(200px, 1fr)); gap:10px; align-items:center; margin-bottom:10px;">
                     <div style="display:flex; align-items:center; gap:8px;">
-                        <span class="ph-notes-toggle" style="cursor:pointer; font-weight:800; color:var(--dark);" onclick="togglePurchaseNotes(this)">${p._open ? '▾' : '▸'}</span>
+                        <span class="ph-notes-toggle" style="cursor:pointer; font-weight:800; color:var(--dark);" onclick="togglePurchaseNotes(this)">${p._open ? 'v' : '>'}</span>
                         <input type="date" class="ph-date" value="${p.date || ''}" style="padding:8px; font-size:14px; width:100%;" onchange="scheduleSaveMedication('${med.id}')" title="Expiry Date">
                     </div>
                     <input type="number" class="ph-qty" value="${p.quantity || ''}" placeholder="Qty" style="padding:8px; font-size:14px;" oninput="scheduleSaveMedication('${med.id}')" title="Quantity tied to this expiry">
                 </div>
+                <div style="display:grid; grid-template-columns: repeat(2, minmax(200px, 1fr)); gap:10px; align-items:center; margin-bottom:10px;">
+                    <div>
+                        <label style="font-weight:700; font-size:12px;">Manufacturer</label>
+                        <input type="text" class="ph-manufacturer" value="${p.manufacturer || ''}" placeholder="Manufacturer" style="padding:8px; font-size:14px; width:100%;" oninput="scheduleSaveMedication('${med.id}')">
+                    </div>
+                    <div>
+                        <label style="font-weight:700; font-size:12px;">Batch / Lot Number</label>
+                        <input type="text" class="ph-batch" value="${p.batchLot || ''}" placeholder="Batch or Lot" style="padding:8px; font-size:14px; width:100%;" oninput="scheduleSaveMedication('${med.id}')">
+                    </div>
+                </div>
                 <div class="ph-notes-container" style="margin-bottom:10px; display:${p._open ? 'block' : 'none'};">
                     <textarea class="ph-notes" placeholder="Notes (batch/lot/location)" style="width:100%; padding:8px; min-height:60px; font-size:14px;" oninput="scheduleSaveMedication('${med.id}')">${p.notes || ''}</textarea>
-                </div>
-                <div class="ph-photos-container" style="display:${p._open ? 'flex' : 'none'}; gap:10px; flex-wrap:wrap; align-items:flex-start; margin-top:6px;">
-                    ${photos.join('')}
-                    <div>
-                        <label style="font-size:12px; font-weight:700; display:block; margin-bottom:4px;">Add Photo</label>
-                        <input type="file" accept="image/*" onchange="uploadPurchasePhoto('${med.id}', '${p.id}')" style="font-size:12px;">
-                    </div>
                 </div>
                 <div style="display:flex; gap:10px; margin-top:10px; flex-wrap:wrap;">
                     <button class="btn btn-sm" style="background:var(--red);" onclick="deletePurchaseEntry('${med.id}')">Delete Expiry Entry</button>
@@ -448,6 +388,7 @@ function renderPurchaseRows(med) {
 }
 
 function renderMedicationCard(med, isOpen = true, textHeights = {}) {
+    // Render a single medication card with summary badges and collapsible details/expiry tracking.
     const currentQty = getCurrentQuantity(med);
     const lowStock = med.minThreshold && Number(currentQty) <= Number(med.minThreshold);
     const expiryDate = getExpiryDate(med);
@@ -459,7 +400,7 @@ function renderMedicationCard(med, isOpen = true, textHeights = {}) {
         lowStock ? 'Low Stock' : null,
         isExpired ? 'Expired' : null,
         !isExpired && expirySoon ? 'Expiring Soon' : null
-    ].filter(Boolean).join(' · ');
+    ].filter(Boolean).join(' - ');
     const displayName = getMedicationDisplayName(med);
     const strength = (med.strength || '').trim();
     const userLabelRender = renderUserLabelOptions(med.sortCategory || '');
@@ -467,7 +408,7 @@ function renderMedicationCard(med, isOpen = true, textHeights = {}) {
         ? `<span style="margin-left:8px; padding:2px 8px; border-radius:999px; background:rgba(46,125,50,0.12); color:var(--inquiry); font-size:11px; white-space:nowrap;">${escapeHtml(med.sortCategory.trim())}</span>`
         : '';
     const bodyDisplay = isOpen ? 'display:block;' : 'display:none;';
-    const arrow = isOpen ? '▾' : '▸';
+    const arrow = isOpen ? 'v' : '>';
     const headerBg = med.excludeFromResources ? '#ffecef' : '#eef7ff';
     const headerBorderColor = med.excludeFromResources ? '#ffcfe0' : '#c7ddff';
     const bodyBg = med.excludeFromResources ? '#fff6f6' : '#f7fff7';
@@ -479,32 +420,24 @@ function renderMedicationCard(med, isOpen = true, textHeights = {}) {
         ? `<span style="padding:2px 10px; border-radius:999px; background:var(--inquiry); color:#fff; font-size:11px; white-space:nowrap;">Verified</span>`
         : `<span style="padding:2px 10px; border-radius:999px; background:transparent; color:var(--inquiry); font-size:11px; white-space:nowrap; border:1px dashed #b2c7b5;">Not Verified</span>`;
     const doseHeight = textHeights[`dose-${med.id}`] ? `height:${textHeights[`dose-${med.id}`]};` : '';
-    const photoThumbs = (med.photos || []).map(
-        (src, idx) => `
-            <div style="display:flex; flex-direction:column; gap:4px; align-items:flex-start; border:1px solid #e0e0e0; padding:6px; border-radius:4px; background:#f9fbff;">
-                <div style="font-size:12px; font-weight:600;">Photo ${idx + 1}</div>
-                <img src="${src}" data-src="${src}" alt="Photo ${idx + 1}" loading="lazy" style="max-width:120px; max-height:120px; border:1px solid #ccc; border-radius:4px; cursor:pointer;" onclick="window.open('${src}','_blank')" onerror="pharmacyPhotoFallback(this, '${med.id}', ${idx}, '${src}')">
-                <button class="btn btn-sm" style="background:var(--red);" onclick="removeMedicationPhoto('${med.id}', ${idx}); return false;">🗑 Delete</button>
-            </div>`
-    );
     return `
             <div class="collapsible history-item">
         <div class="col-header crew-med-header" onclick="toggleCrewSection(this)" style="justify-content:flex-start; align-items:center; background:${headerBg}; border:1px solid ${headerBorderColor}; padding:8px 12px;">
             <span class="dev-tag">dev:med-card</span>
-            <span class="toggle-label history-arrow" style="font-size:18px; margin-right:8px;">${arrow}</span>
+            <span class="toggle-label history-arrow" style="font-size:18px; margin-right:8px;" data-collapse-group="pharmacy">${arrow}</span>
             <span style="flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:700;">
-                ${displayName}${strength ? ' — ' + strength : ''}
+                ${displayName}${strength ? ' - ' + strength : ''}
             </span>
             ${labelChip}
             ${headerNote ? `<span class="sidebar-pill" style="margin-right:8px; background:${lowStock ? '#ffebee' : '#fff7e0'}; color:${lowStock ? '#c62828' : '#b26a00'};">${headerNote}</span>` : ''}
-            <button onclick="event.stopPropagation(); deleteMedication('${med.id}')" class="btn btn-sm history-action-btn" style="background:var(--red); visibility:hidden;">🗑 Delete Medication</button>
+            <button onclick="event.stopPropagation(); deleteMedication('${med.id}')" class="btn btn-sm history-action-btn" style="background:var(--red); visibility:hidden;">Delete Delete Medication</button>
             <div style="display:flex; align-items:center; gap:6px; margin-left:8px;">${verifiedBadge}${availabilityBadge}</div>
         </div>
         <div class="col-body" data-med-id="${med.id}" style="padding:12px; background:${bodyBg}; border:1px solid ${bodyBorderColor}; border-radius:6px; ${bodyDisplay}">
             <div class="collapsible" style="margin-bottom:10px;">
                 <div class="col-header crew-med-header" onclick="toggleMedDetails(this)" style="background:#fff; justify-content:flex-start; align-items:center;">
                     <span class="dev-tag">dev:med-details</span>
-                    <span class="detail-icon history-arrow" style="font-size:16px; margin-right:8px;">▾</span>
+                    <span class="detail-icon history-arrow" style="font-size:16px; margin-right:8px;">v</span>
                     <span style="font-weight:700;">Medication Details</span>
                 </div>
             <div class="col-body" style="padding:10px; display:block;" id="details-${med.id}">
@@ -557,19 +490,11 @@ function renderMedicationCard(med, isOpen = true, textHeights = {}) {
                             <input id="loc-${med.id}" type="text" value="${med.storageLocation}" placeholder="Locker A, Fridge" style="width:100%; padding:8px;" oninput="scheduleSaveMedication('${med.id}')">
                         </div>
                         <div>
-                            <label style="font-weight:700; font-size:12px;">Batch/Lot Number</label>
-                            <input id="batch-${med.id}" type="text" value="${med.batchLot}" style="width:100%; padding:8px;" oninput="scheduleSaveMedication('${med.id}')">
-                        </div>
-                        <div>
                             <label style="font-weight:700; font-size:12px;">Controlled Substance?</label>
                             <select id="ctrl-${med.id}" style="width:100%; padding:8px;" onchange="scheduleSaveMedication('${med.id}')">
                                 <option value="false" ${!med.controlled ? 'selected' : ''}>No</option>
                                 <option value="true" ${med.controlled ? 'selected' : ''}>Yes</option>
                             </select>
-                        </div>
-                        <div>
-                            <label style="font-weight:700; font-size:12px;">Manufacturer</label>
-                            <input id="manu-${med.id}" type="text" value="${med.manufacturer}" style="width:100%; padding:8px;" oninput="scheduleSaveMedication('${med.id}')">
                         </div>
                         <div>
                             <label style="font-weight:700; font-size:12px;">Primary Indication</label>
@@ -582,15 +507,6 @@ function renderMedicationCard(med, isOpen = true, textHeights = {}) {
                         <div style="grid-column: span 2;">
                             <label style="font-weight:700; font-size:12px;">Standard Dosage (adult reference)</label>
                             <textarea id="dose-${med.id}" style="width:100%; padding:8px; min-height:60px; ${doseHeight}" oninput="scheduleSaveMedication('${med.id}')">${med.standardDosage || ''}</textarea>
-                        </div>
-                    </div>
-                    <div style="margin:10px 0; border-top:1px solid #d0dff5; padding-top:10px;">
-                        <div style="display:flex; gap:8px; align-items:center; font-weight:800; color:var(--dark); margin-bottom:6px;">
-                            <span>Medicine Photos</span>
-                            <span class="dev-tag">dev:med-photos</span>
-                        </div>
-                        <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-start;">
-                            ${photoThumbs.length ? photoThumbs.join('') : '<div style="font-size:12px; color:#666;">No photos linked.</div>'}
                         </div>
                     </div>
                 </div>
@@ -631,6 +547,24 @@ function renderWhoMedList() {
             </label>
         `;
     }).join('') || '<div style="color:#666;">WHO list unavailable.</div>';
+}
+
+async function loadWhoMedsFromServer() {
+    if (whoMedLoaded) return;
+    setWhoMedStatus('Loading WHO ship medicine list...');
+    try {
+        const res = await fetch('/api/who/medicines', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error(`Status ${res.status}`);
+        const data = await res.json();
+        WHO_RECOMMENDED_MEDS = Array.isArray(data) ? data : [];
+        whoMedLoaded = true;
+        renderWhoMedList();
+        setWhoMedStatus(`Loaded ${WHO_RECOMMENDED_MEDS.length} WHO medicine(s).`);
+    } catch (err) {
+        whoMedLoaded = false;
+        renderWhoMedList();
+        setWhoMedStatus(`WHO list unavailable: ${err.message}`, true);
+    }
 }
 
 function parseWHOListText(text) {
@@ -784,19 +718,13 @@ function addPurchaseEntry(medId) {
     row.innerHTML = `
         <div style="display:grid; grid-template-columns: repeat(2, minmax(200px, 1fr)); gap:10px; align-items:center; margin-bottom:10px;">
             <div style="display:flex; align-items:center; gap:8px;">
-                <span class="ph-notes-toggle" style="cursor:pointer; font-weight:800; color:var(--dark);" onclick="togglePurchaseNotes(this)">▾</span>
+                <span class="ph-notes-toggle" style="cursor:pointer; font-weight:800; color:var(--dark);" onclick="togglePurchaseNotes(this)">v</span>
                 <input type="date" class="ph-date" style="padding:8px; font-size:14px; width:100%;" onchange="scheduleSaveMedication('${medId}')" title="Expiry Date">
             </div>
             <input type="number" class="ph-qty" placeholder="Qty" style="padding:8px; font-size:14px;" oninput="scheduleSaveMedication('${medId}')" title="Quantity tied to this expiry">
         </div>
         <div class="ph-notes-container" style="margin-bottom:10px; display:block;">
             <textarea class="ph-notes" placeholder="Notes (batch/lot/location)" style="width:100%; padding:8px; min-height:60px; font-size:14px;" oninput="scheduleSaveMedication('${medId}')"></textarea>
-        </div>
-        <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-start;">
-            <div>
-                <label style="font-size:12px; font-weight:700; display:block; margin-bottom:4px;">Add Photo</label>
-                <button class="btn btn-sm" style="background:var(--dark);" onclick="uploadPurchasePhoto('${medId}', '${newPhId}')">Upload Photo</button>
-            </div>
         </div>
     `;
     container.appendChild(row);
@@ -824,9 +752,7 @@ async function saveMedication(id, rerender = false) {
     med.minThreshold = document.getElementById(`min-${id}`)?.value || '';
     med.unit = document.getElementById(`unit-${id}`)?.value || '';
     med.storageLocation = document.getElementById(`loc-${id}`)?.value || '';
-    med.batchLot = document.getElementById(`batch-${id}`)?.value || '';
     med.controlled = (document.getElementById(`ctrl-${id}`)?.value || 'false') === 'true';
-    med.manufacturer = document.getElementById(`manu-${id}`)?.value || '';
     med.primaryIndication = document.getElementById(`ind-${id}`)?.value || '';
     med.allergyWarnings = document.getElementById(`alg-${id}`)?.value || '';
     med.standardDosage = document.getElementById(`dose-${id}`)?.value || '';
@@ -836,6 +762,15 @@ async function saveMedication(id, rerender = false) {
     med.sortCategory = sortVal === '__custom' ? sortCustom : sortVal || sortCustom || '';
     med.verified = !!document.getElementById(`ver-${id}`)?.checked;
     med.purchaseHistory = collectPurchaseEntries(id);
+    // Keep top-level manufacturer/batch in sync with first purchase entry for compatibility
+    if (med.purchaseHistory.length) {
+        const first = med.purchaseHistory[0];
+        med.manufacturer = first.manufacturer || '';
+        med.batchLot = first.batchLot || '';
+    } else {
+        med.manufacturer = '';
+        med.batchLot = '';
+    }
 
     // Optimistic rerender before saving to backend for instant UI feedback
     pharmacyCache = meds;
@@ -853,15 +788,13 @@ function collectPurchaseEntries(medId) {
     if (!container) return [];
     return Array.from(container.querySelectorAll('.purchase-row')).map((row) => {
         const phId = row.dataset.phId || `ph-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-        // Preserve photos from cache if present
-        const med = pharmacyCache.find((m) => m.id === container.id.replace('ph-', ''));
-        const existing = (med?.purchaseHistory || []).find((p) => p.id === phId);
         return {
             id: phId,
             date: row.querySelector('.ph-date')?.value || '',
             quantity: row.querySelector('.ph-qty')?.value || '',
             notes: row.querySelector('.ph-notes')?.value || '',
-            photos: existing && Array.isArray(existing.photos) ? existing.photos : [],
+            manufacturer: row.querySelector('.ph-manufacturer')?.value || '',
+            batchLot: row.querySelector('.ph-batch')?.value || '',
         };
     });
 }
@@ -896,15 +829,6 @@ async function deletePurchaseEntry(medId) {
         rows[0].querySelector('.ph-date').value = '';
         rows[0].querySelector('.ph-qty').value = '';
         rows[0].querySelector('.ph-notes').value = '';
-        // Clear photos
-        const phId = rows[0].dataset.phId;
-        if (phId) {
-            const med = pharmacyCache.find((m) => m.id === medId);
-            if (med) {
-                const ph = med.purchaseHistory.find((p) => p.id === phId);
-                if (ph) ph.photos = [];
-            }
-        }
     } else {
         rows[rows.length - 1].remove();
     }
@@ -929,103 +853,12 @@ async function addMedication() {
     loadPharmacy();
 }
 
-function uploadPurchasePhoto(medId, phId) {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'image/*';
-    input.onchange = () => {
-        const file = input.files[0];
-        if (!file) return;
-        if (file.size > 5 * 1024 * 1024) {
-            alert('File must be under 5MB');
-            return;
-        }
-        const reader = new FileReader();
-        reader.onload = async (e) => {
-            const base64 = e.target.result;
-            const data = await (await fetchInventory()).json();
-            const meds = Array.isArray(data) ? data.map(ensurePharmacyDefaults) : [];
-            const med = meds.find((m) => m.id === medId);
-            if (!med) return alert('Medication not found');
-            const ph = med.purchaseHistory.find((p) => p.id === phId) || ensurePurchaseDefaults({ id: phId });
-            ph.photos = ph.photos || [];
-            ph.photos.push(base64);
-            if (!med.purchaseHistory.find((p) => p.id === phId)) {
-                med.purchaseHistory.push(ph);
-            }
-            await fetchInventory({
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(meds),
-            });
-            loadPharmacy();
-        };
-        reader.readAsDataURL(file);
-    };
-    input.click();
-}
-
-async function removePurchasePhoto(medId, phId, idx) {
-    const data = await (await fetchInventory()).json();
-    const meds = Array.isArray(data) ? data.map(ensurePharmacyDefaults) : [];
-    const med = meds.find((m) => m.id === medId);
-    if (!med) return;
-    const ph = med.purchaseHistory.find((p) => p.id === phId);
-    if (!ph) return;
-    ph.photos = (ph.photos || []).filter((_, i) => i !== idx);
-    await fetchInventory({
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(meds),
-    });
-    loadPharmacy();
-}
-
-async function removeMedicationPhoto(medId, idx) {
-    const data = await (await fetchInventory()).json();
-    const meds = Array.isArray(data) ? data.map(ensurePharmacyDefaults) : [];
-    const med = meds.find((m) => m.id === medId);
-    if (!med) return;
-    med.photos = (med.photos || []).filter((_, i) => i !== idx);
-    if (Array.isArray(med.photoDataUrls)) {
-        med.photoDataUrls = med.photoDataUrls.filter((_, i) => i !== idx);
-    }
-    await fetchInventory({
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(meds),
-    });
-    loadPharmacy();
-}
-
-function pharmacyPhotoFallback(img, medId, idx = -1, originalSrc = '') {
-    const med = pharmacyCache.find((m) => m.id === medId);
-    if (!med || !Array.isArray(med.photoDataUrls)) return;
-    const photos = Array.isArray(med.photos) ? med.photos : [];
-    let targetIdx = Number.isFinite(idx) ? Number(idx) : -1;
-    const resolvedSrc = originalSrc || (img ? img.getAttribute('data-src') || img.src : '');
-    if (targetIdx < 0 && resolvedSrc) {
-        targetIdx = photos.findIndex((p) => p === resolvedSrc);
-    }
-    if (targetIdx < 0 || targetIdx >= med.photoDataUrls.length) return;
-    const dataUrl = med.photoDataUrls[targetIdx];
-    if (!dataUrl) return;
-    if (img) {
-        img.onerror = null;
-        img.src = dataUrl;
-    }
-}
-
 // Expose for inline handlers
 window.loadPharmacy = loadPharmacy;
 window.addMedication = addMedication;
 window.saveMedication = saveMedication;
 window.deleteMedication = deleteMedication;
 window.addPurchaseEntry = addPurchaseEntry;
-window.uploadPurchasePhoto = uploadPurchasePhoto;
-window.removePurchasePhoto = removePurchasePhoto;
-window.removeMedicationPhoto = removeMedicationPhoto;
-window.pharmacyPhotoFallback = pharmacyPhotoFallback;
 window.scheduleSaveMedication = scheduleSaveMedication;
 window.refreshPharmacyLabelsFromSettings = refreshPharmacyLabelsFromSettings;
 window.sortPharmacyList = function(mode) {
@@ -1038,19 +871,17 @@ window.toggleMedDetails = function(el) {
     const icon = el.querySelector('.detail-icon');
     const isExpanded = body && body.style.display === 'block';
     if (body) body.style.display = isExpanded ? 'none' : 'block';
-    if (icon) icon.textContent = isExpanded ? '▸' : '▾';
+    if (icon) icon.textContent = isExpanded ? '>' : 'v';
 };
 window.deletePurchaseEntry = deletePurchaseEntry;
 window.togglePurchaseNotes = function(el) {
     const row = el.closest('.purchase-row');
     if (!row) return;
     const notes = row.querySelector('.ph-notes-container');
-    const photos = row.querySelector('.ph-photos-container');
     if (!notes) return;
     const isHidden = notes.style.display === 'none';
     notes.style.display = isHidden ? 'block' : 'none';
-    if (photos) photos.style.display = isHidden ? 'flex' : 'none';
-    el.textContent = isHidden ? '▾' : '▸';
+    el.textContent = isHidden ? 'v' : '>';
 };
 window.addWhoMeds = addWhoMeds;
 window.openWhoListFilePicker = openWhoListFilePicker;

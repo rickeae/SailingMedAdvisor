@@ -1,4 +1,10 @@
-// Chat/Triage functionality
+/*
+File: static/js/chat.js
+Author notes: Front-end for MedGemma chat (Triage + Inquiry). Handles prompt
+build, patient context, history display, and UI states like logging/privacy.
+*/
+
+const escapeHtml = (window.Utils && window.Utils.escapeHtml) ? window.Utils.escapeHtml : (str) => str;
 
 let isPrivate = false;
 let lastPrompt = '';
@@ -11,8 +17,10 @@ const LOGGING_MODE_KEY = 'sailingmed:loggingOff';
 const PROMPT_PREVIEW_STATE_KEY = 'sailingmed:promptPreviewOpen';
 const PROMPT_PREVIEW_CONTENT_KEY = 'sailingmed:promptPreviewContent';
 const CHAT_STATE_KEY = 'sailingmed:chatState';
+const SKIP_LAST_CHAT_KEY = 'sailingmed:skipLastChat';
 let triageSamples = [];
 let chatMetrics = {}; // { model: {count, total_ms, avg_ms}}
+let triageOptions = {};
 
 async function loadChatMetrics() {
     try {
@@ -26,23 +34,15 @@ async function loadChatMetrics() {
     }
 }
 
-function escapeHtml(str) {
-    return (str || '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-}
-
 async function loadTriageSamples() {
     if (triageSamples.length) return triageSamples;
     try {
-        const res = await fetch('/static/data/triage_samples.json', { cache: 'no-store' });
+        const res = await fetch('/api/triage/samples', { cache: 'no-store', credentials: 'same-origin' });
         if (!res.ok) throw new Error(`Status ${res.status}`);
         triageSamples = await res.json();
         const select = document.getElementById('triage-sample-select');
         if (select && Array.isArray(triageSamples)) {
+            select.innerHTML = '<option value=\"\">Select a Test Case</option>';
             triageSamples.forEach((s) => {
                 const opt = document.createElement('option');
                 opt.value = String(s.id);
@@ -54,6 +54,40 @@ async function loadTriageSamples() {
         console.warn('Unable to load triage samples', err);
     }
     return triageSamples;
+}
+
+async function loadTriageOptions() {
+    if (Object.keys(triageOptions).length) return triageOptions;
+    try {
+        const res = await fetch('/api/triage/options', { credentials: 'same-origin', cache: 'no-store' });
+        if (!res.ok) throw new Error(`Status ${res.status}`);
+        triageOptions = await res.json();
+    } catch (err) {
+        console.warn('Unable to load triage options', err);
+        triageOptions = {};
+    }
+    const fields = [
+        'triage-consciousness',
+        'triage-breathing-status',
+        'triage-pain-level',
+        'triage-main-problem',
+        'triage-temperature',
+        'triage-circulation',
+        'triage-cause',
+    ];
+    fields.forEach((field) => {
+        const select = document.getElementById(field);
+        if (!select) return;
+        const opts = triageOptions[field] || Array.from(select.options).map((o) => o.value).filter(Boolean);
+        select.innerHTML = '<option value=\"\">Select...</option>';
+        opts.forEach((val) => {
+            const opt = document.createElement('option');
+            opt.value = val;
+            opt.textContent = val;
+            select.appendChild(opt);
+        });
+    });
+    return triageOptions;
 }
 
 function setSelectValue(selectEl, value) {
@@ -399,6 +433,7 @@ async function runChat(promptText = null, force28b = false) {
             if (res.model && res.model_metrics) {
                 chatMetrics[res.model] = res.model_metrics;
             }
+            try { localStorage.setItem(SKIP_LAST_CHAT_KEY, '0'); } catch (err) { /* ignore */ }
             if (typeof loadData === 'function') {
                 loadData(); // refresh crew history/logs after a chat completes
             }
@@ -476,6 +511,8 @@ function restoreLast() {
 document.addEventListener('DOMContentLoaded', () => {
     console.log('[DEBUG] chat.js DOMContentLoaded');
     setupPromptInjectionPanel();
+    loadTriageOptions();
+    loadTriageSamples();
     const msgTextarea = document.getElementById('msg');
     if (msgTextarea) {
         msgTextarea.addEventListener('keydown', (e) => {
@@ -720,9 +757,10 @@ function clearDisplay() {
         const confirmed = confirm('Logging is OFF. Clear this response? It has not been saved.');
         if (!confirmed) return;
     } else {
-        alert('Cleared. Logged responses are available under the crew member in Crew Log & Health.');
+        alert('The previous response has been cleared. Previous responses that were logged are organized by Crew Member name in the Consultation Log.');
     }
     display.innerHTML = '';
+    try { localStorage.setItem(SKIP_LAST_CHAT_KEY, '1'); } catch (err) { /* ignore */ }
 }
 
 // Expose inline handlers

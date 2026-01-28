@@ -1,4 +1,9 @@
-// Settings and configuration management
+/*
+File: static/js/settings.js
+Author notes: Settings UI controller. I load/save config to the backend, manage
+lookup lists, offline readiness checks, and keep live status badges in the
+Settings headers so the operator always sees current state.
+*/
 
 const DEFAULT_SETTINGS = {
     triage_instruction: "Act as Lead Clinician. Priority: Life-saving protocols. Format: ## ASSESSMENT, ## PROTOCOL.",
@@ -16,18 +21,16 @@ const DEFAULT_SETTINGS = {
     med_photo_prompt: "You are a pharmacy intake assistant on a sailing vessel. Look at the medication photo and return JSON only with keys: generic_name, brand_name, form, strength, expiry_date, batch_lot, storage_location, manufacturer, indication, allergy_warnings, dosage, notes.",
     vaccine_types: ["MMR", "DTaP", "HepB", "HepA", "Td/Tdap", "Influenza", "COVID-19"],
     pharmacy_labels: ["Antibiotic", "Analgesic", "Cardiac", "Respiratory", "Gastrointestinal", "Endocrine", "Emergency"],
-    workspaces_enabled: true,
-    workspaces_active_label: "Rick"
+    offline_force_flags: false
 };
 
 let settingsDirty = false;
 let settingsLoaded = false;
 let settingsAutoSaveTimer = null;
-let workspaceListLoaded = false;
 let offlineStatusCache = null;
-let cachedWorkspaceNames = [];
 let vaccineTypeList = [...DEFAULT_SETTINGS.vaccine_types];
 let pharmacyLabelList = [...DEFAULT_SETTINGS.pharmacy_labels];
+let offlineInitialized = false;
 
 function setUserMode(mode) {
     const body = document.body;
@@ -42,9 +45,69 @@ function setUserMode(mode) {
     document.querySelectorAll('.developer-only').forEach(el => {
         el.style.display = normalized === 'developer' ? '' : 'none';
     });
+    // Ensure triage sample inline respects user mode on load
+    try {
+        const triageHeader = document.getElementById('query-form-header');
+        if (triageHeader && typeof toggleSection === 'function') {
+            // Force a refresh of inline display based on current state and mode
+            const body = triageHeader.nextElementSibling;
+            const isExpanded = body && body.style.display !== 'none';
+            const icon = triageHeader.querySelector('.detail-icon');
+            if (icon && isExpanded) icon.textContent = '▾';
+            if (icon && !isExpanded) icon.textContent = '▸';
+            const sampleInline = triageHeader.querySelector('.triage-sample-inline');
+            if (sampleInline) {
+                const isAdvanced = normalized === 'advanced' || normalized === 'developer';
+                sampleInline.style.display = (isExpanded && isAdvanced) ? 'flex' : 'none';
+            }
+        }
+    } catch (err) { /* ignore */ }
+    updateSettingsMeta(window.CACHED_SETTINGS || {});
     try {
         localStorage.setItem('user_mode', normalized);
     } catch (err) { /* ignore */ }
+}
+
+function updateSettingsMeta(settings = {}) {
+    const isAdvanced = document.body.classList.contains('mode-advanced') || document.body.classList.contains('mode-developer');
+    // Offline meta
+    const offlineEl = document.getElementById('offline-meta');
+    if (offlineEl) {
+        const flagsOn = !!settings.offline_force_flags;
+        if (isAdvanced && offlineStatusCache) {
+            const cached = offlineStatusCache.cached_models || 0;
+            offlineEl.textContent = `Cached models: ${cached} | Flags ${flagsOn ? 'ON' : 'OFF'}`;
+        } else {
+            const mode = (offlineStatusCache && offlineStatusCache.offline_mode) || flagsOn ? 'Offline' : 'Online';
+            offlineEl.textContent = `Mode: ${mode}`;
+        }
+    }
+    // Vaccine types
+    const vaxEl = document.getElementById('vax-meta');
+    if (vaxEl) vaxEl.textContent = `${vaccineTypeList.length} types`;
+    // Pharmacy labels
+    const pharmEl = document.getElementById('pharm-meta');
+    if (pharmEl) pharmEl.textContent = `${pharmacyLabelList.length} labels`;
+    // User mode
+    const modeEl = document.getElementById('user-mode-meta');
+    if (modeEl) modeEl.textContent = `Mode: ${settings.user_mode || 'user'}`;
+    // Crew creds (updated when crew list loads)
+    // Model params
+    const modelEl = document.getElementById('model-meta');
+    if (modelEl) {
+        if (isAdvanced) {
+            const triTok = Number(settings.tr_tok || settings.tr_tok === 0 ? settings.tr_tok : DEFAULT_SETTINGS.tr_tok);
+            const inTok = Number(settings.in_tok || settings.in_tok === 0 ? settings.in_tok : DEFAULT_SETTINGS.in_tok);
+            modelEl.textContent = `Tokens - Triage: ${triTok} | Inquiry: ${inTok}`;
+        } else {
+            modelEl.textContent = '';
+        }
+    }
+}
+
+function updateCrewCredMeta(count) {
+    const el = document.getElementById('crew-creds-meta');
+    if (el) el.textContent = `${count} credentialed`;
 }
 
 function applySettingsToUI(data = {}) {
@@ -63,24 +126,22 @@ function applySettingsToUI(data = {}) {
             }
         }
     });
-    syncWorkspaceToggleUI(merged);
     setUserMode(merged.user_mode);
     try { localStorage.setItem('user_mode', merged.user_mode || 'user'); } catch (err) { /* ignore */ }
     window.CACHED_SETTINGS = merged;
     settingsDirty = false;
     settingsLoaded = true;
+    updateSettingsMeta(merged);
 }
 
 if (document.readyState !== 'loading') {
     applyStoredUserMode();
     loadSettingsUI().catch(() => {});
-    loadWorkspaceSwitcher().catch(() => {});
     bindSettingsDirtyTracking();
 } else {
     document.addEventListener('DOMContentLoaded', () => {
         applyStoredUserMode();
         loadSettingsUI().catch(() => {});
-        loadWorkspaceSwitcher().catch(() => {});
         bindSettingsDirtyTracking();
     }, { once: true });
 }
@@ -102,6 +163,7 @@ function bindSettingsDirtyTracking() {
                 // Keep developer-only components in sync
                 setUserMode(document.getElementById('user_mode')?.value || 'user');
             }
+            updateSettingsMeta(window.CACHED_SETTINGS || {});
         });
         el.addEventListener('change', () => {
             settingsDirty = true;
@@ -113,6 +175,7 @@ function bindSettingsDirtyTracking() {
             if (el.classList.contains('developer-only')) {
                 setUserMode(document.getElementById('user_mode')?.value || 'user');
             }
+            updateSettingsMeta(window.CACHED_SETTINGS || {});
         });
     });
 }
@@ -120,12 +183,8 @@ function bindSettingsDirtyTracking() {
 async function loadSettingsUI() {
     console.log('[settings] loadSettingsUI called');
     try {
-        const workspaceLabel = window.WORKSPACE_LABEL || localStorage.getItem('workspace_label') || '';
-        const url = workspaceLabel ? `/api/data/settings?workspace=${encodeURIComponent(workspaceLabel)}` : '/api/data/settings';
-        const res = await fetch(url, {
-            credentials: 'same-origin',
-            headers: workspaceLabel ? { 'x-workspace': workspaceLabel, 'x-workspace-slug': workspaceLabel } : {},
-        });
+        const url = '/api/data/settings';
+        const res = await fetch(url, { credentials: 'same-origin' });
         console.log('[settings] fetch response status:', res.status);
         if (!res.ok) throw new Error(`Settings load failed (${res.status})`);
         const s = await res.json();
@@ -133,6 +192,12 @@ async function loadSettingsUI() {
         applySettingsToUI(s);
         console.log('[settings] settings applied to UI');
         try { localStorage.setItem('user_mode', s.user_mode || 'user'); } catch (err) { /* ignore */ }
+        if (!offlineInitialized) {
+            offlineInitialized = true;
+            runOfflineCheck(false).catch((err) => {
+                renderOfflineStatus(`Offline check failed: ${err.message}`, true);
+            });
+        }
     } catch (err) {
         console.error('[settings] load error', err);
         alert(`Unable to load settings: ${err.message}`);
@@ -140,34 +205,6 @@ async function loadSettingsUI() {
             try { return localStorage.getItem('user_mode') || 'user'; } catch (e) { return 'user'; }
         })();
         applySettingsToUI({ ...DEFAULT_SETTINGS, user_mode: localMode });
-        if (String(err.message || '').toLowerCase().includes('workspace')) {
-            window.location.href = '/workspace';
-        }
-    }
-}
-
-function syncWorkspaceToggleUI(settings = {}) {
-    const enabled = settings.workspaces_enabled !== false;
-    const active = settings.workspaces_active_label || 'Rick';
-    const toggle = document.getElementById('workspaces_enabled');
-    const activeSel = document.getElementById('workspaces_active_label');
-    const switchRow = document.getElementById('workspace-switch-row');
-    const notice = document.getElementById('workspace-switch-status');
-    if (toggle) toggle.checked = enabled;
-    if (activeSel) activeSel.value = active;
-    if (switchRow) {
-        if (!enabled) {
-            switchRow.innerHTML = `<div style="font-size:13px; color:#2c3e50;">Workspaces disabled. Using <strong>${active}</strong>.</div>`;
-        } else if (!workspaceListLoaded) {
-            switchRow.innerHTML = 'Loading workspaces…';
-        }
-    }
-    if (notice && !enabled) {
-        notice.textContent = 'Workspaces are disabled. Enable to switch.';
-        notice.style.color = '#555';
-    }
-    if (activeSel) {
-        activeSel.style.display = enabled ? 'none' : 'inline-block';
     }
 }
 
@@ -192,30 +229,27 @@ function scheduleAutoSave(reason = 'auto') {
 
 async function saveSettings(showAlert = true, reason = 'manual') {
     try {
-    const workspaceLabel = window.WORKSPACE_LABEL || localStorage.getItem('workspace_label') || '';
-    const s = {};
-    const numeric = new Set(['tr_temp','tr_tok','tr_p','in_temp','in_tok','in_p','rep_penalty']);
-    ['triage_instruction','inquiry_instruction','tr_temp','tr_tok','tr_p','in_temp','in_tok','in_p','mission_context','rep_penalty','user_mode','med_photo_model','med_photo_prompt','workspaces_active_label'].forEach(k => {
-        const el = document.getElementById(k);
-        if (!el) return;
-        const val = el.type === 'checkbox' ? el.checked : el.value;
-        if (numeric.has(k)) {
-            const num = val === '' ? '' : Number(val);
-            s[k] = Number.isFinite(num) ? num : DEFAULT_SETTINGS[k];
-        } else {
-            s[k] = val;
-        }
-    });
-    s.workspaces_enabled = document.getElementById('workspaces_enabled')?.checked ?? DEFAULT_SETTINGS.workspaces_enabled;
-    s.vaccine_types = normalizeVaccineTypes(vaccineTypeList);
-    s.pharmacy_labels = normalizePharmacyLabels(pharmacyLabelList);
+        const s = {};
+        const numeric = new Set(['tr_temp','tr_tok','tr_p','in_temp','in_tok','in_p','rep_penalty']);
+        ['triage_instruction','inquiry_instruction','tr_temp','tr_tok','tr_p','in_temp','in_tok','in_p','mission_context','rep_penalty','user_mode','med_photo_model','med_photo_prompt'].forEach(k => {
+            const el = document.getElementById(k);
+            if (!el) return;
+            const val = el.type === 'checkbox' ? el.checked : el.value;
+            if (numeric.has(k)) {
+                const num = val === '' ? '' : Number(val);
+                s[k] = Number.isFinite(num) ? num : DEFAULT_SETTINGS[k];
+            } else {
+                s[k] = val;
+            }
+        });
+        const offlineToggle = document.getElementById('offline-force-flags');
+        if (offlineToggle) s.offline_force_flags = !!offlineToggle.checked;
+        s.vaccine_types = normalizeVaccineTypes(vaccineTypeList);
+        s.pharmacy_labels = normalizePharmacyLabels(pharmacyLabelList);
         console.log('[settings] saving', { reason, payload: s });
         updateSettingsStatus('Saving…', false);
         const headers = { 'Content-Type': 'application/json' };
-        if (workspaceLabel) {
-            headers['x-workspace'] = workspaceLabel;
-        }
-        const url = workspaceLabel ? `/api/data/settings?workspace=${encodeURIComponent(workspaceLabel)}` : '/api/data/settings';
+        const url = '/api/data/settings';
         const res = await fetch(url, {
             method:'POST',
             headers,
@@ -248,6 +282,7 @@ async function saveSettings(showAlert = true, reason = 'manual') {
                 refreshPromptPreview(true);
             }
         }
+        updateSettingsMeta(updated);
     } catch (err) {
         if (showAlert) {
             alert(`Unable to save settings: ${err.message}`);
@@ -304,9 +339,9 @@ function renderVaccineTypes() {
                 <div style="width:28px; text-align:right; font-weight:700; color:#666;">${idx + 1}.</div>
                 <div style="flex:1; font-weight:600;">${v}</div>
                 <div style="display:flex; gap:6px; align-items:center;">
-                    <button class="btn btn-sm" style="background:#607d8b;" ${idx === 0 ? 'disabled' : ''} onclick="moveVaccineType(${idx}, -1)">↑</button>
-                    <button class="btn btn-sm" style="background:#607d8b;" ${idx === vaccineTypeList.length - 1 ? 'disabled' : ''} onclick="moveVaccineType(${idx}, 1)">↓</button>
-                    <button class="btn btn-sm" style="background:var(--red);" onclick="removeVaccineType(${idx})">🗑 Remove</button>
+                    <button class="btn btn-sm" style="background:#607d8b;" ${idx === 0 ? 'disabled' : ''} onclick="moveVaccineType(${idx}, -1)">Up</button>
+                    <button class="btn btn-sm" style="background:#607d8b;" ${idx === vaccineTypeList.length - 1 ? 'disabled' : ''} onclick="moveVaccineType(${idx}, 1)">Down</button>
+                    <button class="btn btn-sm" style="background:var(--red);" onclick="removeVaccineType(${idx})">Remove Remove</button>
                 </div>
             </div>
         `).join('');
@@ -375,9 +410,9 @@ function renderPharmacyLabels() {
                 <div style="width:28px; text-align:right; font-weight:700; color:#666;">${idx + 1}.</div>
                 <div style="flex:1; font-weight:600;">${v}</div>
                 <div style="display:flex; gap:6px; align-items:center;">
-                    <button class="btn btn-sm" style="background:#607d8b;" ${idx === 0 ? 'disabled' : ''} onclick="movePharmacyLabel(${idx}, -1)">↑</button>
-                    <button class="btn btn-sm" style="background:#607d8b;" ${idx === pharmacyLabelList.length - 1 ? 'disabled' : ''} onclick="movePharmacyLabel(${idx}, 1)">↓</button>
-                    <button class="btn btn-sm" style="background:var(--red);" onclick="removePharmacyLabel(${idx})">🗑 Remove</button>
+                    <button class="btn btn-sm" style="background:#607d8b;" ${idx === 0 ? 'disabled' : ''} onclick="movePharmacyLabel(${idx}, -1)">Up</button>
+                    <button class="btn btn-sm" style="background:#607d8b;" ${idx === pharmacyLabelList.length - 1 ? 'disabled' : ''} onclick="movePharmacyLabel(${idx}, 1)">Down</button>
+                    <button class="btn btn-sm" style="background:var(--red);" onclick="removePharmacyLabel(${idx})">Remove Remove</button>
                 </div>
             </div>
         `).join('');
@@ -431,6 +466,17 @@ function renderOfflineStatus(msg, isError = false) {
     box.innerHTML = msg;
 }
 
+function setOfflineControlsEnabled(enabled) {
+    ['offline-flag-btn', 'offline-download-btn', 'offline-check-btn', 'offline-backup-btn', 'offline-restore-btn'].forEach(id => {
+        const btn = document.getElementById(id);
+        if (btn) {
+            btn.disabled = !enabled;
+            btn.style.opacity = enabled ? '1' : '0.6';
+            btn.style.cursor = enabled ? 'pointer' : 'not-allowed';
+        }
+    });
+}
+
 async function createOfflineBackup() {
     renderOfflineStatus('Creating offline backup…');
     try {
@@ -470,7 +516,7 @@ function formatOfflineStatus(data) {
         .join('<br>');
     let note = '';
     if (missing.length) {
-        note = `<div style="color:var(--red); margin-top:6px;">Missing ${missing.length} model(s). Click “Download missing models” while online.</div>`;
+        note = `<div style="color:var(--red); margin-top:6px;">Missing ${missing.length} model(s). Click "Download missing models" while online.</div>`;
     } else {
         note = `<div style="color:var(--green); margin-top:6px;">All required models cached.</div>`;
     }
@@ -481,7 +527,7 @@ function formatOfflineStatus(data) {
     }
     const diskLine = disk.total_gb ? `<div style="margin-top:6px; font-size:12px;">Cache disk (${disk.path || ''}): ${disk.free_gb || '?'}GB free / ${disk.total_gb || '?'}GB total.</div>` : '';
     const howTo = `<div style="margin-top:8px; font-size:12px; color:#333;">
-<strong>Steps:</strong> 1) While online, click “Download missing models”. 2) Then click “Backup cache”. 3) Before sailing, set offline env flags and rerun “Check cache status”.<br>
+<strong>Steps:</strong> 1) While online, click "Download missing models". 2) Then click "Backup cache". 3) Before sailing, set offline env flags and rerun "Check cache status".<br>
 <strong>Required models:</strong> medgemma-1.5-4b-it, medgemma-27b-text-it, Qwen2.5-VL-7B-Instruct.
 </div>`;
     return (
@@ -496,24 +542,50 @@ function formatOfflineStatus(data) {
 
 function updateOfflineFlagButton() {
     const btn = document.getElementById('offline-flag-btn');
+    const chk = document.getElementById('offline-force-flags');
     if (!btn) return;
     const offline = offlineStatusCache ? !!offlineStatusCache.offline_mode : false;
     btn.textContent = offline ? 'Disable offline flags' : 'Enable offline flags';
     btn.style.background = offline ? '#555' : '#b26a00';
+    if (chk) chk.checked = offlineStatusCache ? !!(offlineStatusCache.env?.HF_HUB_OFFLINE === '1' || offlineStatusCache.offline_mode || DEFAULT_SETTINGS.offline_force_flags) : !!DEFAULT_SETTINGS.offline_force_flags;
 }
 
 async function runOfflineCheck(downloadMissing = false) {
     renderOfflineStatus(downloadMissing ? 'Checking and downloading missing models…' : 'Checking offline requirements…');
+    setOfflineControlsEnabled(false);
+    let spinner = null;
+    const start = Date.now();
+    if (downloadMissing) {
+        spinner = setInterval(() => {
+            const el = document.getElementById('offline-status');
+            if (!el) return;
+            const secs = Math.floor((Date.now() - start) / 1000);
+            const dots = '.'.repeat((secs % 3) + 1);
+            el.innerHTML = `Downloading missing models${dots}<br><small>${secs}s elapsed</small>`;
+        }, 500);
+    }
     try {
         const endpoint = downloadMissing ? '/api/offline/ensure' : '/api/offline/check';
         const res = await fetch(endpoint, { credentials: 'same-origin', method: downloadMissing ? 'POST' : 'GET' });
         const data = await res.json();
         if (!res.ok || data.error) throw new Error(data.error || `Status ${res.status}`);
         offlineStatusCache = data;
-        renderOfflineStatus(formatOfflineStatus(data));
+        let message = formatOfflineStatus(data);
+        if (downloadMissing && data.offline_mode) {
+            message += '<div style="margin-top:6px; color:#b26a00;">Offline flags are enabled; downloads were skipped. Temporarily disable offline flags while online to fetch models.</div>';
+        } else if (downloadMissing && data.missing && data.missing.length) {
+            message += '<div style="margin-top:6px; color:#b26a00;">Some models still missing. Stay online and try again.</div>';
+        } else if (downloadMissing && data.models && data.models.some(m => m.downloaded)) {
+            message += '<div style="margin-top:6px; color:var(--green);">Downloads completed.</div>';
+        }
+        renderOfflineStatus(message);
         updateOfflineFlagButton();
+        updateSettingsMeta(window.CACHED_SETTINGS || {});
     } catch (err) {
-        renderOfflineStatus(`Error: ${err.message}. If missing models persist, stay online and click “Download missing models”.`, true);
+        renderOfflineStatus(`Error: ${err.message}. If missing models persist, stay online and click "Download missing models".`, true);
+    } finally {
+        if (spinner) clearInterval(spinner);
+        setOfflineControlsEnabled(true);
     }
 }
 
@@ -534,112 +606,9 @@ async function toggleOfflineFlags(forceEnable) {
         offlineStatusCache = data;
         renderOfflineStatus(formatOfflineStatus(data));
         updateOfflineFlagButton();
+        updateSettingsMeta(window.CACHED_SETTINGS || {});
     } catch (err) {
         renderOfflineStatus(`Unable to set offline flags: ${err.message}`, true);
-    }
-}
-
-async function loadWorkspaceSwitcher() {
-    const row = document.getElementById('workspace-switch-row');
-    if (!row) return;
-    row.textContent = 'Loading workspaces…';
-    const status = document.getElementById('workspace-switch-status');
-    try {
-        const res = await fetch('/api/workspaces', { credentials: 'same-origin' });
-        const data = await res.json();
-        if (!res.ok || data.error) throw new Error(data.error || `Status ${res.status}`);
-        const names = (data.workspaces || []).slice().sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
-        cachedWorkspaceNames = names;
-        const current = data.current || '';
-        if (!names.length) {
-            row.innerHTML = '<div style="color:#666;">No workspaces configured.</div>';
-            return;
-        }
-        const cfg = window.CACHED_SETTINGS || DEFAULT_SETTINGS;
-        if (cfg.workspaces_enabled === false) {
-            row.innerHTML = `<div style=\"color:#2c3e50;\">Workspaces disabled. Using <strong>${cfg.workspaces_active_label || names[0]}</strong>.</div>`;
-        } else {
-            const select = document.createElement('select');
-            select.id = 'workspace-select';
-            select.style.padding = '10px';
-            select.style.minWidth = '200px';
-            names.forEach(n => {
-                const opt = document.createElement('option');
-                opt.value = n;
-                opt.textContent = n;
-                if (n === current) opt.selected = true;
-                select.appendChild(opt);
-            });
-            const pwd = document.createElement('input');
-            pwd.type = 'password';
-            pwd.id = 'workspace-switch-pwd';
-            pwd.placeholder = 'Workspace password';
-            pwd.style.padding = '10px';
-            pwd.style.minWidth = '180px';
-            pwd.value = 'Aphrodite';
-            const btn = document.createElement('button');
-            btn.className = 'btn btn-sm';
-            btn.style.background = 'var(--inquiry)';
-            btn.textContent = 'Switch workspace';
-            btn.onclick = switchWorkspaceFromSettings;
-            row.innerHTML = '';
-            row.appendChild(select);
-            row.appendChild(pwd);
-            row.appendChild(btn);
-        }
-        // Populate active workspace selector
-        const activeSel = document.getElementById('workspaces_active_label');
-        if (activeSel) {
-            activeSel.innerHTML = '';
-            names.forEach(n => {
-                const opt = document.createElement('option');
-                opt.value = n;
-                opt.textContent = n;
-                activeSel.appendChild(opt);
-            });
-            activeSel.value = (window.CACHED_SETTINGS && window.CACHED_SETTINGS.workspaces_active_label) || names[0];
-            activeSel.style.display = cfg.workspaces_enabled === false ? 'inline-block' : 'none';
-        }
-        workspaceListLoaded = true;
-    } catch (err) {
-        row.innerHTML = `<div style="color:var(--red);">Unable to load workspaces: ${err.message}</div>`;
-        if (status) {
-            status.textContent = 'Refresh the Settings tab to retry.';
-            status.style.color = 'var(--red)';
-        }
-        console.error('[settings] workspace load error', err);
-    }
-}
-
-async function switchWorkspaceFromSettings() {
-    const select = document.getElementById('workspace-select');
-    const pwdInput = document.getElementById('workspace-switch-pwd');
-    const status = document.getElementById('workspace-switch-status');
-    if (!select) return;
-    const chosen = select.value;
-    const pwdVal = (pwdInput?.value || '').trim() || 'Aphrodite';
-    status.textContent = '';
-    if (status) status.style.color = '#555';
-    const btn = select.nextElementSibling;
-    if (btn) btn.disabled = true;
-    try {
-        const res = await fetch('/workspace', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-            credentials: 'same-origin',
-            body: JSON.stringify({ workspace: chosen, password: pwdVal })
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || data.error) {
-            throw new Error(data.error || `Status ${res.status}`);
-        }
-        status.textContent = 'Switching workspace…';
-        window.location.href = '/login';
-    } catch (err) {
-        status.textContent = `Unable to switch: ${err.message}`;
-        status.style.color = 'var(--red)';
-        if (btn) btn.disabled = false;
-        console.error('[settings] switch workspace error', err);
     }
 }
 
@@ -683,51 +652,55 @@ async function loadCrewCredentials() {
         const data = await (await fetch('/api/data/patients', {credentials:'same-origin'})).json();
         if (!data || data.length === 0) {
             container.innerHTML = '<div style="color:#666;">No crew members found.</div>';
-            return;
-        }
-        const hasCreds = data.some(p => p.username || p.password);
-        if (!hasCreds) {
-            container.innerHTML = '<div style="color:#666;">No credentials assigned yet. To enable username/password login per crew, assign them below.</div>' +
-                data.map(p => `
-                    <div style="display:flex; gap:10px; align-items:center; margin-bottom:10px; flex-wrap:wrap;">
-                        <div style="min-width:180px; font-weight:bold;">${p.firstName || ''} ${p.lastName || p.name || ''}</div>
-                        <input type="text" id="cred-user-${p.id}" value="${p.username || ''}" placeholder="Username" style="padding:8px; flex:1; min-width:140px;">
-                        <input type="text" id="cred-pass-${p.id}" value="${p.password || ''}" placeholder="Password" style="padding:8px; flex:1; min-width:140px;">
-                        <button class="btn btn-sm" style="background:var(--inquiry);" onclick="saveCrewCredential('${p.id}')">Save</button>
-                    </div>
-                `).join('');
+            updateCrewCredMeta(0);
             return;
         }
         container.innerHTML = data.map(p => `
             <div style="display:flex; gap:10px; align-items:center; margin-bottom:10px; flex-wrap:wrap;">
                 <div style="min-width:180px; font-weight:bold;">${p.firstName || ''} ${p.lastName || p.name || ''}</div>
-                <input type="text" id="cred-user-${p.id}" value="${p.username || ''}" placeholder="Username" style="padding:8px; flex:1; min-width:140px;">
-                <input type="text" id="cred-pass-${p.id}" value="${p.password || ''}" placeholder="Password" style="padding:8px; flex:1; min-width:140px;">
-                <button class="btn btn-sm" style="background:var(--inquiry);" onclick="saveCrewCredential('${p.id}')">Save</button>
+                <input type="text" id="cred-user-${p.id}" value="${p.username || ''}" placeholder="Username" style="padding:8px; flex:1; min-width:140px;" oninput="debouncedSaveCred('${p.id}')">
+                <input type="text" id="cred-pass-${p.id}" value="${p.password || ''}" placeholder="Password" style="padding:8px; flex:1; min-width:140px;" oninput="debouncedSaveCred('${p.id}')">
+                <span id="cred-status-${p.id}" style="font-size:12px; color:#666;"></span>
             </div>
         `).join('');
+        const credCount = data.filter(p => (p.username || '').trim() || (p.password || '').trim()).length;
+        updateCrewCredMeta(credCount);
     } catch (err) {
         container.innerHTML = `<div style="color:red;">Error loading crew: ${err.message}</div>`;
+        updateCrewCredMeta(0);
     }
 }
 
 // Save a single crew credential
+const credSaveTimers = {};
 async function saveCrewCredential(id) {
     const userEl = document.getElementById(`cred-user-${id}`);
     const passEl = document.getElementById(`cred-pass-${id}`);
+    const statusEl = document.getElementById(`cred-status-${id}`);
     if (!userEl || !passEl) return;
+    statusEl.textContent = 'Saving…';
+    statusEl.style.color = '#666';
     try {
-        const data = await (await fetch('/api/data/patients', {credentials:'same-origin'})).json();
-        const patient = data.find(p => p.id === id);
-        if (!patient) throw new Error('Crew member not found');
-        patient.username = userEl.value;
-        patient.password = passEl.value;
-        const res = await fetch('/api/data/patients', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data), credentials:'same-origin'});
-        if (!res.ok) throw new Error(res.statusText || 'Save failed');
-        alert('Saved credentials for crew member.');
+        const res = await fetch('/api/crew/credentials', {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            credentials:'same-origin',
+            body: JSON.stringify({id, username: userEl.value, password: passEl.value})
+        });
+        const text = await res.text();
+        if (!res.ok) throw new Error(text || `Status ${res.status}`);
+        statusEl.textContent = 'Saved';
+        statusEl.style.color = '#2e7d32';
+        setTimeout(() => { if (statusEl.textContent === 'Saved') statusEl.textContent=''; }, 1500);
     } catch (err) {
-        alert(`Failed to save credentials: ${err.message}`);
+        statusEl.textContent = `Save failed: ${err.message}`;
+        statusEl.style.color = 'var(--red)';
     }
+}
+
+function debouncedSaveCred(id) {
+    clearTimeout(credSaveTimers[id]);
+    credSaveTimers[id] = setTimeout(() => saveCrewCredential(id), 400);
 }
 
 // Expose functions to window for inline onclick handlers

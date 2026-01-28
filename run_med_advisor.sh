@@ -39,4 +39,4 @@ else
     echo "🌐 LAN access: http://<this-machine-ip>:5000"
 fi
 echo "=================================================="
-uvicorn app:app --host 0.0.0.0 --port 5000
+python3 -m uvicorn app:app --host 0.0.0.0 --port 5000

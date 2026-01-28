@@ -1248,23 +1248,24 @@ function bindVesselAutosave() {
     });
 }
 
-function initVessel() {
-    if (typeof loadVesselInfo === 'function') {
-        console.log('[VESSEL] initVessel: loading initial data');
-        loadVesselInfo().catch(err => console.warn('[VESSEL] initial loadVesselInfo failed:', err));
-    }
+let vesselLoaded = false;
+async function ensureVesselLoaded() {
+    if (vesselLoaded) return;
+    vesselLoaded = true;
     bindVesselAutosave();
+    if (typeof loadVesselInfo === 'function') {
+        try {
+            await loadVesselInfo();
+        } catch (err) {
+            console.warn('[VESSEL] initial loadVesselInfo failed:', err);
+        }
+    }
     window.VESSEL_DEBUG = true;
     window.forceSaveVessel = saveVesselInfo;
-    console.log('[VESSEL] initVessel complete; VESSEL_DEBUG=true');
-}
-
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initVessel);
-} else {
-    initVessel();
+    console.log('[VESSEL] ensureVesselLoaded complete; VESSEL_DEBUG=true');
 }
 
 // Expose for other scripts
 window.loadVesselInfo = loadVesselInfo;
 window.saveVesselInfo = saveVesselInfo;
+window.ensureVesselLoaded = ensureVesselLoaded;

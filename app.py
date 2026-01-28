@@ -65,6 +65,8 @@ from db_store import (
     get_history_latency_metrics,
     get_context_payload,
     set_context_payload,
+    update_item_verified,
+    upsert_inventory_item,
 )
 
 logger = logging.getLogger("uvicorn.error")
@@ -1681,6 +1683,38 @@ async def delete_inventory_record(item_id: str, _=Depends(require_auth)):
         return {"status": "deleted", "id": item_id}
     except Exception:
         logger.exception("inventory delete failed", extra={"item_id": item_id, "db_path": str(DB_PATH)})
+        return JSONResponse({"error": "Server error"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.post("/api/data/inventory/{item_id}/verify")
+async def verify_inventory_record(item_id: str, request: Request, _=Depends(require_auth)):
+    """Toggle a single pharma item's verified flag without touching other records."""
+    try:
+        payload = await request.json()
+        flag = bool(payload.get("verified"))
+        ok = update_item_verified(item_id, flag)
+        if not ok:
+            return JSONResponse({"error": "Item not found"}, status_code=status.HTTP_404_NOT_FOUND)
+        return {"id": item_id, "verified": flag}
+    except Exception:
+        logger.exception("inventory verify toggle failed", extra={"item_id": item_id, "db_path": str(DB_PATH)})
+        return JSONResponse({"error": "Server error"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.put("/api/data/inventory/{item_id}")
+async def upsert_single_inventory(item_id: str, request: Request, _=Depends(require_auth)):
+    """Upsert a single pharma item and its expiries; avoids wiping the whole inventory."""
+    try:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            return JSONResponse({"error": "Payload must be an object"}, status_code=status.HTTP_400_BAD_REQUEST)
+        payload["id"] = item_id  # ensure path id wins
+        normalized = upsert_inventory_item(payload)
+        return normalized
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=status.HTTP_400_BAD_REQUEST)
+    except Exception:
+        logger.exception("inventory upsert failed", extra={"item_id": item_id, "db_path": str(DB_PATH)})
         return JSONResponse({"error": "Server error"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 

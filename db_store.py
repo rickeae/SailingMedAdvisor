@@ -227,6 +227,7 @@ def _init_db():
                 storageLocation TEXT,
                 subLocation TEXT,
                 status TEXT,
+                verified INTEGER DEFAULT 0,
                 expiryDate TEXT,
                 lastInspection TEXT,
                 batteryType TEXT,
@@ -558,14 +559,14 @@ def _maybe_migrate_items(conn, now):
             INSERT OR REPLACE INTO items(
                 id, itemType, name, genericName, brandName, alsoKnownAs, formStrength,
                 indications, contraindications, consultDoctor, adultDosage, pediatricDosage,
-                unwantedEffects, storageLocation, subLocation, status, expiryDate,
+                unwantedEffects, storageLocation, subLocation, status, verified, expiryDate,
                 lastInspection, batteryType, batteryStatus, calibrationDue, totalQty,
                 minPar, supplier, parentId, requiresPower, category, typeDetail, notes,
                 excludeFromResources, updated_at
             ) VALUES (
                 :id, :itemType, :name, :genericName, :brandName, :alsoKnownAs, :formStrength,
                 :indications, :contraindications, :consultDoctor, :adultDosage, :pediatricDosage,
-                :unwantedEffects, :storageLocation, :subLocation, :status, :expiryDate,
+                :unwantedEffects, :storageLocation, :subLocation, :status, :verified, :expiryDate,
                 :lastInspection, :batteryType, :batteryStatus, :calibrationDue, :totalQty,
                 :minPar, :supplier, :parentId, :requiresPower, :category, :typeDetail, :notes,
                 :excludeFromResources, :updated_at
@@ -588,6 +589,7 @@ def _maybe_migrate_items(conn, now):
                 "storageLocation": item.get("storageLocation"),
                 "subLocation": item.get("subLocation"),
                 "status": item.get("status"),
+                "verified": 1 if item.get("verified") else 0,
                 "expiryDate": item.get("expiryDate"),
                 "lastInspection": item.get("lastInspection"),
                 "batteryType": item.get("batteryType"),
@@ -1110,6 +1112,8 @@ def _upgrade_schema():
     try:
         with _conn() as conn:
             now = datetime.utcnow().isoformat()
+            _ensure_items_verified_column(conn)
+            _backfill_expiries_from_items(conn, now)
             _maybe_seed_triage(conn, now)
             _maybe_import_who_meds(conn, now)
             # Drop legacy documents tables if they linger
@@ -1118,6 +1122,54 @@ def _upgrade_schema():
             conn.commit()
     except Exception:
         pass
+
+
+def _ensure_items_verified_column(conn):
+    """Add verified flag to items table if missing; keep legacy DBs compatible."""
+    try:
+        cols = conn.execute("PRAGMA table_info(items)").fetchall()
+        names = {c["name"] for c in cols}
+        if "verified" not in names:
+            conn.execute("ALTER TABLE items ADD COLUMN verified INTEGER DEFAULT 0;")
+            conn.execute("UPDATE items SET verified=0 WHERE verified IS NULL;")
+    except Exception as exc:
+        logger.warning("Unable to add verified column: %s", exc)
+
+
+def _backfill_expiries_from_items(conn, now: str):
+    """
+    Legacy data sometimes stored a single expiryDate/totalQty on the item row.
+    Create a med_expiries row when none exist for that item so the UI sees it.
+    """
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, expiryDate, totalQty, notes, supplier
+            FROM items
+            WHERE itemType='pharma' AND IFNULL(expiryDate,'')!=''
+              AND id NOT IN (SELECT DISTINCT item_id FROM med_expiries)
+            """
+        ).fetchall()
+        for r in rows:
+            conn.execute(
+                """
+                INSERT INTO med_expiries(id, item_id, date, quantity, notes, manufacturer, batchLot, updated_at)
+                VALUES(:id, :item_id, :date, :quantity, :notes, :manufacturer, '', :updated_at)
+                """,
+                {
+                    "id": f"ph-{uuid.uuid4()}",
+                    "item_id": r["id"],
+                    "date": r["expiryDate"],
+                    "quantity": r["totalQty"],
+                    "notes": r["notes"],
+                    "manufacturer": r["supplier"],
+                    "updated_at": now,
+                },
+            )
+        if rows:
+            conn.commit()
+    except Exception as exc:
+        logger.warning("Unable to backfill expiry rows: %s", exc)
 
 
 def ensure_store(label: str, slug: str) -> Dict[str, Any]:
@@ -1575,6 +1627,7 @@ def _row_to_item(row):
         "type": d["typeDetail"],
         "notes": d["notes"],
         "excludeFromResources": bool(d["excludeFromResources"]),
+        "verified": bool(d.get("verified", 0)),
     }
     # for pharma, set type explicitly to 'pharma'
     if d["itemType"] == "pharma":
@@ -1585,6 +1638,7 @@ def _row_to_item(row):
 def get_inventory_items():
     # Pull pharma items plus their per-expiry rows; keep a dict keyed by item_id for quick attach.
     with _conn() as conn:
+        _ensure_items_verified_column(conn)
         rows = conn.execute("SELECT * FROM items WHERE itemType='pharma' ORDER BY updated_at DESC").fetchall()
         expiries = conn.execute(
             "SELECT id, item_id, date, quantity, notes, manufacturer, batchLot, updated_at FROM med_expiries"
@@ -1674,6 +1728,7 @@ def ensure_item_schema(item: dict, item_type: str, now: str) -> dict:
         "storageLocation": pick("storageLocation", default=""),
         "subLocation": pick("subLocation", default=""),
         "status": pick("status", default="In Stock"),
+        "verified": 1 if item.get("verified") else 0,
         "expiryDate": pick("expiryDate", default=""),
         "lastInspection": pick("lastInspection", default=""),
         "batteryType": pick("batteryType", default=""),
@@ -1706,20 +1761,51 @@ def set_inventory_items(items: list):
                 # Accept YYYY-MM-DD; store as-is if parsable by datetime.fromisoformat
                 datetime.fromisoformat(date_val)
             except Exception:
-                raise ValueError(f"Invalid expiry date for item {item_id}: {date_val}")
+                logger.warning("Invalid expiry date for item %s; clearing value: %s", item_id, date_val)
+                ph["date"] = ""
         qty = ph.get("quantity")
         if qty not in (None, ""):
             try:
                 qn = float(qty)
+                if qn < 0:
+                    raise ValueError()
             except Exception:
-                raise ValueError(f"Invalid quantity for item {item_id}: {qty}")
-            if qn < 0:
-                raise ValueError(f"Quantity cannot be negative for item {item_id}")
+                logger.warning("Invalid expiry quantity for item %s; clearing value: %s", item_id, qty)
+                ph["quantity"] = ""
+
+    def _purchase_history_rows(raw_item):
+        # Prefer structured purchaseHistory; if absent but a single expiryDate is provided,
+        # synthesize one row so legacy/manual forms still persist expiry data.
+        ph_list = raw_item.get("purchaseHistory") or raw_item.get("purchase_history") or []
+        if not ph_list and raw_item.get("expiryDate"):
+            ph_list = [
+                {
+                    "id": f"ph-{uuid.uuid4()}",
+                    "date": raw_item.get("expiryDate") or "",
+                    "quantity": raw_item.get("currentQuantity") or raw_item.get("totalQty") or "",
+                    "notes": raw_item.get("notes") or "",
+                    "manufacturer": raw_item.get("manufacturer") or "",
+                    "batchLot": raw_item.get("batchLot") or "",
+                }
+            ]
+        # Drop entirely empty rows (no date/qty/notes/manufacturer/batch)
+        filtered = []
+        for ph in ph_list:
+            if any([
+                (ph.get("date") or "").strip(),
+                (ph.get("quantity") or "").strip(),
+                (ph.get("notes") or "").strip(),
+                (ph.get("manufacturer") or "").strip(),
+                (ph.get("batchLot") or "").strip(),
+            ]):
+                filtered.append(ph)
+        return filtered
 
     for raw in items or []:
         normalized = ensure_item_schema(raw, "pharma", now)
         normalized_items.append(normalized)
-        for ph in raw.get("purchaseHistory") or []:
+        ph_rows = _purchase_history_rows(raw)
+        for ph in ph_rows:
             _validate_expiry(ph, normalized["id"])
             exp_rows.append(
                 {
@@ -1734,33 +1820,41 @@ def set_inventory_items(items: list):
                 }
             )
 
+    # Map item_id -> expiry rows so we can replace per-item without wiping others
+    exp_by_item = {}
+    for ph in exp_rows:
+        exp_by_item.setdefault(ph["item_id"], []).append(ph)
+
+    incoming_ids = {itm["id"] for itm in normalized_items}
+
     with _conn() as conn:
         try:
             conn.execute("BEGIN")
-            # Clear existing pharma rows atomically; only commit when all inserts succeed.
-            conn.execute("DELETE FROM items WHERE itemType='pharma'")
-            conn.execute("DELETE FROM med_expiries")
+            _ensure_items_verified_column(conn)
             for item in normalized_items:
                 _insert_item(conn, item, "pharma", now)
-            for ph in exp_rows:
-                conn.execute(
-                    """
-                    INSERT INTO med_expiries(
-                        id, item_id, date, quantity, notes, manufacturer, batchLot, updated_at
-                    ) VALUES (
-                        :id, :item_id, :date, :quantity, :notes, :manufacturer, :batchLot, :updated_at
+                ph_rows = exp_by_item.get(item["id"], [])
+                # Replace expiries for this item even if none submitted (clears deletions)
+                conn.execute("DELETE FROM med_expiries WHERE item_id=?", (item["id"],))
+                for ph in ph_rows:
+                    conn.execute(
+                        """
+                        INSERT INTO med_expiries(
+                            id, item_id, date, quantity, notes, manufacturer, batchLot, updated_at
+                        ) VALUES (
+                            :id, :item_id, :date, :quantity, :notes, :manufacturer, :batchLot, :updated_at
+                        )
+                        ON CONFLICT(id) DO UPDATE SET
+                            item_id=excluded.item_id,
+                            date=excluded.date,
+                            quantity=excluded.quantity,
+                            notes=excluded.notes,
+                            manufacturer=excluded.manufacturer,
+                            batchLot=excluded.batchLot,
+                            updated_at=excluded.updated_at;
+                        """,
+                        ph,
                     )
-                    ON CONFLICT(id) DO UPDATE SET
-                        item_id=excluded.item_id,
-                        date=excluded.date,
-                        quantity=excluded.quantity,
-                        notes=excluded.notes,
-                        manufacturer=excluded.manufacturer,
-                        batchLot=excluded.batchLot,
-                        updated_at=excluded.updated_at;
-                    """,
-                    ph,
-                )
             conn.commit()
         except Exception:
             conn.rollback()
@@ -1783,6 +1877,82 @@ def delete_inventory_item(item_id: str) -> bool:
     return cur.rowcount > 0
 
 
+def update_item_verified(item_id: str, verified: bool) -> bool:
+    """Lightweight toggle for a single item's verified flag."""
+    if not item_id:
+        return False
+    with _conn() as conn:
+        conn.execute("UPDATE items SET verified=? WHERE id=? AND itemType='pharma'", (1 if verified else 0, item_id))
+        conn.commit()
+        row = conn.execute("SELECT id FROM items WHERE id=? AND itemType='pharma'", (item_id,)).fetchone()
+        return bool(row)
+
+
+def upsert_inventory_item(item: dict) -> dict:
+    """Upsert a single pharma item and fully replace its expiry rows."""
+    now = datetime.utcnow().isoformat()
+    normalized = ensure_item_schema(item, "pharma", now)
+
+    def _validate_expiry(ph: dict):
+        date_val = ph.get("date") or ""
+        if date_val:
+            try:
+                datetime.fromisoformat(date_val)
+            except Exception:
+                ph["date"] = ""
+        qty = ph.get("quantity")
+        if qty not in (None, ""):
+            try:
+                qn = float(qty)
+                if qn < 0:
+                    raise ValueError()
+            except Exception:
+                ph["quantity"] = ""
+
+    exp_rows = []
+    for ph in item.get("purchaseHistory") or []:
+        _validate_expiry(ph)
+        exp_rows.append(
+            {
+                "id": ph.get("id") or f"ph-{uuid.uuid4()}",
+                "item_id": normalized["id"],
+                "date": ph.get("date"),
+                "quantity": ph.get("quantity"),
+                "notes": ph.get("notes"),
+                "manufacturer": ph.get("manufacturer"),
+                "batchLot": ph.get("batchLot"),
+                "updated_at": now,
+            }
+        )
+
+    with _conn() as conn:
+        conn.execute("BEGIN")
+        _ensure_items_verified_column(conn)
+        _insert_item(conn, normalized, "pharma", now)
+        conn.execute("DELETE FROM med_expiries WHERE item_id=?", (normalized["id"],))
+        for ph in exp_rows:
+            conn.execute(
+                """
+                INSERT INTO med_expiries(
+                    id, item_id, date, quantity, notes, manufacturer, batchLot, updated_at
+                ) VALUES (
+                    :id, :item_id, :date, :quantity, :notes, :manufacturer, :batchLot, :updated_at
+                )
+                ON CONFLICT(id) DO UPDATE SET
+                    item_id=excluded.item_id,
+                    date=excluded.date,
+                    quantity=excluded.quantity,
+                    notes=excluded.notes,
+                    manufacturer=excluded.manufacturer,
+                    batchLot=excluded.batchLot,
+                    updated_at=excluded.updated_at;
+                """,
+                ph,
+            )
+        conn.commit()
+    return normalized
+
+
 def get_tool_items():
     with _conn() as conn:
         rows = conn.execute("SELECT * FROM items WHERE itemType!='pharma' ORDER BY updated_at DESC").fetchall()
@@ -1792,6 +1962,7 @@ def get_tool_items():
 def set_tool_items(items: list):
     now = datetime.utcnow().isoformat()
     with _conn() as conn:
+        _ensure_items_verified_column(conn)
         conn.execute("DELETE FROM items WHERE itemType!='pharma'")
         for item in items or []:
             item_type = "consumable" if (item.get("type") or "").lower() == "consumable" else "equipment"
@@ -1805,14 +1976,14 @@ def _insert_item(conn, item: dict, item_type: str, updated_at: str):
         INSERT INTO items(
             id, itemType, name, genericName, brandName, alsoKnownAs, formStrength,
             indications, contraindications, consultDoctor, adultDosage, pediatricDosage,
-            unwantedEffects, storageLocation, subLocation, status, expiryDate,
+            unwantedEffects, storageLocation, subLocation, status, verified, expiryDate,
             lastInspection, batteryType, batteryStatus, calibrationDue, totalQty,
             minPar, supplier, parentId, requiresPower, category, typeDetail, notes,
             excludeFromResources, updated_at
         ) VALUES (
             :id, :itemType, :name, :genericName, :brandName, :alsoKnownAs, :formStrength,
             :indications, :contraindications, :consultDoctor, :adultDosage, :pediatricDosage,
-            :unwantedEffects, :storageLocation, :subLocation, :status, :expiryDate,
+            :unwantedEffects, :storageLocation, :subLocation, :status, :verified, :expiryDate,
             :lastInspection, :batteryType, :batteryStatus, :calibrationDue, :totalQty,
             :minPar, :supplier, :parentId, :requiresPower, :category, :typeDetail, :notes,
             :excludeFromResources, :updated_at
@@ -1833,6 +2004,7 @@ def _insert_item(conn, item: dict, item_type: str, updated_at: str):
             storageLocation=excluded.storageLocation,
             subLocation=excluded.subLocation,
             status=excluded.status,
+            verified=excluded.verified,
             expiryDate=excluded.expiryDate,
             lastInspection=excluded.lastInspection,
             batteryType=excluded.batteryType,
@@ -1866,6 +2038,7 @@ def _insert_item(conn, item: dict, item_type: str, updated_at: str):
             "storageLocation": item.get("storageLocation"),
             "subLocation": item.get("subLocation"),
             "status": item.get("status"),
+            "verified": 1 if item.get("verified") else 0,
             "expiryDate": item.get("expiryDate"),
             "lastInspection": item.get("lastInspection"),
             "batteryType": item.get("batteryType"),

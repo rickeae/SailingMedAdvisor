@@ -6,6 +6,8 @@ across pages. Keeps global behaviors lightweight and reusable.
 
 const SIDEBAR_STATE_KEY = 'sailingmed:sidebarCollapsed';
 let globalSidebarCollapsed = false;
+let crewDataLoaded = false;
+let crewDataPromise = null;
 
 function setSidebarState(collapsed) {
     globalSidebarCollapsed = !!collapsed;
@@ -27,25 +29,25 @@ function toggleSection(el) {
     const body = el.nextElementSibling;
     const icon = el.querySelector('.detail-icon');
     const isExpanded = body.style.display === "block";
-    body.style.display = isExpanded ? "none" : "block";
-    if (icon) icon.textContent = isExpanded ? "▸" : "▾";
+    const nextExpanded = !isExpanded;
+    body.style.display = nextExpanded ? "block" : "none";
+    if (icon) icon.textContent = nextExpanded ? "▾" : "▸";
     // Show/hide crew sort control only when crew list expanded
     const sortWrap = el.querySelector('#crew-sort-wrap');
     if (sortWrap) {
-        sortWrap.style.display = isExpanded ? "none" : "flex";
+        sortWrap.style.display = nextExpanded ? "flex" : "none";
     }
-    // Hide inline triage sample selector when collapsed
+    // Show inline triage sample selector only when expanded AND in advanced/developer mode
     const sampleInline = el.querySelector('.triage-sample-inline');
     if (sampleInline) {
         const isAdvanced = document.body.classList.contains('mode-advanced') || document.body.classList.contains('mode-developer');
-        // Always hide until DOMContentLoaded applies user mode; then re-check class
-        sampleInline.style.display = (isExpanded && isAdvanced) ? "flex" : "none";
+        sampleInline.style.display = (nextExpanded && isAdvanced) ? "flex" : "none";
     }
     if (el.dataset && el.dataset.sidebarId) {
-        syncSidebarSections(el.dataset.sidebarId, !isExpanded);
+        syncSidebarSections(el.dataset.sidebarId, nextExpanded);
     }
     if (el.dataset && el.dataset.prefKey) {
-        try { localStorage.setItem(el.dataset.prefKey, (!isExpanded).toString()); } catch (err) { /* ignore */ }
+        try { localStorage.setItem(el.dataset.prefKey, (!nextExpanded).toString()); } catch (err) { /* ignore */ }
     }
 }
 
@@ -54,9 +56,16 @@ function toggleDetailSection(el) {
     const body = el.nextElementSibling;
     const icon = el.querySelector('.detail-icon');
     const isExpanded = body.style.display === "block";
-    
-    body.style.display = isExpanded ? "none" : "block";
-    icon.textContent = isExpanded ? ">" : "v";
+    const nextExpanded = !isExpanded;
+    body.style.display = nextExpanded ? "block" : "none";
+    icon.textContent = nextExpanded ? "▾" : "▸";
+    // Handle prompt refresh inline visibility
+    const refreshInline = document.getElementById('prompt-refresh-inline');
+    if (refreshInline && el.id === 'prompt-preview-header') {
+        const isAdvanced = document.body.classList.contains('mode-advanced') || document.body.classList.contains('mode-developer');
+        refreshInline.style.display = nextExpanded && isAdvanced ? 'flex' : 'none';
+        el.setAttribute('aria-expanded', nextExpanded ? 'true' : 'false');
+    }
 }
 
 // Crew-specific toggle with icon change
@@ -137,6 +146,15 @@ function initSidebarSync() {
     });
 }
 
+async function ensureCrewData() {
+    if (crewDataLoaded) return;
+    if (crewDataPromise) return crewDataPromise;
+    crewDataPromise = loadData()
+        .then(() => { crewDataLoaded = true; crewDataPromise = null; })
+        .catch((err) => { crewDataPromise = null; throw err; });
+    return crewDataPromise;
+}
+
 // Tab navigation
 async function showTab(e, n) {
     console.log('[DEBUG] showTab ->', n);
@@ -160,16 +178,12 @@ async function showTab(e, n) {
         loadContext('Settings');
     } else if(n === 'CrewMedical' || n === 'VesselCrewInfo') { 
         try {
-            await loadData();
+            await ensureCrewData();
+            if (n === 'VesselCrewInfo' && typeof ensureVesselLoaded === 'function') {
+                await ensureVesselLoaded();
+            }
         } catch (err) {
             console.warn('[DEBUG] showTab loadData failed:', err);
-        }
-        if (typeof loadVesselInfo === 'function') {
-            try {
-                await loadVesselInfo();
-            } catch (err) {
-                console.warn('[DEBUG] showTab loadVesselInfo failed:', err);
-            }
         }
         loadContext(n);
     } else if (n === 'OnboardEquipment') {
@@ -185,6 +199,11 @@ async function showTab(e, n) {
         loadContext(n);
     }
     if (n === 'Chat') {
+        try {
+            await ensureCrewData();
+        } catch (err) {
+            console.warn('[DEBUG] Chat crew load failed:', err);
+        }
         loadContext('Chat');
         restoreCollapsibleState('query-form-header', true);
         // Prefetch prompt preview so it is ready when expanded
@@ -248,15 +267,8 @@ async function loadData() {
             return;
         }
         loadCrewData(data, history, settings || {});
+        crewDataLoaded = true;
 
-        // Also refresh vessel info so fields populate when the tab is opened
-        if (typeof loadVesselInfo === 'function') {
-            try {
-                await loadVesselInfo();
-            } catch (err) {
-                console.warn('[DEBUG] loadVesselInfo failed:', err);
-            }
-        }
     } catch (err) {
         console.error('[DEBUG] Failed to load crew data', err);
         window.CACHED_SETTINGS = window.CACHED_SETTINGS || {};
@@ -284,7 +296,20 @@ function toggleBannerControls(activeTab) {
 // Initialize on page load
 window.onload = () => { 
     console.log('[DEBUG] window.onload: start');
-    loadData(); 
+    ensureCrewData();
+    // Preload Medical Chest data so tab opens instantly.
+    if (typeof preloadPharmacy === 'function') {
+        preloadPharmacy().catch((err) => console.warn('[DEBUG] preloadPharmacy failed:', err));
+    }
+    if (typeof loadWhoMedsFromServer === 'function') {
+        loadWhoMedsFromServer().catch((err) => console.warn('[DEBUG] preload WHO meds failed:', err));
+    }
+    if (typeof ensurePharmacyLabels === 'function') {
+        ensurePharmacyLabels().catch((err) => console.warn('[DEBUG] preload pharmacy labels failed:', err));
+    }
+    if (typeof loadPharmacy === 'function') {
+        loadPharmacy(); // pre-warm Medical Chest so list is ready when tab opens
+    }
     updateUI(); 
     toggleBannerControls('Chat');
     initSidebarSync();
@@ -313,6 +338,11 @@ function restoreCollapsibleState(headerId, defaultOpen = true) {
     body.style.display = isOpen ? 'block' : 'none';
     const icon = header.querySelector('.detail-icon');
     if (icon) icon.textContent = isOpen ? '▾' : '▸';
+    if (headerId === 'prompt-preview-header') {
+        const refreshInline = document.getElementById('prompt-refresh-inline');
+        if (refreshInline) refreshInline.style.display = isOpen ? 'flex' : 'none';
+        header.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+    }
 }
 
 // Context loader

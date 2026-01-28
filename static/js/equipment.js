@@ -777,10 +777,19 @@ function renderEquipmentCard(item, expandId = null) {
     const isOpen = expandId && item.id === expandId;
     const bodyDisplay = isOpen ? 'display:block;' : '';
     const arrow = isOpen ? '▾' : '▸';
-    const headerBg = item.excludeFromResources ? '#ffecef' : '#e8fdef';
-    const headerBorderColor = item.excludeFromResources ? '#ffbfbf' : '#bde8c8';
-    const bodyBg = item.excludeFromResources ? '#fff6f6' : '#f7fff7';
-    const bodyBorderColor = item.excludeFromResources ? '#ffcfd0' : '#cfe9d5';
+    // Palette: equipment stays green; consumables match pink shell (#f7eefc / #fcf7ff).
+    const headerBg = isConsumable
+        ? (item.excludeFromResources ? '#ffecef' : '#f7eefc')
+        : (item.excludeFromResources ? '#ffecef' : '#e8fdef');
+    const headerBorderColor = isConsumable
+        ? (item.excludeFromResources ? '#ffcbd3' : '#dec9f7')
+        : (item.excludeFromResources ? '#ffbfbf' : '#bde8c8');
+    const bodyBg = isConsumable
+        ? (item.excludeFromResources ? '#fff7f8' : '#fcf7ff')
+        : (item.excludeFromResources ? '#fff6f6' : '#f7fff7');
+    const bodyBorderColor = isConsumable
+        ? (item.excludeFromResources ? '#ffdbe2' : '#e6d7fb')
+        : (item.excludeFromResources ? '#ffcfd0' : '#cfe9d5');
     const badgeColor = item.excludeFromResources ? '#d32f2f' : '#2e7d32';
     const badgeText = item.excludeFromResources ? 'Resource Currently Unavailable' : 'Resource Available';
     const availabilityBadge = `<span style="margin-left:auto; padding:2px 10px; border-radius:999px; background:${badgeColor}; color:#fff; font-size:11px; white-space:nowrap;">${badgeText}</span>`;

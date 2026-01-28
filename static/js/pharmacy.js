@@ -6,6 +6,7 @@ single-card expansion behavior.
 */
 
 let pharmacyCache = [];
+let pharmacyFetchPromise = null;
 const pharmacySaveTimers = {};
 const DEFAULT_USER_LABELS = ['Antibiotic', 'Analgesic', 'Cardiac', 'Respiratory', 'Gastrointestinal', 'Endocrine', 'Emergency'];
 let pharmacyLabelsCache = null;
@@ -259,6 +260,52 @@ function ensurePharmacyDefaults(item) {
     return med;
 }
 
+function handleVerifyToggle(medId) {
+    const cb = document.getElementById(`ver-${medId}`);
+    const isVerified = !!cb?.checked;
+    const badge = document.getElementById(`badge-ver-${medId}`);
+    if (badge) {
+        if (isVerified) {
+            badge.textContent = 'Verified';
+            badge.style.background = 'var(--inquiry)';
+            badge.style.color = '#fff';
+            badge.style.border = 'none';
+        } else {
+            badge.textContent = 'Not Verified';
+            badge.style.background = 'transparent';
+            badge.style.color = 'var(--inquiry)';
+            badge.style.border = '1px dashed #b2c7b5';
+        }
+    }
+    // Save just the verified flag to avoid any expiry validation side-effects.
+    fetch(`/api/data/inventory/${encodeURIComponent(medId)}/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ verified: isVerified }),
+    })
+        .then((res) => res.json().catch(() => ({})))
+        .then((data) => {
+            if (data && data.error) {
+                showToast(`Save failed: ${data.error}`, true);
+                if (cb) cb.checked = !isVerified; // revert UI on failure
+            } else {
+                showToast(isVerified ? 'Marked as Verified' : 'Marked as Not Verified');
+                // update cache so later saves don't overwrite
+                const idx = pharmacyCache.findIndex((m) => m.id === medId);
+                if (idx !== -1) {
+                    pharmacyCache[idx].verified = isVerified;
+                }
+                // refresh single med to sync UI
+                loadPharmacy();
+            }
+        })
+        .catch((err) => {
+            showToast(`Save failed: ${err.message}`, true);
+            if (cb) cb.checked = !isVerified;
+        });
+}
+
 function canonicalMedKey(generic, brand, strength, formStrength = '') {
     const clean = (val) => (val || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
     const strengthVal = clean(strength || formStrength).replace(/unspecified/g, '');
@@ -345,21 +392,50 @@ function sortPharmacyItems(items) {
 
 // Primary loader for the Medical Chest list. Pulls server data, normalizes, renders cards,
 // and keeps the count badge in sync. WHO list is lazy-loaded alongside.
+async function preloadPharmacy() {
+    if (pharmacyFetchPromise) return pharmacyFetchPromise;
+    pharmacyFetchPromise = fetchInventory()
+        .then((data) => {
+            pharmacyCache = (Array.isArray(data) ? data : []).map(ensurePharmacyDefaults);
+            return pharmacyCache;
+        })
+        .catch((err) => {
+            pharmacyFetchPromise = null;
+            throw err;
+        });
+    return pharmacyFetchPromise;
+}
+
+// Primary loader for the Medical Chest list. Pulls server data, normalizes, renders cards,
+// and keeps the count badge in sync. WHO list is lazy-loaded alongside.
 async function loadPharmacy() {
     const list = document.getElementById('pharmacy-list');
     if (!list) return;
-    await ensurePharmacyLabels();
-    await loadWhoMedsFromServer();
-    populateNewMedUserLabelSelect();
-    observePharmacyList();
     list.innerHTML = '<div style="color:#666;">Loading inventory...</div>';
-    try {
-        const data = await fetchInventory();
-        pharmacyCache = (Array.isArray(data) ? data : []).map(ensurePharmacyDefaults);
+    // Kick off prerequisites in parallel
+    const preloadPromise = preloadPharmacy().catch((err) => {
+        console.warn('[pharmacy] preload failed', err);
+        throw err;
+    });
+    const whoPromise = loadWhoMedsFromServer();
+    const labelsPromise = ensurePharmacyLabels();
+
+    // If we already have cached meds, render them immediately for perceived speed
+    if (pharmacyCache.length) {
         updatePharmacyCount(pharmacyCache.length);
         renderPharmacy(pharmacyCache);
         renderWhoMedList();
-        // Safety: if DOM render diverges, re-sync from DOM node count
+    }
+
+    try {
+        const data = await fetchInventory();
+        pharmacyCache = (Array.isArray(data) ? data : []).map(ensurePharmacyDefaults);
+        await Promise.all([whoPromise, labelsPromise]);
+        populateNewMedUserLabelSelect();
+        observePharmacyList();
+        updatePharmacyCount(pharmacyCache.length);
+        renderPharmacy(pharmacyCache);
+        renderWhoMedList();
         syncPharmacyCountFromDOM();
         setTimeout(syncPharmacyCountFromDOM, 50);
     } catch (err) {
@@ -482,8 +558,8 @@ function renderMedicationCard(med, isOpen = true, textHeights = {}) {
     const badgeText = med.excludeFromResources ? 'Resource Currently Unavailable' : 'Resource Available';
     const availabilityBadge = `<span style="padding:2px 10px; border-radius:999px; background:${badgeColor}; color:#fff; font-size:11px; white-space:nowrap;">${badgeText}</span>`;
     const verifiedBadge = med.verified
-        ? `<span style="padding:2px 10px; border-radius:999px; background:var(--inquiry); color:#fff; font-size:11px; white-space:nowrap;">Verified</span>`
-        : `<span style="padding:2px 10px; border-radius:999px; background:transparent; color:var(--inquiry); font-size:11px; white-space:nowrap; border:1px dashed #b2c7b5;">Not Verified</span>`;
+        ? `<span class="dev-tag">dev:med-verified</span><span id="badge-ver-${med.id}" style="padding:2px 10px; border-radius:999px; background:var(--inquiry); color:#fff; font-size:11px; white-space:nowrap;">Verified</span>`
+        : `<span class="dev-tag">dev:med-verified</span><span id="badge-ver-${med.id}" style="padding:2px 10px; border-radius:999px; background:transparent; color:var(--inquiry); font-size:11px; white-space:nowrap; border:1px dashed #b2c7b5;">Not Verified</span>`;
     const doseHeight = textHeights[`dose-${med.id}`] ? `height:${textHeights[`dose-${med.id}`]};` : '';
     return `
             <div class="collapsible history-item">
@@ -512,7 +588,7 @@ function renderMedicationCard(med, isOpen = true, textHeights = {}) {
                         Resource Currently Unavailable
                     </label>
                     <label style="display:flex; align-items:center; gap:6px; font-size:12px; padding:6px 10px; border:1px solid #c7ddff; border-radius:6px; background:#fff; margin:0;">
-                        <input id="ver-${med.id}" type="checkbox" ${med.verified ? 'checked' : ''} onchange="scheduleSaveMedication('${med.id}', true); event.stopPropagation();">
+                        <input id="ver-${med.id}" type="checkbox" ${med.verified ? 'checked' : ''} onchange="handleVerifyToggle('${med.id}'); event.stopPropagation();">
                         Verified
                     </label>
                     <label style="display:flex; align-items:center; gap:6px; font-size:12px; padding:6px 10px; border:1px solid #c7ddff; border-radius:6px; background:#fff; margin:0;">
@@ -840,15 +916,17 @@ function addPurchaseEntry(medId) {
 async function saveMedication(id, rerender = false) {
     const openMedIds = getOpenMedIds();
     const textHeights = getTextareaHeights();
-    let data;
-    try {
-        data = await fetchInventory();
-    } catch (err) {
-        showToast(`Unable to load inventory before saving: ${err.message}`, true);
-        return;
+    // Use current cache; if empty, fetch once
+    if (!pharmacyCache.length) {
+        try {
+            const data = await fetchInventory();
+            pharmacyCache = Array.isArray(data) ? data.map(ensurePharmacyDefaults) : [];
+        } catch (err) {
+            showToast(`Unable to load inventory before saving: ${err.message}`, true);
+            return;
+        }
     }
-    const meds = Array.isArray(data) ? data.map(ensurePharmacyDefaults) : [];
-    const med = meds.find((m) => m.id === id);
+    const med = pharmacyCache.find((m) => m.id === id);
     if (!med) {
         showToast('Medication not found (stale view). Reloading...', true);
         return loadPharmacy();
@@ -883,6 +961,19 @@ async function saveMedication(id, rerender = false) {
     med.sortCategory = sortVal === '__custom' ? sortCustom : sortVal || sortCustom || '';
     med.verified = !!document.getElementById(`ver-${id}`)?.checked;
     med.purchaseHistory = collectPurchaseEntries(id);
+    // Auto-sanitize any non-ISO dates so the save doesn't fail; backend also clears invalid dates.
+    let clearedBadDates = false;
+    med.purchaseHistory = (med.purchaseHistory || []).map((ph) => {
+        const ok = !ph.date || !Number.isNaN(new Date(ph.date).getTime());
+        if (!ok) {
+            clearedBadDates = true;
+            return { ...ph, date: '' };
+        }
+        return ph;
+    });
+    if (clearedBadDates) {
+        showToast('Some expiry dates were not valid and were cleared. Please re-enter as YYYY-MM-DD.', true);
+    }
     med.formStrength = [med.form, med.strength].join(' ').trim();
     // Keep top-level manufacturer/batch in sync with first purchase entry for compatibility
     if (med.purchaseHistory.length) {
@@ -895,9 +986,7 @@ async function saveMedication(id, rerender = false) {
     }
 
     // Optimistic rerender before saving to backend for instant UI feedback
-    pharmacyCache = meds;
     if (rerender) {
-        // Only rerender when layout/structure changes (reduces cursor jumps while typing).
         renderPharmacy(pharmacyCache, openMedIds, textHeights);
     }
 
@@ -908,12 +997,15 @@ async function saveMedication(id, rerender = false) {
         return;
     }
     try {
-        await fetchInventory({
-            method: 'POST',
+        await fetch(`/api/data/inventory/${encodeURIComponent(id)}`, {
+            method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(meds),
+            credentials: 'same-origin',
+            body: JSON.stringify(med),
         });
         showToast('Medication saved');
+        // Refresh from server to ensure purchase history / flags persist
+        await loadPharmacy();
     } catch (err) {
         showToast(`Save failed: ${err.message}`, true);
         await loadPharmacy();
@@ -933,19 +1025,7 @@ function validateMedication(med) {
         med.strength = med.strength || 'unspecified';
         med.formStrength = med.formStrength || (med.form ? `${med.form} ${med.strength}` : med.strength);
     }
-    // Validate purchase entries for negative quantities / bad dates
-    const badQty = (med.purchaseHistory || []).find((p) => {
-        const q = Number(p.quantity);
-        return p.quantity !== '' && (Number.isNaN(q) || q < 0);
-    });
-    if (badQty) {
-        return { ok: false, message: 'Expiry rows must have non-negative numeric quantities.' };
-    }
-    const badDate = (med.purchaseHistory || []).find((p) => p.date && Number.isNaN(new Date(p.date).getTime()));
-    if (badDate) {
-        return { ok: false, message: 'Expiry rows must use a valid date (YYYY-MM-DD).' };
-    }
-    // Encourage at least one expiry entry; keep UI permissive but warn in the future if needed.
+    // Do not block saves for expiry date/quantity issues; backend will sanitize.
     return { ok: true };
 }
 
@@ -1015,29 +1095,22 @@ async function deletePurchaseEntry(medId, phId) {
 }
 
 async function addMedication() {
-    let data;
-    try {
-        data = await fetchInventory();
-    } catch (err) {
-        return showToast(`Unable to load inventory: ${err.message}`, true);
-    }
-    const meds = Array.isArray(data) ? data : [];
     const newId = uid('med');
     const placeholderName = `New medicine ${newId.slice(-6)}`;
-    meds.push(
-        ensurePharmacyDefaults({
+    try {
+        const draft = ensurePharmacyDefaults({
             id: newId,
             genericName: placeholderName,
             strength: '',
             purchaseHistory: [],
             verified: false,
-        })
-    );
-    try {
-        await fetchInventory({
-            method: 'POST',
+        });
+        pharmacyCache.push(draft);
+        await fetch(`/api/data/inventory/${encodeURIComponent(newId)}`, {
+            method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(meds),
+            credentials: 'same-origin',
+            body: JSON.stringify(draft),
         });
         showToast('Draft medication added — please fill required fields.');
         loadPharmacy();
@@ -1079,3 +1152,6 @@ window.togglePurchaseNotes = function(el) {
 window.addWhoMeds = addWhoMeds;
 window.openWhoListFilePicker = openWhoListFilePicker;
 window.handleWhoListFileImport = handleWhoListFileImport;
+window.preloadPharmacy = preloadPharmacy;
+window.ensurePharmacyLabels = ensurePharmacyLabels;
+window.loadWhoMedsFromServer = loadWhoMedsFromServer;

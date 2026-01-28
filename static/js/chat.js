@@ -212,6 +212,8 @@ function updateUI() {
     const queryTitle = document.getElementById('query-form-title');
     const runBtn = document.getElementById('run-btn');
     const modelSelect = document.getElementById('model-select');
+    const promptRefreshInline = document.getElementById('prompt-refresh-inline');
+    const promptHeader = document.getElementById('prompt-preview-header');
     
     // Remove both classes first
     banner.classList.remove('inquiry-mode', 'private-mode', 'no-privacy');
@@ -237,7 +239,7 @@ function updateUI() {
         triageMeta.style.display = currentMode === 'triage' ? 'grid' : 'none';
     }
     if (queryTitle) {
-        queryTitle.innerText = currentMode === 'triage' ? 'Triage Chat Prompt Detail' : 'Inquiry Chat Prompt Detail';
+        queryTitle.innerText = currentMode === 'triage' ? 'Triage Consultation Entry' : 'Inquiry Consultation Entry';
     }
 
     if (privBtn) {
@@ -253,6 +255,17 @@ function updateUI() {
     if (runBtn) {
         runBtn.innerText = currentMode === 'triage' ? 'SUBMIT FOR TRIAGE' : 'SUBMIT INQUIRY';
         runBtn.style.background = currentMode === 'triage' ? 'var(--triage)' : 'var(--inquiry)';
+    }
+    if (promptRefreshInline) {
+        const isExpanded = promptHeader && promptHeader.getAttribute('aria-expanded') === 'true';
+        const isAdvanced = document.body.classList.contains('mode-advanced') || document.body.classList.contains('mode-developer');
+        promptRefreshInline.style.display = (isExpanded && isAdvanced) ? 'flex' : 'none';
+    }
+    // Show inline refresh only when prompt section is expanded (handled in toggle)
+    if (promptRefreshInline) {
+        const promptHeader = document.getElementById('prompt-preview-header');
+        const isExpanded = promptHeader && promptHeader.getAttribute('aria-expanded') === 'true';
+        promptRefreshInline.style.display = isExpanded ? 'flex' : 'none';
     }
     // Default model to 4B on load
     if (modelSelect && !modelSelect.value) {
@@ -376,8 +389,7 @@ async function runChat(promptText = null, force28b = false) {
     
     // Disable buttons
     document.getElementById('run-btn').disabled = true;
-    document.getElementById('repeat-btn').disabled = true;
-    
+        
     try {
         const fd = new FormData();
         fd.append('message', txt);
@@ -417,8 +429,7 @@ async function runChat(promptText = null, force28b = false) {
             if (ok) {
                 isProcessing = false;
                 document.getElementById('run-btn').disabled = false;
-                document.getElementById('repeat-btn').disabled = false;
-                return runChat(promptText || txt, true);
+                                return runChat(promptText || txt, true);
             }
             display.innerHTML += `<div class="response-block" style="border-left-color:var(--red);"><b>INFO:</b> ${res.error || 'Cancelled running 28B model.'}</div>`;
         } else if (res.error) {
@@ -454,58 +465,9 @@ async function runChat(promptText = null, force28b = false) {
         const blocker = document.getElementById('chat-blocker');
         if (blocker) blocker.style.display = 'none';
         document.getElementById('run-btn').disabled = false;
-        document.getElementById('repeat-btn').disabled = false;
-    }
+            }
 }
 
-function restoreLast() {
-    // Restore last mode used
-    let modeToRestore = currentMode;
-    try {
-        const storedMode = localStorage.getItem(LAST_CHAT_MODE_KEY);
-        if (storedMode) modeToRestore = storedMode;
-    } catch (_) { /* ignore */ }
-    if (modeToRestore !== currentMode) {
-        setMode(modeToRestore);
-    }
-    const state = loadChatState();
-    const modeState = state[modeToRestore] || {};
-    const msgEl = document.getElementById('msg');
-    if (msgEl && typeof modeState.msg === 'string') {
-        msgEl.value = modeState.msg;
-        msgEl.focus();
-    }
-    if (modeToRestore === 'triage' && modeState.fields && typeof modeState.fields === 'object') {
-        Object.entries(modeState.fields).forEach(([id, val]) => {
-            const el = document.getElementById(id);
-            if (el) el.value = val;
-        });
-    }
-    // Restore patient selection
-    const patientSelect = document.getElementById('p-select');
-    if (patientSelect) {
-        const savedPatient = (() => {
-            try { return localStorage.getItem(LAST_PATIENT_KEY) || ''; } catch (_) { return ''; }
-        })();
-        if (savedPatient && Array.from(patientSelect.options).some(o => o.value === savedPatient)) {
-            patientSelect.value = savedPatient;
-        }
-    }
-    // Restore prompt preview if cached
-    const promptBox = document.getElementById('prompt-preview');
-    const promptHeader = document.getElementById('prompt-preview-header');
-    if (promptBox) {
-        try {
-            const cached = localStorage.getItem(PROMPT_PREVIEW_CONTENT_KEY);
-            if (cached) {
-                promptBox.value = cached;
-                promptBox.dataset.autofilled = 'false';
-                if (promptHeader) togglePromptPreviewArrow(promptHeader, true);
-            }
-        } catch (_) { /* ignore */ }
-    }
-    alert('Last chat restored to editor. You can revise and resend.');
-}
 
 // Handle Enter key for submission
 document.addEventListener('DOMContentLoaded', () => {

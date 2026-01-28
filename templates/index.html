@@ -122,8 +122,6 @@
             #consumables-add-body [style*="grid"] { grid-template-columns: 1fr !important; }
             #vessel-info [style*="grid-template-columns"] { grid-template-columns: 1fr !important; }
             #crew-info-list [style*="grid-template-columns"] { grid-template-columns: 1fr !important; }
-            #med-photo-input { width: 100%; }
-            #med-photo-drop { width: 100%; min-height: 100px; }
             #medication-add-body button,
             #equipment-add-body button,
             #consumables-add-body button,
@@ -138,54 +136,6 @@
         .nav { flex-wrap: wrap; }
         .tab { flex: 1 1 50%; }
     }
-    .desktop-block { display: block; }
-    .phone-block { display: none; }
-    #phone-import-overlay {
-        display: none;
-        position: fixed;
-        inset: 0;
-        background: rgba(0,0,0,0.55);
-        z-index: 5000;
-        align-items: center;
-        justify-content: center;
-        padding: 16px;
-        box-sizing: border-box;
-        overflow-y: auto;
-    }
-    .phone-import-panel {
-        width: min(860px, 98vw);
-        min-height: 78vh;
-        max-height: none;
-        overflow-y: auto;
-        background: #fff;
-        border-radius: 12px;
-        box-shadow: 0 14px 40px rgba(0,0,0,0.22);
-        padding: 14px;
-        box-sizing: border-box;
-        font-size: 30px;
-        line-height: 1.5;
-    }
-    #phone-import-overlay { font-size: 30px; }
-    #phone-import-overlay * { font-size: inherit !important; }
-    .phone-import-actions { display: flex; flex-direction: column; gap: 12px; }
-    .phone-import-frame {
-        border: 2px solid #d7def0;
-        border-radius: 10px;
-        padding: 12px;
-        background: #f8f9ff;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.06);
-    }
-    .phone-import-frame-title {
-        font-weight: 800;
-        color: #1f2d3d;
-        font-size: 26px;
-        margin-bottom: 8px;
-    }
-    @media (max-width: 900px) {
-        .desktop-block { display: none; }
-        .phone-block { display: block; }
-        .phone-import-panel { width: 100%; min-height: 130vh; }
-        }
     /* Blocking modal while GPU chat is running */
     #chat-blocker {
         display: none;
@@ -542,37 +492,6 @@
                                             </div>
                                         </div>
                                         <button onclick="addMedicationItem()" class="btn btn-sm" style="background:var(--dark); width:100%;">Add Pharmaceutical</button>
-                                            </div>
-                                        </div>
-                                        <div class="collapsible" style="margin-top:12px;">
-                                            <div class="col-header crew-med-header" data-sidebar-id="equipment-medication-intake" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                                                <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Import From Photo</span><span class="dev-tag">dev:med-photo-import</span>
-                                            </div>
-                                            <div class="col-body" style="padding:12px; background:#eef4ff; display:none;">
-                                            <div class="dev-tag" style="margin-bottom:8px;">dev:med-photo-controls</div>
-                                                <div style="display:flex; flex-direction:column; gap:10px; align-items:flex-start; margin-bottom:10px;">
-                                                    <button class="btn btn-sm phone-only" style="background:#1f2d3d; min-width:180px;" onclick="openPhoneImportView()"><span class="dev-tag">dev:med-photo-mobile-btn</span>Phone Camera Helper</button>
-                                                    <div style="display:flex; gap:10px; flex-wrap:wrap;">
-                                                        <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
-                                                            <input type="radio" name="desktop-med-photo-mode" value="single" checked onchange="setMedPhotoMode('single')">
-                                                            One photo per medicine (each photo = new record)
-                                                        </label>
-                                                        <label style="font-size:12px; display:flex; align-items:center; gap:6px;">
-                                                            <input type="radio" name="desktop-med-photo-mode" value="grouped" onchange="setMedPhotoMode('grouped')">
-                                                            Multiple photos per medicine (all photos = one record)
-                                                        </label>
-                                                    </div>
-                                                    <input id="med-photo-input" type="file" accept="image/*" multiple style="padding:6px; font-size:13px;">
-                                                    <div id="med-photo-drop" class="dev-tag" style="display:flex; align-items:center; justify-content:center; width:100%; min-height:80px; border:2px dashed #ccc; border-radius:8px; background:#fafbff; color:#444; font-size:12px; padding:10px; box-sizing:border-box;">
-                                                        <span>Drag and drop photos here</span>
-                                                    </div>
-                                                    <div id="med-photo-selected" style="font-size:12px; color:#2c3e50;">No files selected.</div>
-                                                    <div id="med-photo-preview" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
-                                                    <button class="btn btn-sm" style="background:var(--inquiry); min-width:180px;" onclick="importDesktopMedicinePhotos()" data-med-photo-mode-label>Import each photo as a distinct pharmacuetical</button>
-                                                    <div id="med-photo-status" style="font-size:12px; color:#555;"></div>
-                                                </div>
-                                                <div class="dev-tag" style="margin-bottom:6px;">dev:med-photo-queue</div>
-                                                <div id="med-photo-queue" style="display:flex; flex-direction:column; gap:10px;"></div>
                                             </div>
                                         </div>
                                         <div class="collapsible" style="margin-top:12px;">
@@ -1084,40 +1003,6 @@
                 <div class="sidebar-content">
                     {% include 'sidebars/sidebar_settings.html' %}
                 </div>
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- Phone-friendly medicine photo import overlay -->
-<div id="phone-import-overlay">
-    <div class="phone-import-panel">
-        <div class="dev-tag" style="margin-bottom:6px;">dev:med-photo-mobile</div>
-        <div style="display:flex; justify-content:center; margin-bottom:10px; margin-top:-6px;">
-            <button class="btn" style="background:var(--red); font-size:16px;" onclick="closePhoneImportView()">Close Phone Photo Helper</button>
-        </div>
-        <div style="font-size:30px; color:#3a3a3a; margin-bottom:10px;">Use your phone camera to snap medicine packaging and import directly.</div>
-        <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:10px; font-size:20px;">
-            <label style="display:flex; align-items:center; gap:8px;">
-                <input type="radio" name="phone-med-photo-mode" value="single" checked onchange="setMedPhotoMode('single')" style="width:24px; height:24px;">
-                One photo per medicine (each photo = record)
-            </label>
-            <label style="display:flex; align-items:center; gap:8px;">
-                <input type="radio" name="phone-med-photo-mode" value="grouped" onchange="setMedPhotoMode('grouped')" style="width:24px; height:24px;">
-                Multiple photos per medicine (all photos = one record)
-            </label>
-        </div>
-        <div class="phone-import-actions">
-            <div class="phone-import-frame">
-                <input id="phone-med-photo-input" type="file" accept="image/*" multiple style="position:absolute; width:1px; height:1px; opacity:0; pointer-events:none;">
-                <button class="btn" style="background:var(--dark); margin-bottom:10px;" onclick="document.getElementById('phone-med-photo-input').click()">Choose / Take Photos</button>
-                <div id="phone-photo-count" style="font-size:28px; color:#2c3e50;">No photos selected.</div>
-                <div id="phone-photo-preview" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
-            </div>
-            <div class="phone-import-frame">
-                <div class="phone-import-frame-title">Import photos</div>
-                <button class="btn" style="background:var(--inquiry);" onclick="importPhoneMedicinePhotos()" data-med-photo-mode-label>Import photos</button>
-                <div id="phone-photo-status" style="font-size:12px; color:#555; margin-top:6px;">Reads packaging, creates inventory item, and discards the photo after import.</div>
             </div>
         </div>
     </div>

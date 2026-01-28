@@ -377,6 +377,62 @@ def _label_from_slug(slug: str) -> str:
     cleaned = _sanitize_store(slug)
     return DEFAULT_store_LABEL if _sanitize_store(DEFAULT_store_LABEL) == cleaned else ""
 
+def _migrate_existing_to_default(store):
+    """
+    Copy legacy single-store files into the new slugged directory layout.
+    Idempotent and non-destructive (source files are left in place).
+    """
+    try:
+        slug = store.get("slug") or "default"
+        legacy_root = BASE_STORE / slug  # e.g., data/default
+        new_data_dir = store.get("data") or (DATA_ROOT / slug)
+        new_uploads_dir = store.get("uploads") or (UPLOAD_ROOT / slug)
+        new_med_dir = store.get("med_uploads") or (new_uploads_dir / "medicines")
+        legacy_uploads_dir = legacy_root / "uploads"
+
+        # Copy JSON payloads (patients, inventory, etc.) into data/<slug> if missing there
+        if legacy_root.exists():
+            for path in legacy_root.glob("*.json"):
+                dest = new_data_dir / path.name
+                if not dest.exists():
+                    try:
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(path, dest)
+                    except Exception:
+                        pass
+
+        # Copy legacy uploads (e.g., medicine photos) into uploads/<slug>/*
+        if legacy_uploads_dir.exists():
+            for item in legacy_uploads_dir.iterdir():
+                dest = new_uploads_dir / item.name
+                try:
+                    if item.is_dir():
+                        shutil.copytree(item, dest, dirs_exist_ok=True)
+                    else:
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        if not dest.exists():
+                            shutil.copy2(item, dest)
+                except Exception:
+                    pass
+
+        # Handle very old layout where medicines lived directly under uploads/medicines
+        legacy_med = UPLOAD_ROOT / "medicines"
+        if legacy_med.exists():
+            for item in legacy_med.iterdir():
+                dest = new_med_dir / item.name
+                try:
+                    if item.is_dir():
+                        shutil.copytree(item, dest, dirs_exist_ok=True)
+                    else:
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        if not dest.exists():
+                            shutil.copy2(item, dest)
+                except Exception:
+                    pass
+    except Exception:
+        # Silent failure to avoid blocking startup on migration issues
+        pass
+
 
 def _store_dirs(store_label: str):
     slug = _sanitize_store(store_label)

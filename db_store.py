@@ -1656,6 +1656,67 @@ def get_inventory_items():
     return items
 
 
+def ensure_item_schema(item: dict, item_type: str, now: str) -> dict:
+    """
+    Normalize inbound inventory payloads (pharmacy UI) to the SQL schema used by items/med_expiries.
+    This is intentionally forgiving so legacy keys keep working.
+    """
+    def pick(*keys, default=""):
+        for k in keys:
+            if k in item and item[k] is not None:
+                return item[k]
+        return default
+
+    iid = str(item.get("id") or f"{item_type}-{datetime.utcnow().timestamp()}")
+    # Compose a friendly display name, preferring brand then generic.
+    name = pick("name", "brandName", "genericName", default="")
+    generic = pick("genericName", default="")
+    brand = pick("brandName", default="")
+    form = pick("form", default="")
+    strength = pick("strength", default="")
+    form_strength = pick("formStrength", default="").strip()
+    if not form_strength:
+        form_strength = " ".join([form, strength]).strip()
+
+    # User-defined label maps to category column; keep legacy fields too.
+    category = pick("sortCategory", "category", default="")
+    type_detail = pick("typeDetail", "type", default=item_type)
+
+    return {
+        "id": iid,
+        "itemType": item_type,
+        "name": name,
+        "genericName": generic,
+        "brandName": brand,
+        "alsoKnownAs": pick("alsoKnownAs", default=""),
+        "formStrength": form_strength,
+        "indications": pick("primaryIndication", "indications", default=""),
+        "contraindications": pick("allergyWarnings", "contraindications", default=""),
+        "consultDoctor": pick("consultDoctor", default=""),
+        "adultDosage": pick("standardDosage", "adultDosage", default=""),
+        "pediatricDosage": pick("pediatricDosage", default=""),
+        "unwantedEffects": pick("unwantedEffects", default=""),
+        "storageLocation": pick("storageLocation", default=""),
+        "subLocation": pick("subLocation", default=""),
+        "status": pick("status", default="In Stock"),
+        "expiryDate": pick("expiryDate", default=""),
+        "lastInspection": pick("lastInspection", default=""),
+        "batteryType": pick("batteryType", default=""),
+        "batteryStatus": pick("batteryStatus", default=""),
+        "calibrationDue": pick("calibrationDue", default=""),
+        "totalQty": pick("totalQty", "currentQuantity", default=""),
+        "minPar": pick("minPar", "minThreshold", default=""),
+        "supplier": pick("supplier", "manufacturer", default=""),
+        "parentId": pick("parentId", default=""),
+        "requiresPower": 1 if item.get("requiresPower") else 0,
+        "category": category,
+        "typeDetail": type_detail,
+        "notes": pick("notes", default=""),
+        "excludeFromResources": 1 if item.get("excludeFromResources") else 0,
+        "updated_at": now,
+    }
+
+
 def set_inventory_items(items: list):
     now = datetime.utcnow().isoformat()
     with _conn() as conn:

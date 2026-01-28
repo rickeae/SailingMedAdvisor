@@ -12,9 +12,45 @@ let pharmacyLabelsCache = null;
 let WHO_RECOMMENDED_MEDS = [];
 let whoMedLoaded = false;
 
-function fetchInventory(options = {}) {
+// --- Shared utilities -------------------------------------------------------
+
+// Small, collision-resistant id generator for client-created meds/expiries.
+function uid(prefix = 'id') {
+    // Prefer crypto for true randomness; fallback to timestamp + random.
+    if (window.crypto && crypto.randomUUID) return `${prefix}-${crypto.randomUUID()}`;
+    return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+}
+
+// Lightweight toast helper to surface success/error without blocking alerts.
+function showToast(message, isError = false) {
+    let el = document.getElementById('pharmacy-toast');
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'pharmacy-toast';
+        el.style.cssText =
+            'position:fixed; bottom:20px; right:20px; padding:12px 16px; border-radius:8px; box-shadow:0 6px 18px rgba(0,0,0,0.2); font-weight:800; z-index:9999; display:none; min-width:220px;';
+        document.body.appendChild(el);
+    }
+    el.textContent = message;
+    el.style.display = 'block';
+    el.style.background = isError ? '#ffebee' : '#e8f5e9';
+    el.style.color = isError ? '#c62828' : '#2e7d32';
+    el.style.border = `1px solid ${isError ? '#ef5350' : '#81c784'}`;
+    clearTimeout(el._timer);
+    el._timer = setTimeout(() => {
+        el.style.display = 'none';
+    }, 4000);
+}
+
+// Wrapper around /api/data/inventory with consistent error handling.
+async function fetchInventory(options = {}) {
     const headers = { ...(options.headers || {}) };
-    return fetch('/api/data/inventory', { credentials: 'same-origin', ...options, headers });
+    const res = await fetch('/api/data/inventory', { credentials: 'same-origin', ...options, headers });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error) {
+        throw new Error(data.error || `Status ${res.status}`);
+    }
+    return data;
 }
 
 function updatePharmacyCount(count) {
@@ -170,7 +206,7 @@ function toggleCustomSortField() {
 function ensurePurchaseDefaults(p, open = false) {
     // Normalize a purchase/expiry entry and keep manufacturer/batch alongside the expiry.
     return {
-        id: p.id || `ph-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        id: p.id || uid('ph'),
         date: p.date || '',
         quantity: p.quantity || '',
         notes: p.notes || '',
@@ -183,11 +219,12 @@ function ensurePurchaseDefaults(p, open = false) {
 function ensurePharmacyDefaults(item) {
     // Normalize a med record; if legacy top-level manufacturer/batch exists, push into first expiry row.
     const med = {
-        id: item.id || `med-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        id: item.id || uid('med'),
         genericName: item.genericName || '',
         brandName: item.brandName || '',
         form: item.form || '',
         strength: item.strength || '',
+        formStrength: item.formStrength || '',
         currentQuantity: item.currentQuantity || '', // legacy; derived from purchase history
         minThreshold: item.minThreshold || '',
         unit: item.unit || '',
@@ -197,6 +234,7 @@ function ensurePharmacyDefaults(item) {
         primaryIndication: item.primaryIndication || '',
         allergyWarnings: item.allergyWarnings || '',
         standardDosage: item.standardDosage || '',
+        notes: item.notes || '',
         sortCategory: item.sortCategory || '',
         verified: !!item.verified,
         purchaseHistory: Array.isArray(item.purchaseHistory)
@@ -206,6 +244,11 @@ function ensurePharmacyDefaults(item) {
         photoImported: !!item.photoImported,
         excludeFromResources: Boolean(item.excludeFromResources),
     };
+    // If only a combined formStrength is available, backfill strength to keep validation lenient.
+    if (!med.strength && med.formStrength) {
+        med.strength = med.formStrength;
+    }
+    med.formStrength = med.formStrength || [med.form, med.strength].join(' ').trim();
     // Backfill manufacturer/batchLot into first purchase entry if present on legacy record
     if (item.manufacturer && med.purchaseHistory.length && !med.purchaseHistory[0].manufacturer) {
         med.purchaseHistory[0].manufacturer = item.manufacturer;
@@ -214,6 +257,12 @@ function ensurePharmacyDefaults(item) {
         med.purchaseHistory[0].batchLot = item.batchLot;
     }
     return med;
+}
+
+function canonicalMedKey(generic, brand, strength, formStrength = '') {
+    const clean = (val) => (val || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const strengthVal = clean(strength || formStrength).replace(/unspecified/g, '');
+    return `${clean(generic)}|${clean(brand)}|${strengthVal}`;
 }
 
 function scheduleSaveMedication(id, rerender = false) {
@@ -294,6 +343,8 @@ function sortPharmacyItems(items) {
     return list;
 }
 
+// Primary loader for the Medical Chest list. Pulls server data, normalizes, renders cards,
+// and keeps the count badge in sync. WHO list is lazy-loaded alongside.
 async function loadPharmacy() {
     const list = document.getElementById('pharmacy-list');
     if (!list) return;
@@ -303,9 +354,7 @@ async function loadPharmacy() {
     observePharmacyList();
     list.innerHTML = '<div style="color:#666;">Loading inventory...</div>';
     try {
-        const res = await fetchInventory();
-        if (!res.ok) throw new Error(`Status ${res.status}`);
-        const data = await res.json();
+        const data = await fetchInventory();
         pharmacyCache = (Array.isArray(data) ? data : []).map(ensurePharmacyDefaults);
         updatePharmacyCount(pharmacyCache.length);
         renderPharmacy(pharmacyCache);
@@ -341,19 +390,35 @@ function renderPharmacy(items, openIds = [], textHeights = {}) {
         return;
     }
     const sorted = sortPharmacyItems(items);
-    const cards = sorted.map((m) => renderMedicationCard(m, openIds.includes(m.id), textHeights)).join('');
-    list.innerHTML = cards;
-    // After HTML render, verify count matches actual cards
-    syncPharmacyCountFromDOM();
-    setTimeout(syncPharmacyCountFromDOM, 50);
-    if (typeof requestAnimationFrame === 'function') {
-        requestAnimationFrame(() => syncPharmacyCountFromDOM());
-    }
-    populateNewMedUserLabelSelect();
+    list.innerHTML = '<div style="color:#666; padding:12px;">Rendering medicines…</div>';
+    const chunkSize = 40;
+    let idx = 0;
+    list.innerHTML = ''; // clear placeholder
+    const renderChunk = () => {
+        if (idx >= sorted.length) {
+            syncPharmacyCountFromDOM();
+            setTimeout(syncPharmacyCountFromDOM, 50);
+            if (typeof requestAnimationFrame === 'function') {
+                requestAnimationFrame(() => syncPharmacyCountFromDOM());
+            }
+            populateNewMedUserLabelSelect();
+            return;
+        }
+        const slice = sorted.slice(idx, idx + chunkSize);
+        const html = slice.map((m) => renderMedicationCard(m, openIds.includes(m.id), textHeights)).join('');
+        list.insertAdjacentHTML('beforeend', html);
+        idx += chunkSize;
+        const scheduler = window.requestIdleCallback || window.requestAnimationFrame || ((fn) => setTimeout(fn, 0));
+        scheduler(renderChunk);
+    };
+    renderChunk();
 }
 
 function renderPurchaseRows(med) {
-    // Each expiry row now carries manufacturer + batch/lot so those details stay tied to specific stock.
+    // Expiry UI contract:
+    //  - Rows carry stable ph-id so deletes map 1:1 to saved rows.
+    //  - Manufacturer / batch live per-row (stock provenance).
+    //  - We keep at least one row visible for usability.
     const rows = med.purchaseHistory.length ? med.purchaseHistory : [ensurePurchaseDefaults({}, true)];
     return rows
         .map((p) => {
@@ -380,7 +445,7 @@ function renderPurchaseRows(med) {
                     <textarea class="ph-notes" placeholder="Notes (batch/lot/location)" style="width:100%; padding:8px; min-height:60px; font-size:14px;" oninput="scheduleSaveMedication('${med.id}')">${p.notes || ''}</textarea>
                 </div>
                 <div style="display:flex; gap:10px; margin-top:10px; flex-wrap:wrap;">
-                    <button class="btn btn-sm" style="background:var(--red);" onclick="deletePurchaseEntry('${med.id}')">Delete Expiry Entry</button>
+                    <button class="btn btn-sm" style="background:var(--red);" onclick="deletePurchaseEntry('${med.id}','${p.id || ''}')">Delete Expiry Entry</button>
                 </div>
             </div>`;
         })
@@ -430,7 +495,7 @@ function renderMedicationCard(med, isOpen = true, textHeights = {}) {
             </span>
             ${labelChip}
             ${headerNote ? `<span class="sidebar-pill" style="margin-right:8px; background:${lowStock ? '#ffebee' : '#fff7e0'}; color:${lowStock ? '#c62828' : '#b26a00'};">${headerNote}</span>` : ''}
-            <button onclick="event.stopPropagation(); deleteMedication('${med.id}')" class="btn btn-sm history-action-btn" style="background:var(--red); visibility:hidden;">Delete Delete Medication</button>
+            <button onclick="event.stopPropagation(); deleteMedication('${med.id}')" class="btn btn-sm history-action-btn" style="background:var(--red); visibility:hidden;">Delete Medication</button>
             <div style="display:flex; align-items:center; gap:6px; margin-left:8px;">${verifiedBadge}${availabilityBadge}</div>
         </div>
         <div class="col-body" data-med-id="${med.id}" style="padding:12px; background:${bodyBg}; border:1px solid ${bodyBorderColor}; border-radius:6px; ${bodyDisplay}">
@@ -512,12 +577,12 @@ function renderMedicationCard(med, isOpen = true, textHeights = {}) {
                 </div>
             </div>
             <div style="margin:10px 0; border-top:1px solid #d0dff5; padding-top:10px;">
-                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; gap:8px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; gap:8px;">
                     <div style="display:flex; align-items:center; gap:6px; font-weight:800; color:var(--dark);">
                         <span>Expiry Tracking</span>
                         <span class="dev-tag">dev:med-expiry</span>
                     </div>
-                    <button class="btn btn-sm" style="background:var(--inquiry);" onclick="addPurchaseEntry('${med.id}')">+ Add Entry</button>
+                    <button class="btn btn-sm" style="background:var(--inquiry);" onclick="addPurchaseEntry('${med.id}')">Add Entry</button>
                 </div>
                 <div id="ph-${med.id}">${renderPurchaseRows(med)}</div>
             </div>
@@ -531,18 +596,23 @@ function renderWhoMedList() {
     container.innerHTML = WHO_RECOMMENDED_MEDS.map((m, idx) => {
         const id = `who-${m.id || idx}`;
         return `
-            <label style="display:flex; gap:10px; align-items:flex-start; border:1px solid #d9e5f7; padding:10px; border-radius:8px; background:#fff;">
-                <input type="checkbox" name="who-med-check" value="${id}" style="margin-top:4px;">
-                <div>
-                    <div style="font-weight:800; color:#1f2d3d;">${m.genericName}</div>
-                    ${m.alsoKnownAs ? `<div style="font-size:12px; color:#37474f;">Also known as: ${m.alsoKnownAs}</div>` : ''}
-                    ${m.formStrength ? `<div style="font-size:12px; color:#455a64;">Dosage form/strength: ${m.formStrength}</div>` : ''}
-                    ${m.indications ? `<div style="font-size:12px; color:#455a64;">Indications: ${m.indications}</div>` : ''}
-                    ${m.contraindications ? `<div style="font-size:12px; color:#b23b3b;">Contraindications: ${m.contraindications}</div>` : ''}
-                    ${m.consultDoctor ? `<div style="font-size:12px; color:#6a1b9a;">Consult doctor: ${m.consultDoctor}</div>` : ''}
-                    ${m.adultDosage ? `<div style="font-size:12px; color:#455a64;">Adult dosage: ${m.adultDosage}</div>` : ''}
-                    ${m.unwantedEffects ? `<div style="font-size:12px; color:#b23b3b;">Unwanted effects: ${m.unwantedEffects}</div>` : ''}
-                    ${m.remarks ? `<div style="font-size:12px; color:#455a64;">Remarks: ${m.remarks}</div>` : ''}
+            <label style="position:relative; display:block; border:1px solid #d9e5f7; padding:12px 10px 10px 42px; border-radius:8px; background:#fff; transition:background 120ms ease, border-color 120ms ease;">
+                <input type="checkbox" name="who-med-check" value="${id}" style="position:absolute; top:10px; left:10px;" onchange="handleWhoTileSelect(this)">
+                <div style="display:flex; gap:10px; width:100%; align-items:flex-start;">
+                    <div style="flex:1; min-width:0;">
+                        <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:8px; flex-wrap:wrap;">
+                            <div style="font-weight:800; color:#1f2d3d;">${m.genericName}</div>
+                            <button type="button" class="btn btn-xs" style="background:#0b8457; color:#fff; padding:4px 8px; line-height:1.2;" onclick="event.preventDefault(); event.stopPropagation(); addWhoMeds('${id}')">Add</button>
+                        </div>
+                        ${m.alsoKnownAs ? `<div style="font-size:12px; color:#37474f;">Also known as: ${m.alsoKnownAs}</div>` : ''}
+                        ${m.formStrength ? `<div style="font-size:12px; color:#455a64;">Dosage form/strength: ${m.formStrength}</div>` : ''}
+                        ${m.indications ? `<div style="font-size:12px; color:#455a64;">Indications: ${m.indications}</div>` : ''}
+                        ${m.contraindications ? `<div style="font-size:12px; color:#b23b3b;">Contraindications: ${m.contraindications}</div>` : ''}
+                        ${m.consultDoctor ? `<div style="font-size:12px; color:#6a1b9a;">Consult doctor: ${m.consultDoctor}</div>` : ''}
+                        ${m.adultDosage ? `<div style="font-size:12px; color:#455a64;">Adult dosage: ${m.adultDosage}</div>` : ''}
+                        ${m.unwantedEffects ? `<div style="font-size:12px; color:#b23b3b;">Unwanted effects: ${m.unwantedEffects}</div>` : ''}
+                        ${m.remarks ? `<div style="font-size:12px; color:#455a64;">Remarks: ${m.remarks}</div>` : ''}
+                    </div>
                 </div>
             </label>
         `;
@@ -630,37 +700,46 @@ async function handleWhoListFileImport(event) {
     }
 }
 
-async function addWhoMeds() {
+async function addWhoMeds(triggerId = null) {
     const statusEl = document.getElementById('who-med-status');
     const setStatus = (msg, isErr = false) => {
         if (!statusEl) return;
         statusEl.textContent = msg;
         statusEl.style.color = isErr ? 'var(--red)' : '#1f2d3d';
     };
-    const checked = Array.from(document.querySelectorAll('input[name="who-med-check"]:checked'));
-    if (!checked.length) {
-        setStatus('Select one or more medicines to copy.', true);
+    const checked = Array.from(document.querySelectorAll('input[name="who-med-check"]:checked')).map((el) => el.value);
+    const targetIds = new Set(checked);
+    if (triggerId) targetIds.add(triggerId);
+    if (!targetIds.size) {
+        setStatus('Select one or more medicines to copy, or use an Add button.', true);
         return;
     }
     try {
-        const data = await (await fetchInventory()).json();
+        const data = await fetchInventory();
         const meds = Array.isArray(data) ? data.map(ensurePharmacyDefaults) : [];
         let added = 0;
         let skipped = 0;
-        checked.forEach((input, idx) => {
-            const medTpl = WHO_RECOMMENDED_MEDS.find((m) => `who-${m.id || idx}` === input.value);
+        const addedNames = [];
+        const timestamp = new Date().toISOString();
+        Array.from(targetIds).forEach((targetVal) => {
+            const medTpl = WHO_RECOMMENDED_MEDS.find((m, idx) => `who-${m.id || idx}` === targetVal);
             if (!medTpl) return;
-            const dup = meds.find(
-                (m) =>
-                    (m.genericName || '').trim().toLowerCase() === (medTpl.genericName || '').trim().toLowerCase() &&
-                    (m.strength || '').trim().toLowerCase() === (medTpl.formStrength || '').trim().toLowerCase()
-            );
+            const tplBrand = (medTpl.alsoKnownAs || '').trim().toLowerCase();
+            const tplStrengthRaw = medTpl.formStrength || '';
+            const tplStrengthParts = tplStrengthRaw.split(',');
+            const tplStrength = (tplStrengthParts[1] || tplStrengthParts[0] || '').trim().toLowerCase();
+            const dup = meds.find((m) => {
+                const g = (m.genericName || '').trim().toLowerCase();
+                const b = (m.brandName || '').trim().toLowerCase();
+                const s = (m.strength || '').trim().toLowerCase();
+                return g === (medTpl.genericName || '').trim().toLowerCase() && b === tplBrand && s === tplStrength;
+            });
             if (dup) {
                 skipped += 1;
                 return;
             }
             const newMed = ensurePharmacyDefaults({
-                id: `med-who-${Date.now()}-${idx}`,
+                id: uid('med-who'),
                 genericName: medTpl.genericName || '',
                 brandName: medTpl.alsoKnownAs || '',
                 form: medTpl.formStrength ? medTpl.formStrength.split(',')[0].trim() : '',
@@ -676,7 +755,7 @@ async function addWhoMeds() {
                 primaryIndication: medTpl.indications || '',
                 allergyWarnings: medTpl.contraindications || medTpl.unwantedEffects || '',
                 standardDosage: medTpl.adultDosage || '',
-                notes: medTpl.remarks || medTpl.consultDoctor || 'WHO ship list import',
+                notes: `${medTpl.remarks || medTpl.consultDoctor || 'WHO ship list import'} | Added from WHO list on ${timestamp}`,
                 source: 'who_recommended',
                 photoImported: false,
                 purchaseHistory: [],
@@ -684,6 +763,7 @@ async function addWhoMeds() {
             });
             meds.push(newMed);
             added += 1;
+            addedNames.push(medTpl.genericName || 'Unknown');
         });
         await fetchInventory({
             method: 'POST',
@@ -692,10 +772,22 @@ async function addWhoMeds() {
         });
         pharmacyCache = meds;
         renderPharmacy(pharmacyCache);
-        setStatus(`Added ${added} item(s)${skipped ? `, skipped ${skipped} duplicate(s)` : ''}.`);
+        const summaryMsg = `Added ${added} item(s)${skipped ? `, skipped ${skipped} duplicate(s)` : ''}.`;
+        setStatus(summaryMsg);
+        if (addedNames.length) {
+            alert(`Added to inventory:\\n- ${addedNames.join('\\n- ')}`);
+        }
     } catch (err) {
         setStatus(`Unable to add medicines: ${err.message}`, true);
     }
+}
+
+function handleWhoTileSelect(checkbox) {
+    const tile = checkbox?.closest('label');
+    if (!tile) return;
+    const isChecked = !!checkbox.checked;
+    tile.style.background = isChecked ? '#f1fff4' : '#fff';
+    tile.style.borderColor = isChecked ? '#9fd7ac' : '#d9e5f7';
 }
 
 function daysUntil(dateStr) {
@@ -707,12 +799,13 @@ function daysUntil(dateStr) {
 }
 
 function addPurchaseEntry(medId) {
+    // Adds a fresh expiry row with new ph-id; values remain empty so validation can catch missing dates/qty.
     const container = document.getElementById(`ph-${medId}`);
     if (!container) return;
     const row = document.createElement('div');
     row.className = 'purchase-row';
     row.dataset.medId = medId;
-    const newPhId = `ph-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    const newPhId = uid('ph');
     row.dataset.phId = newPhId;
     row.style = 'border:1px solid #d9e5f7; padding:10px; border-radius:6px; margin-bottom:10px; background:#f5f9ff;';
     row.innerHTML = `
@@ -723,6 +816,16 @@ function addPurchaseEntry(medId) {
             </div>
             <input type="number" class="ph-qty" placeholder="Qty" style="padding:8px; font-size:14px;" oninput="scheduleSaveMedication('${medId}')" title="Quantity tied to this expiry">
         </div>
+        <div style="display:grid; grid-template-columns: repeat(2, minmax(200px, 1fr)); gap:10px; align-items:center; margin-bottom:10px;">
+            <div>
+                <label style="font-weight:700; font-size:12px;">Manufacturer</label>
+                <input type="text" class="ph-manufacturer" placeholder="Manufacturer" style="padding:8px; font-size:14px; width:100%;" oninput="scheduleSaveMedication('${medId}')">
+            </div>
+            <div>
+                <label style="font-weight:700; font-size:12px;">Batch / Lot Number</label>
+                <input type="text" class="ph-batch" placeholder="Batch or Lot" style="padding:8px; font-size:14px; width:100%;" oninput="scheduleSaveMedication('${medId}')">
+            </div>
+        </div>
         <div class="ph-notes-container" style="margin-bottom:10px; display:block;">
             <textarea class="ph-notes" placeholder="Notes (batch/lot/location)" style="width:100%; padding:8px; min-height:60px; font-size:14px;" oninput="scheduleSaveMedication('${medId}')"></textarea>
         </div>
@@ -731,18 +834,36 @@ function addPurchaseEntry(medId) {
     scheduleSaveMedication(medId);
 }
 
+// Persist a single medication after client-side validation. Pulls latest list to avoid
+// editing stale data, performs optimistic UI update, then attempts save; on failure it
+// reloads from server to keep UI consistent.
 async function saveMedication(id, rerender = false) {
     const openMedIds = getOpenMedIds();
     const textHeights = getTextareaHeights();
-    const data = await (await fetchInventory()).json();
+    let data;
+    try {
+        data = await fetchInventory();
+    } catch (err) {
+        showToast(`Unable to load inventory before saving: ${err.message}`, true);
+        return;
+    }
     const meds = Array.isArray(data) ? data.map(ensurePharmacyDefaults) : [];
     const med = meds.find((m) => m.id === id);
-    if (!med) return alert('Medication not found');
+    if (!med) {
+        showToast('Medication not found (stale view). Reloading...', true);
+        return loadPharmacy();
+    }
+    // Duplicate guard stays client-side so the user gets immediate feedback before POST.
     const genericVal = (document.getElementById(`gn-${id}`)?.value || '').trim();
     const strengthVal = (document.getElementById(`str-${id}`)?.value || '').trim();
-    const dup = meds.find((m) => m.id !== id && (m.genericName || '').trim().toLowerCase() === genericVal.toLowerCase() && (m.strength || '').trim().toLowerCase() === strengthVal.toLowerCase());
+    const brandVal = (document.getElementById(`bn-${id}`)?.value || '').trim();
+    const targetKey = canonicalMedKey(genericVal, brandVal, strengthVal, `${formVal} ${strengthVal}`.trim());
+    const dup = meds.find((m) => {
+        if (m.id === id) return false;
+        return canonicalMedKey(m.genericName, m.brandName, m.strength, m.formStrength) === targetKey;
+    });
     if (dup) {
-        alert('A medication with the same generic name and strength already exists. Please adjust to keep entries unique.');
+        alert('A medication with the same Generic + Brand + Strength already exists. Please adjust to keep entries unique.');
         return;
     }
     med.genericName = document.getElementById(`gn-${id}`)?.value || '';
@@ -762,6 +883,7 @@ async function saveMedication(id, rerender = false) {
     med.sortCategory = sortVal === '__custom' ? sortCustom : sortVal || sortCustom || '';
     med.verified = !!document.getElementById(`ver-${id}`)?.checked;
     med.purchaseHistory = collectPurchaseEntries(id);
+    med.formStrength = [med.form, med.strength].join(' ').trim();
     // Keep top-level manufacturer/batch in sync with first purchase entry for compatibility
     if (med.purchaseHistory.length) {
         const first = med.purchaseHistory[0];
@@ -774,20 +896,65 @@ async function saveMedication(id, rerender = false) {
 
     // Optimistic rerender before saving to backend for instant UI feedback
     pharmacyCache = meds;
-    renderPharmacy(pharmacyCache, openMedIds, textHeights);
+    if (rerender) {
+        // Only rerender when layout/structure changes (reduces cursor jumps while typing).
+        renderPharmacy(pharmacyCache, openMedIds, textHeights);
+    }
 
-    await fetchInventory({
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(meds),
+    // Validate and persist with error handling; on failure, reload from server to avoid stale UI.
+    const validation = validateMedication(med);
+    if (!validation.ok) {
+        showToast(validation.message, true);
+        return;
+    }
+    try {
+        await fetchInventory({
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(meds),
+        });
+        showToast('Medication saved');
+    } catch (err) {
+        showToast(`Save failed: ${err.message}`, true);
+        await loadPharmacy();
+    }
+}
+
+// Basic client-side guardrails before hitting the backend.
+function validateMedication(med) {
+    // Keep this in sync with backend ensure_item_schema/_validate_expiry for consistent rejection reasons.
+    if (!med.genericName || !med.genericName.trim()) {
+        return { ok: false, message: 'Generic name is required.' };
+    }
+    const hasStrengthHint = /\d/.test(med.formStrength || med.form || '');
+    // Allow strength embedded in the form field (e.g., "Tablet 500 mg"). If not present,
+    // backfill a placeholder so legacy items without strength can still be saved/removed.
+    if ((!med.strength || !med.strength.trim()) && !hasStrengthHint) {
+        med.strength = med.strength || 'unspecified';
+        med.formStrength = med.formStrength || (med.form ? `${med.form} ${med.strength}` : med.strength);
+    }
+    // Validate purchase entries for negative quantities / bad dates
+    const badQty = (med.purchaseHistory || []).find((p) => {
+        const q = Number(p.quantity);
+        return p.quantity !== '' && (Number.isNaN(q) || q < 0);
     });
+    if (badQty) {
+        return { ok: false, message: 'Expiry rows must have non-negative numeric quantities.' };
+    }
+    const badDate = (med.purchaseHistory || []).find((p) => p.date && Number.isNaN(new Date(p.date).getTime()));
+    if (badDate) {
+        return { ok: false, message: 'Expiry rows must use a valid date (YYYY-MM-DD).' };
+    }
+    // Encourage at least one expiry entry; keep UI permissive but warn in the future if needed.
+    return { ok: true };
 }
 
 function collectPurchaseEntries(medId) {
     const container = document.getElementById(`ph-${medId}`);
     if (!container) return [];
+    // Serialize every row back into a stable structure; ids are preserved so backend upserts map correctly.
     return Array.from(container.querySelectorAll('.purchase-row')).map((row) => {
-        const phId = row.dataset.phId || `ph-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+        const phId = row.dataset.phId || uid('ph');
         return {
             id: phId,
             date: row.querySelector('.ph-date')?.value || '',
@@ -806,51 +973,77 @@ async function deleteMedication(id) {
         alert('Deletion cancelled.');
         return;
     }
-    const data = await (await fetchInventory()).json();
-    const meds = Array.isArray(data) ? data : [];
-    const filtered = meds.filter((m) => m.id !== id);
-    await fetchInventory({
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(filtered),
-    });
-    loadPharmacy();
+    try {
+        const res = await fetch(`/api/data/inventory/${encodeURIComponent(id)}`, {
+            method: 'DELETE',
+            credentials: 'same-origin',
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.error) {
+            throw new Error(data.error || `Status ${res.status}`);
+        }
+        showToast('Medication deleted');
+        await loadPharmacy();
+    } catch (err) {
+        console.error('[pharmacy] delete failed', err);
+        showToast(`Unable to delete medication: ${err.message}`, true);
+    }
 }
 
-async function deletePurchaseEntry(medId) {
+async function deletePurchaseEntry(medId, phId) {
     const container = document.getElementById(`ph-${medId}`);
     if (!container) return;
     const rows = Array.from(container.querySelectorAll('.purchase-row'));
-    if (rows.length === 0) return;
-    const proceed = confirm('Delete the most recent expiry entry?');
+    if (!rows.length) return;
+    const target = phId ? rows.find((r) => r.dataset.phId === phId) : rows[rows.length - 1];
+    if (!target) return;
+    const proceed = confirm('Delete this expiry entry?');
     if (!proceed) return;
     if (rows.length === 1) {
-        // Clear fields if only one row
-        rows[0].querySelector('.ph-date').value = '';
-        rows[0].querySelector('.ph-qty').value = '';
-        rows[0].querySelector('.ph-notes').value = '';
+        // Keep a single empty row for UX; clear instead of remove.
+        target.querySelector('.ph-date').value = '';
+        target.querySelector('.ph-qty').value = '';
+        target.querySelector('.ph-notes').value = '';
+        const manu = target.querySelector('.ph-manufacturer');
+        const batch = target.querySelector('.ph-batch');
+        if (manu) manu.value = '';
+        if (batch) batch.value = '';
     } else {
-        rows[rows.length - 1].remove();
+        target.remove();
     }
     await saveMedication(medId);
 }
 
 async function addMedication() {
-    const data = await (await fetchInventory()).json();
-    const meds = Array.isArray(data) ? data : [];
-    const emptyName = 'Medication';
-    const dup = meds.find((m) => (m.genericName || '').trim().toLowerCase() === emptyName.toLowerCase());
-    if (dup) {
-        alert('Please edit the existing placeholder medication before adding another blank entry (duplicate Medication).');
-        return;
+    let data;
+    try {
+        data = await fetchInventory();
+    } catch (err) {
+        return showToast(`Unable to load inventory: ${err.message}`, true);
     }
-    meds.push(ensurePharmacyDefaults({ id: `med-${Date.now()}` }));
-    await fetchInventory({
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(meds),
-    });
-    loadPharmacy();
+    const meds = Array.isArray(data) ? data : [];
+    const newId = uid('med');
+    const placeholderName = `New medicine ${newId.slice(-6)}`;
+    meds.push(
+        ensurePharmacyDefaults({
+            id: newId,
+            genericName: placeholderName,
+            strength: '',
+            purchaseHistory: [],
+            verified: false,
+        })
+    );
+    try {
+        await fetchInventory({
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(meds),
+        });
+        showToast('Draft medication added — please fill required fields.');
+        loadPharmacy();
+    } catch (err) {
+        showToast(`Unable to add medication: ${err.message}`, true);
+    }
 }
 
 // Expose for inline handlers

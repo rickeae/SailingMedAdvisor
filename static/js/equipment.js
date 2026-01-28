@@ -984,6 +984,12 @@ async function addMedicalStore() {
     loadEquipment(newId);
 }
 
+function canonicalMedKey(generic, brand, strength, formStrength = '') {
+    const clean = (val) => (val || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const strengthVal = clean(strength || formStrength).replace(/unspecified/g, '');
+    return `${clean(generic)}|${clean(brand)}|${strengthVal}`;
+}
+
 async function addMedicationItem() {
     const name = getNewEquipmentVal('med-new-name');
     if (!name) {
@@ -992,35 +998,53 @@ async function addMedicationItem() {
         if (nameField) nameField.focus();
         return;
     }
-    const category = getNewEquipmentVal('med-new-cat') || 'Medication';
     const sortSel = document.getElementById('med-new-sort');
     const sortCustom = document.getElementById('med-new-sort-custom');
     const sortCategoryRaw = sortSel ? (sortSel.value === '__custom' ? (sortCustom?.value || '') : (sortSel.value || '')) : '';
     const sortCategory = (sortCategoryRaw || '').trim();
     const verified = !!document.getElementById('med-new-verified')?.checked;
     const exclude = document.getElementById('med-new-exclude')?.checked || false;
+    const controlled = document.getElementById('med-new-ctrl')?.value === 'true';
+    const dosage = document.getElementById('med-new-dose')?.value || '';
+    const expiryDate = document.getElementById('med-new-exp')?.value || '';
+    const expiryQty = getNewEquipmentVal('med-new-exp-qty') || '';
+    const expiryBatch = getNewEquipmentVal('med-new-exp-batch') || '';
+    const notes = document.getElementById('med-new-notes')?.value || '';
     const newId = `med-${Date.now()}`;
+    const purchaseHistory = [];
+    if (expiryDate) {
+        purchaseHistory.push({
+            id: `ph-${Date.now()}`,
+            date: expiryDate,
+            quantity: expiryQty || getNewEquipmentVal('med-new-qty') || '',
+            notes: '',
+            manufacturer: getNewEquipmentVal('med-new-sup') || '',
+            batchLot: expiryBatch || '',
+        });
+    }
     const newMed = {
         id: newId,
         genericName: name,
-        brandName: '',
-        form: '',
-        strength: '',
+        brandName: getNewEquipmentVal('med-new-brand'),
+        form: getNewEquipmentVal('med-new-form'),
+        strength: getNewEquipmentVal('med-new-strength'),
+        formStrength: [getNewEquipmentVal('med-new-form'), getNewEquipmentVal('med-new-strength')].join(' ').trim(),
         currentQuantity: getNewEquipmentVal('med-new-qty') || '',
         minThreshold: getNewEquipmentVal('med-new-par') || '',
-        unit: '',
+        unit: getNewEquipmentVal('med-new-unit') || '',
         storageLocation: getNewEquipmentVal('med-new-loc') || '',
         expiryDate: document.getElementById('med-new-exp')?.value || '',
         batchLot: '',
-        controlled: false,
+        controlled,
         manufacturer: getNewEquipmentVal('med-new-sup') || '',
-        primaryIndication: '',
-        allergyWarnings: '',
-        standardDosage: '',
+        primaryIndication: getNewEquipmentVal('med-new-indication') || '',
+        allergyWarnings: getNewEquipmentVal('med-new-allergy') || '',
+        standardDosage: dosage,
         sortCategory,
         verified,
+        notes,
         photos: [],
-        purchaseHistory: [],
+        purchaseHistory,
         source: 'manual_entry',
         photoImported: false,
         excludeFromResources: exclude,
@@ -1028,6 +1052,18 @@ async function addMedicationItem() {
 
     const data = await fetchJson('/api/data/inventory');
     const items = Array.isArray(data) ? data : [];
+    const g = (newMed.genericName || '').trim().toLowerCase();
+    const b = (newMed.brandName || '').trim().toLowerCase();
+    const targetKey = canonicalMedKey(g, b, newMed.strength, newMed.formStrength);
+    const dup = items.find((m) => {
+        const mg = (m.genericName || '').trim().toLowerCase();
+        const mb = (m.brandName || '').trim().toLowerCase();
+        return canonicalMedKey(mg, mb, m.strength, m.formStrength) === targetKey;
+    });
+    if (dup) {
+        alert('A medication with the same Generic + Brand + Strength already exists. Please adjust to keep entries unique.');
+        return;
+    }
     items.push(newMed);
     await fetch('/api/data/inventory', {
         method: 'POST',
@@ -1036,7 +1072,7 @@ async function addMedicationItem() {
         credentials: 'same-origin',
     });
 
-    ['med-new-name','med-new-cat','med-new-loc','med-new-subloc','med-new-parent','med-new-exp','med-new-inspect','med-new-batt','med-new-cal','med-new-qty','med-new-par','med-new-sup','med-new-notes']
+    ['med-new-name','med-new-brand','med-new-form','med-new-strength','med-new-loc','med-new-exp','med-new-exp-qty','med-new-exp-batch','med-new-qty','med-new-par','med-new-unit','med-new-sup','med-new-indication','med-new-allergy','med-new-dose','med-new-notes']
         .forEach((id) => { const el = document.getElementById(id); if (el) el.value = ''; });
     const sortSelect = document.getElementById('med-new-sort');
     const sortCustomInput = document.getElementById('med-new-sort-custom');
@@ -1046,10 +1082,8 @@ async function addMedicationItem() {
     if (medVerified) medVerified.checked = false;
     const medExclude = document.getElementById('med-new-exclude');
     if (medExclude) medExclude.checked = false;
-    const typeSel = document.getElementById('med-new-type');
-    if (typeSel) typeSel.value = 'medication';
-    const statusSel = document.getElementById('med-new-status');
-    if (statusSel) statusSel.value = 'In Stock';
+    const ctrlSel = document.getElementById('med-new-ctrl');
+    if (ctrlSel) ctrlSel.value = 'false';
 
     if (typeof loadPharmacy === 'function') {
         loadPharmacy();

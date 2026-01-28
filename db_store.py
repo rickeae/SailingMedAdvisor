@@ -9,6 +9,8 @@ import json
 import shutil
 import sqlite3
 import logging
+import re
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional, Any, Dict
@@ -193,26 +195,6 @@ def _init_db():
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 user_mode TEXT,
                 offline_force_flags INTEGER DEFAULT 0,
-                updated_at TEXT NOT NULL
-            );
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS med_photo_queue (
-                id TEXT PRIMARY KEY,
-                status TEXT,
-                data TEXT,
-                updated_at TEXT NOT NULL
-            );
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS med_photo_jobs (
-                id TEXT PRIMARY KEY,
-                status TEXT,
-                data TEXT,
                 updated_at TEXT NOT NULL
             );
             """
@@ -831,34 +813,6 @@ def _maybe_migrate_settings_meta(conn, now):
     conn.commit()
 
 
-def _maybe_migrate_med_photo(conn, now):
-    """Move med_photo_queue/jobs and context from documents into dedicated tables."""
-    for cat, table in (("med_photo_queue", "med_photo_queue"), ("med_photo_jobs", "med_photo_jobs")):
-        row = conn.execute("SELECT payload FROM documents WHERE category=?", (cat,)).fetchone()
-        if row:
-            try:
-                items = json.loads(row["payload"] or "[]") or []
-            except Exception:
-                items = []
-            conn.execute(f"DELETE FROM {table}")
-            for item in items:
-                conn.execute(
-                    f"""
-                    INSERT INTO {table}(id, status, data, updated_at)
-                    VALUES(:id, :status, :data, :updated_at)
-                    ON CONFLICT(id) DO UPDATE SET
-                        status=excluded.status,
-                        data=excluded.data,
-                        updated_at=excluded.updated_at;
-                    """,
-                    {
-                        "id": str(item.get("id") or item.get("job_id") or item.get("file") or f"{table}-{now}"),
-                        "status": item.get("status"),
-                        "data": json.dumps(item),
-                        "updated_at": now,
-                    },
-                )
-            conn.execute("DELETE FROM documents WHERE category=?", (cat,))
     # context
     row = conn.execute("SELECT payload FROM documents WHERE category='context'").fetchone()
     if row:
@@ -1659,24 +1613,45 @@ def get_inventory_items():
 def ensure_item_schema(item: dict, item_type: str, now: str) -> dict:
     """
     Normalize inbound inventory payloads (pharmacy UI) to the SQL schema used by items/med_expiries.
-    This is intentionally forgiving so legacy keys keep working.
+    Raises ValueError on missing critical fields so callers can present a friendly message.
+    This stays forgiving for legacy/optional fields.
     """
+    source = (item.get("source") or "").strip().lower()
+
     def pick(*keys, default=""):
         for k in keys:
             if k in item and item[k] is not None:
                 return item[k]
         return default
 
-    iid = str(item.get("id") or f"{item_type}-{datetime.utcnow().timestamp()}")
+    iid = str(item.get("id") or f"{item_type}-{uuid.uuid4()}")
     # Compose a friendly display name, preferring brand then generic.
     name = pick("name", "brandName", "genericName", default="")
-    generic = pick("genericName", default="")
-    brand = pick("brandName", default="")
-    form = pick("form", default="")
-    strength = pick("strength", default="")
+    generic = pick("genericName", default="").strip()
+    brand = pick("brandName", default="").strip()
+    form = pick("form", default="").strip()
+    strength = pick("strength", default="").strip()
     form_strength = pick("formStrength", default="").strip()
-    if not form_strength:
-        form_strength = " ".join([form, strength]).strip()
+
+    # Fail fast on missing critical fields so callers can surface friendly errors, while
+    # remaining backwards-compatible with legacy rows that lack strength details.
+    if item_type == "pharma":
+        if not generic:
+            generic = brand or name or "Medication"
+        # Allow strength to be embedded in form/formStrength (e.g., "Tablet 500 mg").
+        strength_hint = bool(re.search(r"\d", form_strength or form))
+        if not strength and not strength_hint and source != "who_recommended":
+            strength = "unspecified"
+        if not form_strength:
+            form_strength = " ".join([form, strength]).strip()
+        if not form_strength:
+            form_strength = strength or "unspecified"
+    else:
+        if not form_strength:
+            form_strength = " ".join([form, strength]).strip()
+
+    if not name:
+        name = brand or generic or name
 
     # User-defined label maps to category column; keep legacy fields too.
     category = pick("sortCategory", "category", default="")
@@ -1706,7 +1681,8 @@ def ensure_item_schema(item: dict, item_type: str, now: str) -> dict:
         "calibrationDue": pick("calibrationDue", default=""),
         "totalQty": pick("totalQty", "currentQuantity", default=""),
         "minPar": pick("minPar", "minThreshold", default=""),
-        "supplier": pick("supplier", "manufacturer", default=""),
+        # Keep supplier separate from per-batch manufacturer; do not overwrite with batch data.
+        "supplier": pick("supplier", default=""),
         "parentId": pick("parentId", default=""),
         "requiresPower": 1 if item.get("requiresPower") else 0,
         "category": category,
@@ -1719,14 +1695,54 @@ def ensure_item_schema(item: dict, item_type: str, now: str) -> dict:
 
 def set_inventory_items(items: list):
     now = datetime.utcnow().isoformat()
+    # Validate and normalize the full payload before touching the database to avoid partial writes.
+    normalized_items = []
+    exp_rows = []
+
+    def _validate_expiry(ph: dict, item_id: str):
+        date_val = ph.get("date") or ""
+        if date_val:
+            try:
+                # Accept YYYY-MM-DD; store as-is if parsable by datetime.fromisoformat
+                datetime.fromisoformat(date_val)
+            except Exception:
+                raise ValueError(f"Invalid expiry date for item {item_id}: {date_val}")
+        qty = ph.get("quantity")
+        if qty not in (None, ""):
+            try:
+                qn = float(qty)
+            except Exception:
+                raise ValueError(f"Invalid quantity for item {item_id}: {qty}")
+            if qn < 0:
+                raise ValueError(f"Quantity cannot be negative for item {item_id}")
+
+    for raw in items or []:
+        normalized = ensure_item_schema(raw, "pharma", now)
+        normalized_items.append(normalized)
+        for ph in raw.get("purchaseHistory") or []:
+            _validate_expiry(ph, normalized["id"])
+            exp_rows.append(
+                {
+                    "id": ph.get("id") or f"ph-{uuid.uuid4()}",
+                    "item_id": normalized["id"],
+                    "date": ph.get("date"),
+                    "quantity": ph.get("quantity"),
+                    "notes": ph.get("notes"),
+                    "manufacturer": ph.get("manufacturer"),
+                    "batchLot": ph.get("batchLot"),
+                    "updated_at": now,
+                }
+            )
+
     with _conn() as conn:
-        conn.execute("DELETE FROM items WHERE itemType='pharma'")
-        conn.execute("DELETE FROM med_expiries")
-        for item in items or []:
-            # Normalize incoming dict, then upsert the parent row and its child expiry rows.
-            item = ensure_item_schema(item, "pharma", now)
-            _insert_item(conn, item, "pharma", now)
-            for ph in item.get("purchaseHistory") or []:
+        try:
+            conn.execute("BEGIN")
+            # Clear existing pharma rows atomically; only commit when all inserts succeed.
+            conn.execute("DELETE FROM items WHERE itemType='pharma'")
+            conn.execute("DELETE FROM med_expiries")
+            for item in normalized_items:
+                _insert_item(conn, item, "pharma", now)
+            for ph in exp_rows:
                 conn.execute(
                     """
                     INSERT INTO med_expiries(
@@ -1743,18 +1759,28 @@ def set_inventory_items(items: list):
                         batchLot=excluded.batchLot,
                         updated_at=excluded.updated_at;
                     """,
-                    {
-                        "id": ph.get("id") or f"ph-{datetime.utcnow().timestamp()}",
-                        "item_id": item["id"],
-                        "date": ph.get("date"),
-                        "quantity": ph.get("quantity"),
-                        "notes": ph.get("notes"),
-                        "manufacturer": ph.get("manufacturer"),
-                        "batchLot": ph.get("batchLot"),
-                        "updated_at": now,
-                    },
+                    ph,
                 )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def delete_inventory_item(item_id: str) -> bool:
+    """Delete a single pharmaceutical item and its expiry rows. Returns True when removed."""
+    if not item_id:
+        return False
+    with _conn() as conn:
+        conn.execute("BEGIN")
+        conn.execute("DELETE FROM med_expiries WHERE item_id=?", (item_id,))
+        cur = conn.execute("DELETE FROM items WHERE id=? AND itemType='pharma'", (item_id,))
+        # Defensive cleanup: remove any orphaned expiry rows to avoid stale records.
+        conn.execute(
+            "DELETE FROM med_expiries WHERE item_id NOT IN (SELECT id FROM items WHERE itemType='pharma')"
+        )
         conn.commit()
+    return cur.rowcount > 0
 
 
 def get_tool_items():
@@ -1871,6 +1897,29 @@ def get_history_entries():
             """
         ).fetchall()
     return [{k: r[k] for k in r.keys()} for r in rows]
+
+
+def get_history_latency_metrics():
+    """Return per-model latency stats derived from history_entries duration_ms."""
+    with _conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT model, COUNT(*) AS count, AVG(duration_ms) AS avg_ms
+            FROM history_entries
+            WHERE duration_ms IS NOT NULL
+            GROUP BY model
+            """
+        ).fetchall()
+    metrics = {}
+    for r in rows:
+        avg_ms = r["avg_ms"] or 0
+        count = r["count"] or 0
+        metrics[r["model"]] = {
+            "count": count,
+            "total_ms": avg_ms * count,
+            "avg_ms": avg_ms,
+        }
+    return metrics
 
 
 def set_history_entries(entries: list):
@@ -1999,86 +2048,6 @@ def set_settings_meta(user_mode: str = None, offline_force_flags: bool = None):
                 WHERE id=1
                 """,
                 {"user_mode": user_mode, "offline_force_flags": 1 if offline_force_flags else 0, "updated_at": now},
-            )
-        conn.commit()
-
-
-def get_med_photo_queue_rows():
-    with _conn() as conn:
-        rows = conn.execute("SELECT id, status, data, updated_at FROM med_photo_queue ORDER BY datetime(updated_at) DESC").fetchall()
-    result = []
-    for r in rows:
-        try:
-            parsed = json.loads(r["data"] or "{}")
-        except Exception:
-            parsed = {}
-        parsed.setdefault("id", r["id"])
-        parsed.setdefault("status", r["status"])
-        parsed["updated_at"] = r["updated_at"]
-        result.append(parsed)
-    return result
-
-
-def set_med_photo_queue_rows(items: list):
-    now = datetime.utcnow().isoformat()
-    with _conn() as conn:
-        conn.execute("DELETE FROM med_photo_queue")
-        for item in items or []:
-            conn.execute(
-                """
-                INSERT INTO med_photo_queue(id, status, data, updated_at)
-                VALUES(:id, :status, :data, :updated_at)
-                ON CONFLICT(id) DO UPDATE SET
-                    status=excluded.status,
-                    data=excluded.data,
-                    updated_at=excluded.updated_at;
-                """,
-                {
-                    "id": str(item.get("id") or item.get("job_id") or item.get("file") or f"queue-{now}"),
-                    "status": item.get("status"),
-                    "data": json.dumps(item),
-                    "updated_at": item.get("updated_at") or now,
-                },
-            )
-        conn.commit()
-
-
-def get_med_photo_jobs_rows():
-    with _conn() as conn:
-        rows = conn.execute("SELECT id, status, data, updated_at FROM med_photo_jobs ORDER BY datetime(updated_at) DESC").fetchall()
-    result = []
-    for r in rows:
-        try:
-            parsed = json.loads(r["data"] or "{}")
-        except Exception:
-            parsed = {}
-        parsed.setdefault("id", r["id"])
-        parsed.setdefault("status", r["status"])
-        parsed["updated_at"] = r["updated_at"]
-        result.append(parsed)
-    return result
-
-
-def set_med_photo_jobs_rows(items: list):
-    now = datetime.utcnow().isoformat()
-    with _conn() as conn:
-        conn.execute("DELETE FROM med_photo_jobs")
-        for item in items or []:
-            conn.execute(
-                """
-                INSERT INTO med_photo_jobs(id, status, data, updated_at)
-                VALUES(:id, :status, :data, :updated_at)
-                ON CONFLICT(id) DO UPDATE SET
-                    status=excluded.status,
-                    data=excluded.data,
-                    updated_at=excluded.updated_at;
-                """,
-                {
-                    "id": str(item.get("id") or item.get("job_id") or item.get("file") or f"job-{now}"),
-                    "status": item.get("status"),
-                    "data": json.dumps(item),
-                    "updated_at": item.get("updated_at") or now,
-                },
             )
         conn.commit()
 

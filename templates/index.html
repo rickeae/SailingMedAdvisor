@@ -393,109 +393,113 @@
                                     <button class="btn btn-sm" style="background:#1b4f72;" onclick="importPharmacyJSON()">Import Pharmaceuticals JSON</button>
                                 </div>
                                 <div class="collapsible" style="margin-bottom:12px;">
-                                    <div id="medication-add-header" class="col-header crew-med-header" data-sidebar-id="equipment-medication-add" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                                    <div id="medication-add-header" class="col-header crew-med-header" data-sidebar-id="equipment-medication-add" onclick="toggleSection(this)" style="background:#f4fff6; justify-content:flex-start;">
                                         <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Add Pharmaceuticals</span><span class="dev-tag">dev:medication-add</span>
                                     </div>
                                     <div id="medication-add-body" class="col-body" style="padding:12px; background:#f8f9fa; display:none;">
                                         <div class="collapsible" style="margin-bottom:12px;">
-                                            <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                                            <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#f4fff6; justify-content:flex-start;">
                                                 <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Manual Entry</span><span class="dev-tag">dev:medication-add-form</span>
                                             </div>
                                             <div class="col-body" style="padding:10px; background:#fff; display:none;">
-                                        <div style="display:grid; grid-template-columns: repeat(2, minmax(240px, 1fr)); gap:10px; margin-bottom:10px;">
-                                            <div>
-                                                <label style="font-weight:700; font-size:12px;">Medication Name *</label>
-                                                <input id="med-new-name" type="text" style="width:100%; padding:8px;" placeholder="e.g., Amoxicillin">
-                                            </div>
-                                            <div>
-                                                <label style="font-weight:700; font-size:12px;">Category *</label>
-                                                <input id="med-new-cat" type="text" style="width:100%; padding:8px;" placeholder="Medication">
-                                            </div>
-                                            <div>
-                                                <label style="font-weight:700; font-size:12px;">Type</label>
-                                                <select id="med-new-type" style="width:100%; padding:8px;">
-                                                    <option value="medication">Medication</option>
-                                                    <option value="consumable">Consumable (one-time)</option>
-                                                    <option value="durable">Durable (reusable)</option>
-                                                </select>
-                                            </div>
-                                            <div>
-                                                <label style="font-weight:700; font-size:12px;">Storage Location</label>
-                                                <input id="med-new-loc" type="text" style="width:100%; padding:8px;" placeholder="Pharmacy Locker">
-                                            </div>
-                                            <div>
-                                                <label style="font-weight:700; font-size:12px;">Sub-Location / Kit</label>
-                                                <input id="med-new-subloc" type="text" style="width:100%; padding:8px;" placeholder="Top shelf, bin A">
-                                            </div>
-                                            <div>
-                                                <label style="font-weight:700; font-size:12px;">Parent Kit ID</label>
-                                                <input id="med-new-parent" type="text" style="width:100%; padding:8px;" placeholder="Pharmacy">
-                                            </div>
-                                            <div>
-                                                <label style="font-weight:700; font-size:12px;">Current Status</label>
-                                                <select id="med-new-status" style="width:100%; padding:8px;">
-                                                    <option value="In Stock">In Stock</option>
-                                                    <option value="In Use">In Use</option>
-                                                    <option value="Sterilizing">Sterilizing</option>
-                                                    <option value="Damaged/Out of Service">Damaged/Out of Service</option>
-                                                </select>
-                                            </div>
-                                            <div>
-                                                <label style="font-weight:700; font-size:12px;">User Label</label>
-                                                <select id="med-new-sort" style="width:100%; padding:8px;" onchange="toggleCustomSortField()">
+                                        <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px; flex-wrap:wrap;">
+                                            <label style="display:flex; align-items:center; gap:6px; font-size:12px; padding:6px 10px; border:1px solid #ffcfe0; border-radius:6px; background:#fff; margin:0;">
+                                                <input id="med-new-exclude" type="checkbox">
+                                                Resource Currently Unavailable
+                                            </label>
+                                            <label style="display:flex; align-items:center; gap:6px; font-size:12px; padding:6px 10px; border:1px solid #c7ddff; border-radius:6px; background:#fff; margin:0;">
+                                                <input id="med-new-verified" type="checkbox">
+                                                Verified
+                                            </label>
+                                            <label style="display:flex; align-items:center; gap:6px; font-size:12px; padding:6px 10px; border:1px solid #c7ddff; border-radius:6px; background:#fff; margin:0;">
+                                                <span style="font-weight:700;">User Label</span>
+                                                <select id="med-new-sort" style="padding:6px 8px;" onchange="toggleCustomSortField()">
                                                     <option value="">Select...</option>
                                                     <option value="__custom">Custom...</option>
                                                 </select>
-                                                <input id="med-new-sort-custom" type="text" placeholder="Custom label" style="margin-top:6px; width:100%; padding:8px; display:none;">
-                                            </div>
-                                            <div style="display:flex; align-items:center; gap:6px;">
-                                                <input id="med-new-verified" type="checkbox">
-                                                <label style="font-size:12px; margin:0;">Verified</label>
+                                                <input id="med-new-sort-custom" type="text" placeholder="Custom label" style="width:160px; padding:6px; margin-left:6px; display:none;">
+                                            </label>
+                                        </div>
+                                        <div style="display:grid; grid-template-columns: repeat(2, minmax(240px, 1fr)); gap:10px; margin-bottom:10px;">
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Generic Name *</label>
+                                                <input id="med-new-name" type="text" style="width:100%; padding:8px;" placeholder="e.g., Amoxicillin">
                                             </div>
                                             <div>
-                                                <label style="font-weight:700; font-size:12px;">Expiry Date</label>
-                                                <input id="med-new-exp" type="date" style="width:100%; padding:8px;">
+                                                <label style="font-weight:700; font-size:12px;">Brand Name</label>
+                                                <input id="med-new-brand" type="text" style="width:100%; padding:8px;" placeholder="Also known as">
                                             </div>
                                             <div>
-                                                <label style="font-weight:700; font-size:12px;">Last Inspection Date</label>
-                                                <input id="med-new-inspect" type="date" style="width:100%; padding:8px;">
+                                                <label style="font-weight:700; font-size:12px;">Form</label>
+                                                <input id="med-new-form" type="text" style="width:100%; padding:8px;" placeholder="Tablet, Capsule, etc.">
                                             </div>
                                             <div>
-                                                <label style="font-weight:700; font-size:12px;">Battery Type & Status</label>
-                                                <input id="med-new-batt" type="text" style="width:100%; padding:8px;" placeholder="n/a or pack info">
+                                                <label style="font-weight:700; font-size:12px;">Strength</label>
+                                                <input id="med-new-strength" type="text" style="width:100%; padding:8px;" placeholder="500mg, 10mg/ml">
+                                            </div>
+                                            <div style="grid-column: 1 / span 2; display:grid; grid-template-columns: repeat(3, minmax(160px, 1fr)); gap:10px;">
+                                                <div>
+                                                    <label style="font-weight:700; font-size:12px;">Current Quantity</label>
+                                                    <input id="med-new-qty" type="number" style="width:100%; padding:8px;" placeholder="e.g., 24">
+                                                </div>
+                                                <div>
+                                                    <label style="font-weight:700; font-size:12px;">Minimum Threshold</label>
+                                                    <input id="med-new-par" type="number" style="width:100%; padding:8px;" placeholder="e.g., 10">
+                                                </div>
+                                                <div>
+                                                    <label style="font-weight:700; font-size:12px;">Unit of Measure</label>
+                                                    <input id="med-new-unit" type="text" style="width:100%; padding:8px;" placeholder="Bottle, Box, Blister">
+                                                </div>
                                             </div>
                                             <div>
-                                                <label style="font-weight:700; font-size:12px;">Calibration Due Date</label>
-                                                <input id="med-new-cal" type="date" style="width:100%; padding:8px;">
+                                                <label style="font-weight:700; font-size:12px;">Storage Location</label>
+                                                <input id="med-new-loc" type="text" style="width:100%; padding:8px;" placeholder="Locker A, Fridge">
                                             </div>
                                             <div>
-                                                <label style="font-weight:700; font-size:12px;">Total Quantity</label>
-                                                <input id="med-new-qty" type="number" style="width:100%; padding:8px;">
+                                                <label style="font-weight:700; font-size:12px;">Controlled Substance?</label>
+                                                <select id="med-new-ctrl" style="width:100%; padding:8px;">
+                                                    <option value="false">No</option>
+                                                    <option value="true">Yes</option>
+                                                </select>
                                             </div>
                                             <div>
-                                                <label style="font-weight:700; font-size:12px;">Minimum Par Level</label>
-                                                <input id="med-new-par" type="number" style="width:100%; padding:8px;">
+                                                <label style="font-weight:700; font-size:12px;">Primary Indication</label>
+                                                <input id="med-new-indication" type="text" style="width:100%; padding:8px;" placeholder="What it's for">
                                             </div>
                                             <div>
-                                                <label style="font-weight:700; font-size:12px;">Supplier / Manufacturer</label>
-                                                <input id="med-new-sup" type="text" style="width:100%; padding:8px;" placeholder="Vendor">
+                                                <label style="font-weight:700; font-size:12px;">Allergy Warnings</label>
+                                                <input id="med-new-allergy" type="text" style="width:100%; padding:8px;" placeholder="e.g., Contains Sulfa">
+                                            </div>
+                                            <div style="grid-column: span 2;">
+                                                <label style="font-weight:700; font-size:12px;">Standard Dosage (adult reference)</label>
+                                                <textarea id="med-new-dose" style="width:100%; padding:8px; min-height:60px;" placeholder="Include adult reference dosing, route, and frequency"></textarea>
                                             </div>
                                             <div style="grid-column: span 2;">
                                                 <label style="font-weight:700; font-size:12px;">Notes</label>
-                                                <textarea id="med-new-notes" style="width:100%; padding:8px; min-height:60px;"></textarea>
+                                                <textarea id="med-new-notes" style="width:100%; padding:8px; min-height:60px;" placeholder="Additional notes, precautions, or remarks"></textarea>
                                             </div>
-                                            <div style="grid-column: span 2;">
-                                                <div style="display:flex; align-items:center; gap:8px;">
-                                                    <input id="med-new-exclude" type="checkbox">
-                                                    <label style="font-size:12px; line-height:1.2; margin:0;">Resource Currently Unavailable</label>
-                                                </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Supplier / Manufacturer</label>
+                                                <input id="med-new-sup" type="text" style="width:100%; padding:8px;" placeholder="Vendor or manufacturer">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Expiry Date (optional)</label>
+                                                <input id="med-new-exp" type="date" style="width:100%; padding:8px;">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Expiry Quantity</label>
+                                                <input id="med-new-exp-qty" type="number" style="width:100%; padding:8px;" placeholder="Qty tied to expiry">
+                                            </div>
+                                            <div>
+                                                <label style="font-weight:700; font-size:12px;">Batch / Lot</label>
+                                                <input id="med-new-exp-batch" type="text" style="width:100%; padding:8px;" placeholder="Batch or lot number">
                                             </div>
                                         </div>
                                         <button onclick="addMedicationItem()" class="btn btn-sm" style="background:var(--dark); width:100%;">Add Pharmaceutical</button>
                                             </div>
                                         </div>
                                         <div class="collapsible" style="margin-top:12px;">
-                                            <div class="col-header crew-med-header" data-sidebar-id="equipment-medication-who" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                                            <div class="col-header crew-med-header" data-sidebar-id="equipment-medication-who" onclick="toggleSection(this)" style="background:#f4fff6; justify-content:flex-start;">
                                                 <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Import Selected Medicines From WHO's 'International Medical Guide for Ships'</span><span class="dev-tag">dev:med-who-import</span>
                                             </div>
                                             <div class="col-body" style="padding:12px; background:#f8f9fa; display:none;">
@@ -540,7 +544,7 @@
                             </div>
                             <div class="col-body" style="padding:12px; display:none; background:#f7fffa; border:1px solid #c9ead6; border-top:none;">
                                 <div id="equipment-add-container" class="collapsible" style="margin-bottom:12px;">
-                                    <div id="equipment-add-header" class="col-header crew-med-header" data-sidebar-id="equipment-add" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                                    <div id="equipment-add-header" class="col-header crew-med-header" data-sidebar-id="equipment-add" onclick="toggleSection(this)" style="background:#f4fff6; justify-content:flex-start;">
                                     <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Add Medical Equipment</span><span class="dev-tag">dev:equipment-add</span>
                                     </div>
                                     <div id="equipment-add-body" class="col-body" style="padding:12px; background:#f8f9fa; display:none;">
@@ -574,7 +578,7 @@
                                             <input id="eq-new-exclude" type="checkbox">
                                             <label style="font-size:12px; line-height:1.2; margin:0;">Resource Currently Unavailable</label>
                                         </div>
-                                        <button onclick="addMedicalStore()" class="btn btn-sm" style="background:var(--dark); width:100%;">+ Add Medical Equipment</button>
+                                        <button onclick="addMedicalStore()" class="btn btn-sm" style="background:var(--dark); width:100%;">Add Medical Equipment</button>
                                     </div>
                                 </div>
                                 <div class="dev-tag" style="margin-bottom:6px;">dev:equipment-list</div>
@@ -587,7 +591,7 @@
                             </div>
                             <div class="col-body" style="padding:12px; display:none; background:#fcf7ff; border:1px solid #e6d7fb; border-top:none;">
                                 <div id="consumables-add-container" class="collapsible" style="margin-bottom:12px;">
-                                    <div id="consumables-add-header" class="col-header crew-med-header" data-sidebar-id="equipment-consumables-add" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                                    <div id="consumables-add-header" class="col-header crew-med-header" data-sidebar-id="equipment-consumables-add" onclick="toggleSection(this)" style="background:#f4fff6; justify-content:flex-start;">
                                         <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Add Consumable</span><span class="dev-tag">dev:consumables-add</span>
                                     </div>
                                     <div id="consumables-add-body" class="col-body" style="padding:12px; background:#f8f9fa; display:none;">
@@ -620,7 +624,7 @@
                                             <input id="cons-new-exclude" type="checkbox">
                                             <label style="font-size:12px; line-height:1.2; margin:0;">Resource Currently Unavailable</label>
                                         </div>
-                                        <button onclick="addConsumableItem()" class="btn btn-sm" style="background:var(--dark); width:100%;"><span class="dev-tag">dev:consumable-add-btn</span>+ Add Consumable</button>
+                                        <button onclick="addConsumableItem()" class="btn btn-sm" style="background:var(--dark); width:100%;"><span class="dev-tag">dev:consumable-add-btn</span>Add Consumable</button>
                                     </div>
                                 </div>
                                 <div class="dev-tag" style="margin-bottom:6px;">dev:consumables-list</div>
@@ -738,7 +742,7 @@
                     </div>
                     <div class="col-body" style="padding:15px; background:#f7fffb; border:1px solid #c8e8d6; border-top:none;">
                         <div class="collapsible" style="margin-bottom:15px;">
-                            <div class="col-header crew-med-header" data-sidebar-id="crew-add" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                            <div class="col-header crew-med-header" data-sidebar-id="crew-add" onclick="toggleSection(this)" style="background:#f4fff6; justify-content:flex-start;">
                                 <span class="dev-tag">dev:crew-add</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Add New Crew Member</span>
                             </div>
                             <div class="col-body" style="padding:15px; background:#f8f9fa;">
@@ -793,7 +797,7 @@
                             <datalist id="countries">
                                 <option value="USA"><option value="Canada"><option value="UK"><option value="Australia"><option value="New Zealand"><option value="France"><option value="Germany"><option value="Spain"><option value="Italy"><option value="Netherlands"><option value="Singapore"><option value="Malaysia"><option value="Thailand"><option value="Philippines"><option value="Japan"><option value="China"><option value="India">
                             </datalist>
-                            <button onclick="addCrew()" class="btn btn-sm" style="background:var(--dark); width:100%;"><span class="dev-tag">dev:crew-add-submit</span>+ Add Crew Member</button>
+                            <button onclick="addCrew()" class="btn btn-sm" style="background:var(--dark); width:100%;"><span class="dev-tag">dev:crew-add-submit</span>Add Crew Member</button>
                         </div>
                         </div>
 
@@ -1030,7 +1034,7 @@
             <h3>Processing Triage Chat…</h3>
         <p id="chat-model-line" style="margin:6px 0; font-weight:700; color:#122b4d;">Model: …</p>
         <p id="chat-eta-line" style="margin:0 0 8px 0; color:#2c3e50;">ETA: calculating…</p>
-        <p>Please wait. Navigation or edits in SailingMedAdvisor are temporarily paused until this response completes.</p>
+        <p>Please wait. Navigation or edits in SailingMedAdvisor<br>are temporarily paused until this response completes.</p>
         </div>
     </div>
 
@@ -1041,7 +1045,7 @@
     <script src="/static/js/utils.js?v=2027"></script>
     <script src="/static/js/chat.js?v=2017"></script>
     <script src="/static/js/crew.js?v=2045"></script>
-<script src="/static/js/pharmacy.js?v=2026"></script>
+<script src="/static/js/pharmacy.js?v=20260128"></script>
 <script src="/static/js/equipment.js?v=2038"></script>
 <script src="/static/js/settings.js?v=2026"></script>
     <script src="/static/js/main.js?v=2024"></script>

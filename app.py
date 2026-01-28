@@ -6,6 +6,8 @@ focused on domain logic while this file glues HTTP -> db_store + static assets.
 """
 
 import os
+os.environ.setdefault("TORCH_USE_CUDA_DSA", "0")
+os.environ.setdefault("USE_FLASH_ATTENTION", "1")
 import json
 import uuid
 import sqlite3
@@ -44,6 +46,7 @@ from db_store import (
     set_model_params,
     get_inventory_items,
     set_inventory_items,
+    delete_inventory_item,
     get_tool_items,
     set_tool_items,
     get_history_entries,
@@ -59,10 +62,7 @@ from db_store import (
     set_triage_options,
     get_settings_meta,
     set_settings_meta,
-    get_med_photo_queue_rows,
-    set_med_photo_queue_rows,
-    get_med_photo_jobs_rows,
-    set_med_photo_jobs_rows,
+    get_history_latency_metrics,
     get_context_payload,
     set_context_payload,
 )
@@ -303,17 +303,12 @@ PHOTO_JOB_WORKER_STARTED = False
 PHOTO_JOB_LOCK = threading.Lock()
 
 
-def _update_chat_metrics(store, model_name: str, duration_ms: int):
-    metrics = db_op("chat_metrics", store=store)
-    if not isinstance(metrics, dict):
-        metrics = {}
-    rec = metrics.get(model_name) or {"count": 0, "total_ms": 0, "avg_ms": 0}
-    rec["count"] = rec.get("count", 0) + 1
-    rec["total_ms"] = rec.get("total_ms", 0) + duration_ms
-    rec["avg_ms"] = rec["total_ms"] / rec["count"]
-    metrics[model_name] = rec
+def _update_chat_metrics(store, model_name: str):
+    """Recompute per-model metrics from history_entries to keep averages accurate."""
+    metrics = get_history_latency_metrics()
+    # Persist snapshot for clients that still read chat_metrics
     db_op("chat_metrics", metrics, store=store)
-    return rec
+    return metrics.get(model_name, {"count": 0, "total_ms": 0, "avg_ms": 0})
 
 
 def _strip_inventory_photos(stores=None):
@@ -347,8 +342,11 @@ async def _log_db_path():
 
 # Model state
 device = "cuda" if torch.cuda.is_available() else "cpu"
-# Prefer bf16 when supported; fall back to fp16 on older GPUs (e.g., RTX 5000)
-if device == "cuda" and torch.cuda.is_bf16_supported():
+# Precision policy: default to bf16 when supported; allow env override
+force_fp16 = os.environ.get("FORCE_FP16", "").strip() == "1"
+if device == "cuda" and force_fp16:
+    dtype = torch.float16
+elif device == "cuda" and torch.cuda.is_bf16_supported():
     dtype = torch.bfloat16
 elif device == "cuda":
     dtype = torch.float16
@@ -356,15 +354,28 @@ else:
     dtype = torch.float32
 models = {"active_name": "", "model": None, "processor": None, "tokenizer": None, "is_text": False}
 MODEL_MUTEX = threading.Lock()
-quant_config = None
+# Try to enable flash attention/SDP kernels; ignore if unavailable
 if device == "cuda":
-    quant_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.float16,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4",
-    )
-    # Allow TF32 for some perf/VRAM savings
+    try:
+        torch.backends.cuda.enable_flash_sdp(True)
+        torch.backends.cuda.enable_mem_efficient_sdp(True)
+        torch.backends.cuda.enable_math_sdp(False)
+    except Exception:
+        pass
+
+# BitsAndBytes (4-bit) is optional; disable cleanly if backend not available.
+quant_config = None
+if device == "cuda" and os.environ.get("DISABLE_BNB", "").strip() != "1":
+    try:
+        _ = __import__("bitsandbytes")
+        quant_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+        )
+    except Exception as exc:
+        print(f"[quant] bitsandbytes unavailable; running without 4-bit quantization ({exc})", flush=True)
     torch.backends.cuda.matmul.allow_tf32 = True
 
 
@@ -594,9 +605,11 @@ def load_model(model_name: str, allow_cpu_large: bool = False):
         )
 
     is_text_only = "text" in model_name.lower()
-    # Balanced mapping with capped GPU memory; spill the rest to CPU/offload
-    device_map = "balanced_low_0" if device == "cuda" else None
-    max_memory = {0: "10GiB", "cpu": "64GiB"} if device == "cuda" else None
+    # Prefer keeping as much on GPU as possible; allow env override
+    device_map = "auto" if device == "cuda" else None
+    max_mem_gpu = os.environ.get("MODEL_MAX_GPU_MEM", "15GiB")
+    max_mem_cpu = os.environ.get("MODEL_MAX_CPU_MEM", "64GiB")
+    max_memory = {0: max_mem_gpu, "cpu": max_mem_cpu} if device == "cuda" else None
     load_path = local_dir or model_name
     if is_text_only:
         models["tokenizer"] = AutoTokenizer.from_pretrained(load_path, use_fast=True, local_files_only=True)
@@ -683,8 +696,6 @@ def db_op(cat, data=None, store=None):
         "tools",
         "history",
         "chats",
-        "med_photo_queue",
-        "med_photo_jobs",
         "chat_metrics",
         "vessel",
     ]
@@ -803,16 +814,6 @@ def db_op(cat, data=None, store=None):
                 raise ValueError("Chat metrics payload must be a JSON object.")
             set_chat_metrics(data)
             return data
-        if cat == "med_photo_queue":
-            if not isinstance(data, list):
-                raise ValueError("med_photo_queue payload must be a JSON array.")
-            set_med_photo_queue_rows(data)
-            return data
-        if cat == "med_photo_jobs":
-            if not isinstance(data, list):
-                raise ValueError("med_photo_jobs payload must be a JSON array.")
-            set_med_photo_jobs_rows(data)
-            return data
         if cat == "context":
             if not isinstance(data, dict):
                 raise ValueError("Context payload must be a JSON object.")
@@ -873,10 +874,6 @@ def db_op(cat, data=None, store=None):
         if not metrics:
             return default_for(cat)
         return metrics
-    if cat == "med_photo_queue":
-        return get_med_photo_queue_rows()
-    if cat == "med_photo_jobs":
-        return get_med_photo_jobs_rows()
     if cat == "context":
         return get_context_payload()
     if cat == "settings":
@@ -1091,9 +1088,13 @@ def load_context(store):
     return {}
 
 
+MED_PHOTO_QUEUE_MEM: List[dict] = []
+MED_PHOTO_JOBS_MEM: List[dict] = []
+
+
 def get_med_photo_queue(store):
-    queue = db_op("med_photo_queue", store=store)
-    return queue if isinstance(queue, list) else []
+    # Legacy compatibility: return in-memory queue (table removed)
+    return list(MED_PHOTO_QUEUE_MEM)
 
 
 def _resolve_med_model(store):
@@ -1130,14 +1131,12 @@ def _merge_inventory_record(med_record: dict, photo_urls: List[str], store):
 
 
 def _load_photo_jobs(store):
-    jobs = db_op("med_photo_jobs", store=store)
-    if not isinstance(jobs, list):
-        jobs = []
-    return jobs
+    return list(MED_PHOTO_JOBS_MEM)
 
 
 def _save_photo_jobs(store, jobs):
-    db_op("med_photo_jobs", jobs, store=store)
+    global MED_PHOTO_JOBS_MEM
+    MED_PHOTO_JOBS_MEM = list(jobs or [])
     log_job(f"[{store['label']}] saved {len(jobs)} job(s)")
 
 
@@ -1432,7 +1431,7 @@ async def export_default_dataset(request: Request, _=Depends(require_auth)):
         default_root.mkdir(parents=True, exist_ok=True)
         default_uploads = default_root / "uploads" / "medicines"
         default_uploads.mkdir(parents=True, exist_ok=True)
-        categories = ["settings", "patients", "inventory", "tools", "history", "vessel", "chats", "med_photo_queue", "med_photo_jobs", "context"]
+        categories = ["settings", "patients", "inventory", "tools", "history", "vessel", "chats", "context"]
         written = []
         for cat in categories:
             data = db_op(cat, store=store)
@@ -1530,7 +1529,7 @@ async def chat_metrics(request: Request, _=Depends(require_auth)):
     """Quick peek at per-model latency/count stats collected during chats."""
     try:
         store = DEFAULT_store
-        metrics = db_op("chat_metrics", store=store)
+        metrics = get_history_latency_metrics()
         return {"metrics": metrics if isinstance(metrics, dict) else {}}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -1672,6 +1671,19 @@ async def who_medicines(_=Depends(require_auth)):
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+@app.delete("/api/data/inventory/{item_id}")
+async def delete_inventory_record(item_id: str, _=Depends(require_auth)):
+    """Delete a single pharmaceutical without revalidating the entire inventory payload."""
+    try:
+        removed = delete_inventory_item(item_id)
+        if not removed:
+            return JSONResponse({"error": "Item not found"}, status_code=status.HTTP_404_NOT_FOUND)
+        return {"status": "deleted", "id": item_id}
+    except Exception:
+        logger.exception("inventory delete failed", extra={"item_id": item_id, "db_path": str(DB_PATH)})
+        return JSONResponse({"error": "Server error"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 @app.api_route("/api/data/{cat}", methods=["GET", "POST"])
 async def manage(cat: str, request: Request, _=Depends(require_auth)):
     """Generic data endpoint; delegates to db_op which is table-backed."""
@@ -1698,6 +1710,10 @@ async def manage(cat: str, request: Request, _=Depends(require_auth)):
                 logger.info(f"[vessel] load result={result}")
         return JSONResponse(result)
     except ValueError as e:
+        try:
+            logger.warning("api/data validation error", extra={"cat": cat, "error": str(e), "db_path": str(DB_PATH)})
+        except Exception:
+            logger.warning(f"api/data validation error cat={cat}: {e}")
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_400_BAD_REQUEST)
     except Exception:
         logger.exception("api/data failed", extra={"cat": cat, "db_path": str(DB_PATH)})
@@ -2188,7 +2204,6 @@ async def chat(request: Request, _=Depends(require_auth)):
                 )
             return JSONResponse({"error": str(e)}, status_code=status.HTTP_400_BAD_REQUEST)
         elapsed_ms = max(int((datetime.now() - start_time).total_seconds() * 1000), 0)
-        metrics = _update_chat_metrics(store, models["active_name"], elapsed_ms)
 
         if not is_priv:
             patient_display = (
@@ -2213,6 +2228,8 @@ async def chat(request: Request, _=Depends(require_auth)):
             existing = db_op("history", store=store)
             existing.append(entry)
             db_op("history", existing, store=store)
+
+        metrics = _update_chat_metrics(store, models["active_name"])
 
         return JSONResponse(
             {
@@ -2620,8 +2637,6 @@ def _clear_store_data(store):
     db_op("tools", [], store=store)
     db_op("history", [], store=store)
     db_op("vessel", {}, store=store)
-    db_op("med_photo_queue", [], store=store)
-    db_op("med_photo_jobs", [], store=store)
     db_op("chats", [], store=store)
     db_op("context", {}, store=store)
 
@@ -2636,7 +2651,7 @@ def _apply_default_dataset(store):
     default_uploads.mkdir(parents=True, exist_ok=True)
     (default_uploads / "medicines").mkdir(parents=True, exist_ok=True)
     # Copy data files
-    for name in ["settings", "patients", "inventory", "tools", "history", "vessel", "chats", "med_photo_queue", "med_photo_jobs", "context"]:
+    for name in ["settings", "patients", "inventory", "tools", "history", "vessel", "chats", "context"]:
         src = default_root / f"{name}.json"
         dest = store["data"] / f"{name}.json"
         if src.exists():

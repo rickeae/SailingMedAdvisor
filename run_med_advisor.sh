@@ -21,9 +21,16 @@ python3 -c "import fastapi, uvicorn" 2>/dev/null || {
     exit 1
 }
 
-# Set environment variables (optional - can be customized)
+# Set environment variables (can be customized)
 # export ADMIN_PASSWORD='your_secure_password'
 # export SECRET_KEY='your_secret_key'
+# Prefer FP16 on RTX-class GPUs and enable flash attention kernels
+export FORCE_FP16=1
+export USE_FLASH_ATTENTION=1
+export TORCH_USE_CUDA_DSA=0
+# Allow model to use more VRAM before offloading
+export MODEL_MAX_GPU_MEM=15GiB
+export MODEL_MAX_CPU_MEM=64GiB
 
 # Detect a LAN IP to share in the startup banner (best effort)
 LAN_IP=$(hostname -I 2>/dev/null | awk 'NF{print $1; exit}')

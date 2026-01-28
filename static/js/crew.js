@@ -563,7 +563,7 @@ function loadCrewData(data, history = [], settings = {}) {
                                     <div><label style="font-weight:700; font-size:12px;">Remarks</label><textarea id="vx-remarks-${p.id}" style="width:100%; padding:6px; min-height:60px;" placeholder="Notes, special handling, country requirements, follow-up instructions..."></textarea></div>
                                 </div>
                             </div>
-                            <button onclick="addVaccine('${p.id}')" class="btn btn-sm" style="background:var(--dark); width:100%;"><span class="dev-tag">dev:crew-vax-add</span>+ Add Vaccine</button>
+                            <button onclick="addVaccine('${p.id}')" class="btn btn-sm" style="background:var(--dark); width:100%;"><span class="dev-tag">dev:crew-vax-add</span>Add Vaccine</button>
                             <div class="dev-tag" style="margin:10px 0 6px;">dev:crew-vax-list</div>
                             <div id="vax-list-${p.id}">${vaccineList}</div>
                         </div>

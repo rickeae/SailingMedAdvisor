@@ -5,7 +5,19 @@ startup wiring, and UI-serving helpers here. Keeps the rest of the codebase
 focused on domain logic while this file glues HTTP -> db_store + static assets.
 """
 
+import torch
+import transformers
 import os
+
+# --- HF Space Diagnostic Output ---
+print("--- ENVIRONMENT DIAGNOSTICS ---")
+print(f"torch version: {torch.__version__}")
+print(f"torch cuda: {torch.version.cuda}")
+print(f"transformers version: {transformers.__version__}")
+print(f"CUDA Available: {torch.cuda.is_available()}")
+print(f"HUGGINGFACE_SPACE_ID: {os.environ.get('HUGGINGFACE_SPACE_ID')}")
+print("-------------------------------")
+
 os.environ.setdefault("TORCH_USE_CUDA_DSA", "0")
 os.environ.setdefault("USE_FLASH_ATTENTION", "1")
 import json
@@ -22,6 +34,7 @@ import re
 import subprocess
 import io
 import logging
+
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
@@ -713,6 +726,17 @@ def load_model(model_name: str, allow_cpu_large: bool = False):
             load_path,
             **model_kwargs,
         )
+    # Force GPU placement for smaller models when requested; fail fast on errors.
+    if (
+        force_cuda
+        and runtime_device == "cuda"
+        and "27b" not in model_name.lower()
+        and "28b" not in model_name.lower()
+    ):
+        try:
+            models["model"] = models["model"].to("cuda")
+        except Exception as exc:
+            raise RuntimeError(f"CUDA_MOVE_FAILED: {exc}")
     if force_cuda or os.environ.get("DEBUG_DEVICE", "").strip() == "1":
         model_obj = models.get("model")
         model_dev = getattr(model_obj, "device", "n/a")

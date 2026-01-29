@@ -543,24 +543,79 @@ def unload_model():
 
 
 def _same_med(a, b):
-    """Decide if two meds are the same item.
-
-    We require a real generic name match; placeholders/empties don't dedupe to avoid swallowing new imports.
-    Strength must match when both are provided.
+    """
+    Determine if two medication records represent the same pharmaceutical item.
+    
+    This function is critical for duplicate detection during imports (e.g., WHO list,
+    photo OCR, CSV uploads) to prevent creating multiple inventory entries for the
+    same medication.
+    
+    Matching Logic:
+    ---------------
+    1. Generic name MUST match (case-insensitive, normalized)
+    2. Placeholder names like "Medication" or empty strings are NOT considered matches
+       to avoid incorrectly deduplicating legitimate imports
+    3. Strength must match when BOTH records have strength specified
+    4. If only one record has strength, they can still match (allows partial imports)
+    
+    Args:
+        a (dict): First medication record with keys: genericName, strength
+        b (dict): Second medication record with keys: genericName, strength
+    
+    Returns:
+        bool: True if medications are considered the same item, False otherwise
+    
+    Examples:
+        >>> _same_med(
+        ...     {"genericName": "Ibuprofen", "strength": "500mg"},
+        ...     {"genericName": "ibuprofen", "strength": "500mg"}
+        ... )
+        True
+        
+        >>> _same_med(
+        ...     {"genericName": "Ibuprofen", "strength": "500mg"},
+        ...     {"genericName": "Ibuprofen", "strength": "200mg"}
+        ... )
+        False
+        
+        >>> _same_med(
+        ...     {"genericName": "Medication", "strength": ""},  # Placeholder
+        ...     {"genericName": "Medication", "strength": ""}
+        ... )
+        False  # Placeholders don't match to avoid false positives
+    
+    Notes:
+        - Brand names are NOT considered in matching (intentional - same generic
+          from different brands should merge)
+        - Form (tablet, capsule, etc.) is NOT considered in matching
+        - This is used by photo import merge logic and WHO list imports
     """
 
     def norm(val):
+        """Normalize a medication name/strength for case-insensitive comparison."""
         v = (val or "").strip().lower()
+        # Treat empty strings and generic placeholders as non-matches
         return "" if v in {"", "medication", "med"} else v
 
+    # Extract and normalize generic names
     ga, gb = norm(a.get("genericName")), norm(b.get("genericName"))
+    
+    # Extract and normalize strengths
     sa, sb = norm(a.get("strength")), norm(b.get("strength"))
+    
+    # Both must have real (non-placeholder) generic names
     if not ga or not gb:
         return False
+    
+    # Generic names must match exactly (after normalization)
     if ga != gb:
         return False
+    
+    # If both have strength specified, they must match
     if sa and sb:
         return sa == sb
+    
+    # If only one has strength (or neither), consider it a match based on generic name alone
     return True
 
 
@@ -585,11 +640,15 @@ def load_model(model_name: str, allow_cpu_large: bool = False):
         raise RuntimeError("LOCAL_INFERENCE_DISABLED")
     if models["active_name"] == model_name:
         return
+    force_cuda = os.environ.get("FORCE_CUDA", "").strip() == "1"
+    runtime_device = "cuda" if torch.cuda.is_available() else "cpu"
+    if force_cuda and runtime_device != "cuda":
+        raise RuntimeError("CUDA_NOT_AVAILABLE")
     local_dir = _resolve_local_model_dir(model_name)
     # Free previous model to avoid VRAM exhaustion when switching
     unload_model()
     # Warn on CPU usage for large model unless explicitly allowed
-    if "28b" in model_name.lower() and device != "cuda" and not allow_cpu_large:
+    if "28b" in model_name.lower() and runtime_device != "cuda" and not allow_cpu_large:
         raise RuntimeError("SLOW_28B_CPU")
 
     # Ensure cache exists (attempt download if allowed and online)
@@ -608,37 +667,61 @@ def load_model(model_name: str, allow_cpu_large: bool = False):
 
     is_text_only = "text" in model_name.lower()
     # Prefer keeping as much on GPU as possible; allow env override
-    device_map = "auto" if device == "cuda" else None
+    if runtime_device == "cuda" and force_cuda:
+        device_map = "cuda"
+    else:
+        device_map = "auto" if runtime_device == "cuda" else "cpu"
     max_mem_gpu = os.environ.get("MODEL_MAX_GPU_MEM", "15GiB")
     max_mem_cpu = os.environ.get("MODEL_MAX_CPU_MEM", "64GiB")
-    max_memory = {0: max_mem_gpu, "cpu": max_mem_cpu} if device == "cuda" else None
+    max_memory = {0: max_mem_gpu, "cpu": max_mem_cpu} if runtime_device == "cuda" else None
+    # On CPU, use float32; on CUDA pick a safe GPU dtype
+    if runtime_device == "cuda":
+        load_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    else:
+        load_dtype = torch.float32
+    model_kwargs = {
+        "torch_dtype": load_dtype,
+        "device_map": device_map,
+        "low_cpu_mem_usage": True,
+        "local_files_only": True,
+    }
+    if runtime_device == "cuda":
+        model_kwargs.update(
+            {
+                "max_memory": max_memory,
+                "offload_folder": str(OFFLOAD_DIR),
+                "quantization_config": quant_config,
+            }
+        )
+    if force_cuda or os.environ.get("DEBUG_DEVICE", "").strip() == "1":
+        print(
+            f"[model] runtime_device={runtime_device} device_map={device_map} dtype={load_dtype} force_cuda={force_cuda}",
+            flush=True,
+        )
     load_path = local_dir or model_name
     if is_text_only:
         models["tokenizer"] = AutoTokenizer.from_pretrained(load_path, use_fast=True, local_files_only=True)
         models["processor"] = None
         models["model"] = AutoModelForCausalLM.from_pretrained(
             load_path,
-            torch_dtype=dtype,
-            device_map=device_map,
-            max_memory=max_memory,
-            low_cpu_mem_usage=True,
-            offload_folder=str(OFFLOAD_DIR),
-            quantization_config=quant_config,
-            local_files_only=True,
+            **model_kwargs,
         )
     else:
         models["processor"] = AutoProcessor.from_pretrained(load_path, use_fast=True, local_files_only=True)
         models["tokenizer"] = None
         models["model"] = AutoModelForImageTextToText.from_pretrained(
             load_path,
-            torch_dtype=dtype,
-            device_map=device_map,
-            max_memory=max_memory,
-            low_cpu_mem_usage=True,
-            offload_folder=str(OFFLOAD_DIR),
-            quantization_config=quant_config,
-            local_files_only=True,
+            **model_kwargs,
         )
+    if force_cuda or os.environ.get("DEBUG_DEVICE", "").strip() == "1":
+        model_obj = models.get("model")
+        model_dev = getattr(model_obj, "device", "n/a")
+        model_map = getattr(model_obj, "hf_device_map", None)
+        try:
+            mem_alloc = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
+        except Exception:
+            mem_alloc = "n/a"
+        print(f"[model] loaded device={model_dev} hf_device_map={model_map} cuda_mem={mem_alloc}", flush=True)
     models["is_text"] = is_text_only
     models["active_name"] = model_name
 
@@ -1111,24 +1194,120 @@ def _resolve_med_model(store):
 
 
 def _merge_inventory_record(med_record: dict, photo_urls: List[str], store):
+    """
+    Merge a medication record from photo OCR into existing inventory.
+    
+    This function is called during the medicine photo import workflow. When a user
+    photographs medication packaging and the OCR extracts details, we need to decide:
+    1. Is this a completely new medication? → Add it to inventory
+    2. Is this a duplicate of existing medication? → Merge/update the existing record
+    
+    Merge Strategy:
+    ---------------
+    - Uses _same_med() to detect duplicates (generic name + strength matching)
+    - If duplicate found:
+      * Append new expiry entries (purchaseHistory) to existing medication
+      * Fill in any BLANK fields in existing record with OCR data
+      * Preserve existing data - never overwrite populated fields
+    - If new medication:
+      * Add as brand new inventory item with fresh ID
+    
+    Args:
+        med_record (dict): Medication data extracted from photo OCR with structure:
+            - genericName, brandName, form, strength (identification)
+            - purchaseHistory (list): Expiry entries from this photo
+            - manufacturer, batchLot, etc. (metadata from packaging)
+        photo_urls (List[str]): URLs to uploaded medication photos for reference
+        store (dict): Store context containing data directory paths
+    
+    Returns:
+        dict: Entry status with keys:
+            - status (str): Always "completed" after merge
+            - inventory_id (str): ID of the medication record (existing or new)
+            - urls (list): Photo URLs associated with this import
+    
+    Side Effects:
+        - Modifies inventory in database (adds or updates medication record)
+        - Preserves all existing expiry entries and adds new ones
+        - Updates medication fields only when they were previously blank
+    
+    Example Scenarios:
+        
+        Scenario 1 - New Medication:
+        >>> _merge_inventory_record(
+        ...     {"genericName": "Aspirin", "strength": "500mg", "purchaseHistory": [...]},
+        ...     ["/uploads/med-photo-1.jpg"],
+        ...     store
+        ... )
+        {"status": "completed", "inventory_id": "med-12345...", "urls": []}
+        # Result: New medication added to inventory
+        
+        Scenario 2 - Duplicate Found (merge):
+        >>> # Existing: Ibuprofen 200mg with manufacturer=""
+        >>> _merge_inventory_record(
+        ...     {"genericName": "Ibuprofen", "strength": "200mg", 
+        ...      "manufacturer": "Pfizer", "purchaseHistory": [...]},
+        ...     ["/uploads/med-photo-2.jpg"],
+        ...     store
+        ... )
+        {"status": "completed", "inventory_id": "med-existing-id", "urls": []}
+        # Result: Existing Ibuprofen updated with:
+        #   - Manufacturer field filled in (was blank)
+        #   - New expiry entry appended to purchaseHistory
+        #   - Original expiry entries preserved
+    
+    Business Logic Notes:
+        - This allows users to photograph the same medication multiple times
+          (e.g., different batches arriving at different dates) without creating
+          duplicate inventory entries
+        - Expiry tracking grows over time as new batches are photographed
+        - OCR data enriches existing records by filling missing details
+    """
+    # Load current inventory from database
     inventory = db_op("inventory", store=store)
+    
+    # Check if this medication already exists (duplicate detection)
     existing = next((m for m in inventory if _same_med(m, med_record)), None)
+    
+    # Prepare return entry
     entry = {"status": "completed", "urls": []}
+    
     if existing:
+        # DUPLICATE FOUND - Merge into existing record
+        
+        # Ensure purchaseHistory array exists (legacy records may not have it)
         existing.setdefault("purchaseHistory", [])
+        
+        # Extract expiry entries from the photo OCR result
         med_record_ph = med_record.get("purchaseHistory") or []
+        
+        # Append new expiry entries to existing medication's history
+        # This allows tracking multiple batches of the same medication
         if med_record_ph:
             existing["purchaseHistory"].extend(med_record_ph)
+        
+        # Fill in any blank fields from OCR data (enrich existing record)
         for key, val in med_record.items():
+            # Skip ID and purchaseHistory (already handled above)
             if key in {"id", "purchaseHistory"}:
                 continue
+            
+            # Only fill in fields that are currently blank/empty
+            # This preserves manually-entered data and prevents OCR from
+            # overwriting good data with extraction errors
             if _is_blank(existing.get(key)) and not _is_blank(val):
                 existing[key] = val
+        
+        # Return the existing medication's ID
         entry["inventory_id"] = existing.get("id")
     else:
+        # NEW MEDICATION - Add to inventory
         inventory.append(med_record)
         entry["inventory_id"] = med_record["id"]
+    
+    # Save updated inventory back to database
     db_op("inventory", inventory, store=store)
+    
     return entry
 
 
@@ -1268,58 +1447,325 @@ def extract_json_payload(text: str):
 
 
 def normalize_medicine_fields(raw: dict, fallback_notes: str):
+    """
+    Normalize medication field names from various sources into standard schema.
+    
+    This function is the **field name translation layer** between external data sources
+    (photo OCR, CSV imports, WHO list, manual entry) and our internal inventory schema.
+    Different sources use different field names, so we normalize them here.
+    
+    Purpose:
+    --------
+    - Photo OCR may return "generic_name", "brand_name", "batch_lot", etc.
+    - Internal inventory uses camelCase: "genericName", "brandName", "batchLot"
+    - This function maps all variants to our standard schema
+    
+    Field Mapping Strategy:
+    -----------------------
+    For each field, we check multiple possible source field names:
+    - genericName: Tries "generic_name", "generic", "name"
+    - brandName: Tries "brand_name", "brand"
+    - batchLot: Tries "batch_lot", "lot"
+    - storageLocation: Tries "storage_location", "storage"
+    - primaryIndication: Tries "indication", "use_case"
+    - allergyWarnings: Tries "allergy_warnings", "allergy", "warnings"
+    - standardDosage: Tries "dosage", "dose", then falls back to notes
+    
+    Args:
+        raw (dict): Medication data from external source (OCR, import, etc.)
+                   Field names may be snake_case or abbreviated
+        fallback_notes (str): Text to use as notes if no notes field present
+                             Typically contains raw OCR output or import context
+    
+    Returns:
+        dict: Medication record with standardized field names matching inventory schema:
+            - genericName (str): Generic/chemical name (e.g., "Ibuprofen")
+            - brandName (str): Trade/brand name (e.g., "Advil")
+            - form (str): Dosage form (tablet, capsule, liquid, etc.)
+            - strength (str): Dosage strength (e.g., "200mg", "5mg/ml")
+            - currentQuantity (str): Current stock quantity
+            - minThreshold (str): Reorder threshold
+            - unit (str): Unit of measure (tablets, ml, boxes, etc.)
+            - storageLocation (str): Where medication is stored on vessel
+            - expiryDate (str): Expiry date (legacy single-date field)
+            - batchLot (str): Batch or lot number from manufacturer
+            - controlled (bool): Whether this is a controlled substance
+            - manufacturer (str): Manufacturer name
+            - primaryIndication (str): Main medical use
+            - allergyWarnings (str): Allergy/contraindication warnings
+            - standardDosage (str): Standard dosing instructions
+            - notes (str): Additional notes or raw OCR text
+    
+    Example Transformations:
+        
+        >>> normalize_medicine_fields(
+        ...     {
+        ...         "generic_name": "Paracetamol",
+        ...         "brand_name": "Tylenol",
+        ...         "batch_lot": "AB12345",
+        ...         "storage_location": "Medical Locker A"
+        ...     },
+        ...     fallback_notes="Imported from photo"
+        ... )
+        {
+            "genericName": "Paracetamol",
+            "brandName": "Tylenol",
+            "batchLot": "AB12345",
+            "storageLocation": "Medical Locker A",
+            "notes": "Imported from photo",
+            # ... (other fields empty)
+        }
+    
+    Business Rules:
+        - Empty strings are preserved (not converted to None) for consistency
+        - Boolean fields (controlled) are explicitly cast to avoid string "false"
+        - Fallback notes ensure we don't lose OCR output even if parsing fails
+        - Multiple field name variants allow flexible import from different sources
+    
+    Related Functions:
+        - Called by: build_inventory_record() after OCR extraction
+        - Used by: Photo import workflow, CSV imports, API imports
+        - Output consumed by: _merge_inventory_record(), inventory display
+    """
+    # Ensure we have a dict to work with (defensive coding)
     raw = raw or {}
+    
     return {
+        # === IDENTIFICATION FIELDS ===
+        # Generic/chemical name - primary identifier for duplicate detection
         "genericName": raw.get("generic_name") or raw.get("generic") or raw.get("name") or "",
+        
+        # Brand/trade name - secondary identifier
         "brandName": raw.get("brand_name") or raw.get("brand") or "",
+        
+        # Dosage form (tablet, capsule, syrup, etc.)
         "form": raw.get("form") or "",
+        
+        # Strength/concentration (200mg, 5%, etc.)
         "strength": raw.get("strength") or "",
+        
+        # === QUANTITY TRACKING ===
+        # Current quantity in stock
         "currentQuantity": raw.get("quantity") or "",
+        
+        # Minimum threshold for reorder alerts
         "minThreshold": raw.get("min_threshold") or "",
+        
+        # Unit of measure (tablets, ml, boxes, etc.)
         "unit": raw.get("unit") or "",
+        
+        # === STORAGE & TRACEABILITY ===
+        # Physical storage location on vessel
         "storageLocation": raw.get("storage_location") or raw.get("storage") or "",
+        
+        # Legacy single expiry date field (now using purchaseHistory)
         "expiryDate": raw.get("expiry_date") or "",
+        
+        # Batch/lot number for traceability
         "batchLot": raw.get("batch_lot") or raw.get("lot") or "",
+        
+        # Controlled substance flag (requires special tracking)
         "controlled": bool(raw.get("controlled") or False),
+        
+        # Manufacturer name
         "manufacturer": raw.get("manufacturer") or "",
+        
+        # === CLINICAL INFORMATION ===
+        # Primary medical indication/use
         "primaryIndication": raw.get("indication") or raw.get("use_case") or "",
+        
+        # Allergy and contraindication warnings
         "allergyWarnings": raw.get("allergy_warnings") or raw.get("allergy") or raw.get("warnings") or "",
+        
+        # Standard dosing instructions
         "standardDosage": raw.get("dosage") or raw.get("dose") or fallback_notes or "",
+        
+        # General notes (often contains raw OCR text as backup)
         "notes": raw.get("notes") or fallback_notes or "",
     }
 
 
 def build_inventory_record(extracted: dict, photo_urls: List[str]):
+    """
+    Construct a complete inventory record from extracted photo OCR data.
+    
+    This function is the final step in the photo import pipeline. After OCR extraction
+    and field normalization, we build a full inventory record ready to be merged into
+    the database.
+    
+    Photo Import Pipeline:
+    ----------------------
+    1. User uploads medication photo(s)
+    2. OCR model extracts text → raw JSON (snake_case field names)
+    3. normalize_medicine_fields() → standardized field names (camelCase)
+    4. **build_inventory_record()** → complete inventory record with metadata
+    5. _merge_inventory_record() → save to database (merge or create new)
+    
+    Key Responsibilities:
+    ---------------------
+    - Generate unique ID for new medication record
+    - Create initial expiry entry in purchaseHistory array
+    - Set metadata flags (source="photo_import", photoImported=True)
+    - Provide fallback values for missing critical fields
+    - Preserve photo URLs for reference/audit trail
+    
+    Args:
+        extracted (dict): Normalized medication data from normalize_medicine_fields()
+                         Contains standardized field names (genericName, brandName, etc.)
+        photo_urls (List[str]): URLs to uploaded medication photos
+                                Currently not stored in record but available for future use
+    
+    Returns:
+        dict: Complete medication inventory record with structure:
+            - id (str): Unique medication identifier (med-<timestamp>)
+            - genericName (str): Generic/chemical name (required, defaults to "Medication")
+            - brandName (str): Trade/brand name
+            - form, strength, currentQuantity, minThreshold, unit
+            - storageLocation, expiryDate, batchLot, controlled
+            - manufacturer, primaryIndication, allergyWarnings, standardDosage
+            - purchaseHistory (list): Array of expiry entries (starts with one entry)
+            - source (str): Always "photo_import" for traceability
+            - photoImported (bool): Always True to flag photo-sourced records
+    
+    Purchase History Structure:
+    ---------------------------
+    Each medication has a purchaseHistory array containing expiry entries.
+    This allows tracking multiple batches of the same medication with different
+    expiration dates.
+    
+    Initial entry created here:
+        {
+            "id": "ph-<uuid>",           # Unique purchase/expiry entry ID
+            "date": "2026-01-29",        # Date added (today)
+            "quantity": "",              # Initially empty (user can fill later)
+            "notes": "Imported from..."  # Import context note
+        }
+    
+    When additional batches arrive, new entries are appended to this array.
+    
+    ID Generation Strategy:
+    -----------------------
+    - Medication ID: "med-<millisecond-timestamp>"
+      * Uses timestamp to ensure uniqueness
+      * Sortable by creation time
+      * Example: "med-1706476800123"
+    
+    - Purchase Entry ID: "ph-<uuid>"
+      * Uses UUID for globally unique identifiers
+      * "ph" prefix = "purchase history"
+      * Example: "ph-a1b2c3d4e5f6..."
+    
+    Fallback Logic:
+    ---------------
+    - If genericName is empty, uses brandName
+    - If both are empty, uses placeholder "Medication"
+    - This ensures every record has a displayable name
+    
+    Example:
+        >>> extracted = {
+        ...     "genericName": "Aspirin",
+        ...     "strength": "500mg",
+        ...     "manufacturer": "Bayer",
+        ...     "notes": "Tablets, 100 count"
+        ... }
+        >>> build_inventory_record(extracted, ["/uploads/med123.jpg"])
+        {
+            "id": "med-1706476800123",
+            "genericName": "Aspirin",
+            "strength": "500mg",
+            "manufacturer": "Bayer",
+            "purchaseHistory": [{
+                "id": "ph-abc123...",
+                "date": "2026-01-29",
+                "quantity": "",
+                "notes": "Tablets, 100 count"
+            }],
+            "source": "photo_import",
+            "photoImported": True,
+            # ... other fields ...
+        }
+    
+    Metadata Fields:
+    ----------------
+    - source: "photo_import" 
+      * Tags where this record came from (photo vs manual vs CSV import)
+      * Used for filtering and audit trails
+      * Never displayed to user directly
+    
+    - photoImported: True
+      * Boolean flag indicating OCR origin
+      * Used to highlight potentially inaccurate data
+      * Allows bulk review of photo-imported medications
+    
+    Related Functions:
+        - Called by: _process_photo_group() after OCR extraction
+        - Consumes: normalize_medicine_fields() output
+        - Feeds into: _merge_inventory_record() for database save
+        - Interacts with: Photo job queue system
+    
+    Business Context:
+        This function bridges the gap between raw OCR output and the structured
+        inventory database. It's part of the "medication intake workflow" that
+        allows crew to quickly add medications by photographing packaging rather
+        than manual data entry.
+    """
+    # Generate unique medication ID using millisecond timestamp
+    # This ensures sortable, unique IDs without database round-trip
     now_id = f"med-{int(datetime.now().timestamp() * 1000)}"
+    
+    # Prepare note for the initial purchase entry
+    # Preserve OCR notes if present, otherwise use generic import message
     note = extracted.get("notes") or "Imported from medication photo."
+    
+    # Create the initial purchase/expiry entry
+    # This is the first entry in the purchaseHistory array
     purchase_row = {
-        "id": f"ph-{uuid.uuid4().hex}",
-        "date": datetime.now().strftime("%Y-%m-%d"),
-        "quantity": "",
-        "notes": note,
+        "id": f"ph-{uuid.uuid4().hex}",              # Unique purchase entry ID
+        "date": datetime.now().strftime("%Y-%m-%d"), # Date added (today)
+        "quantity": "",                               # Empty - user can fill later
+        "notes": note,                                # Import context or OCR notes
     }
+    
     # Tag source for traceability without polluting the display name
     source = "photo_import"
+    
+    # Build complete medication record
     return {
+        # === CORE IDENTIFICATION ===
         "id": now_id,
+        
+        # Generic name is required - use brandName or placeholder as fallback
         "genericName": extracted.get("genericName") or extracted.get("brandName") or "Medication",
+        
         "brandName": extracted.get("brandName") or "",
-        "form": extracted.get("form") or "",
-        "strength": extracted.get("strength") or "",
-        "currentQuantity": extracted.get("currentQuantity") or "",
-        "minThreshold": extracted.get("minThreshold") or "",
-        "unit": extracted.get("unit") or "",
+        
+        # === PHYSICAL PROPERTIES ===
+        "form": extracted.get("form") or "",                    # Tablet, capsule, liquid, etc.
+        "strength": extracted.get("strength") or "",            # Dosage strength
+        "currentQuantity": extracted.get("currentQuantity") or "", # Current stock level
+        "minThreshold": extracted.get("minThreshold") or "",    # Reorder threshold
+        "unit": extracted.get("unit") or "",                    # Unit of measure
+        
+        # === STORAGE & TRACKING ===
         "storageLocation": extracted.get("storageLocation") or "",
-        "expiryDate": extracted.get("expiryDate") or "",
-        "batchLot": extracted.get("batchLot") or "",
-        "controlled": bool(extracted.get("controlled") or False),
+        "expiryDate": extracted.get("expiryDate") or "",        # Legacy single-date field
+        "batchLot": extracted.get("batchLot") or "",           # Batch/lot number
+        "controlled": bool(extracted.get("controlled") or False), # Controlled substance flag
         "manufacturer": extracted.get("manufacturer") or "",
+        
+        # === CLINICAL INFORMATION ===
         "primaryIndication": extracted.get("primaryIndication") or "",
         "allergyWarnings": extracted.get("allergyWarnings") or "",
         "standardDosage": extracted.get("standardDosage") or "",
+        
+        # === EXPIRY TRACKING ===
+        # purchaseHistory array allows tracking multiple batches with different expiry dates
         "purchaseHistory": [purchase_row],
-        "source": source,
-        "photoImported": True,
+        
+        # === METADATA ===
+        # These fields provide traceability and flag photo-sourced data
+        "source": source,              # "photo_import" for audit trail
+        "photoImported": True,         # Flag for UI highlighting/filtering
     }
 
 
@@ -1353,7 +1799,7 @@ def run_medicine_photo_inference(image_path: Path, model_name: str, prompt_text:
             "Extract medicine/package info. Respond with ONLY JSON like "
             '{"generic_name":"","brand_name":"","form":"","strength":"","expiry_date":"","batch_lot":"","storage_location":"",'
             '"manufacturer":"","indication":"","allergy_warnings":"","dosage":"","notes":""}. '
-            "Fill what you can from the image text; leave others \"\". Translate any non-English text to English before returning. "
+            'Fill what you can from the image text; leave others "". Translate any non-English text to English before returning. '
             "No prose, markdown, or apologies.\n"
             + base_prompt
         )

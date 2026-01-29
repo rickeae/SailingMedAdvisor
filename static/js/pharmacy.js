@@ -204,16 +204,71 @@ function toggleCustomSortField() {
     if (!isCustom) custom.value = '';
 }
 
+/**
+ * Normalize a purchase/expiry entry to ensure consistent structure.
+ * 
+ * This is the **client-side equivalent** of the backend's ensure_purchase_defaults.
+ * Purchase entries (also called expiry entries) represent individual batches or
+ * purchases of a medication. Each entry tracks:
+ * - Expiration date for that specific batch
+ * - Quantity received in that batch  
+ * - Manufacturer and batch/lot number for traceability
+ * - Optional notes about storage or source
+ * 
+ * Multiple purchase entries allow tracking different batches of the same medication
+ * that may have different expiration dates - critical for medical inventory management.
+ * 
+ * UI State Management:
+ * --------------------
+ * The `_open` property is UI-only state (not persisted to backend) that controls
+ * whether the notes textarea is expanded by default. This provides a cleaner UI
+ * for entries without notes while allowing quick access when needed.
+ * 
+ * @param {Object} p - Raw purchase/expiry data from server or user input
+ * @param {boolean} open - Whether notes section should be expanded in UI (default: false)
+ * 
+ * @returns {Object} Normalized purchase entry with structure:
+ *   - id {string}: Unique identifier (ph-<uuid>) - stable across saves
+ *   - date {string}: Expiry date in ISO format (YYYY-MM-DD)
+ *   - quantity {string}: Quantity for this batch (can be partial units)
+ *   - notes {string}: Optional notes about batch/storage/source
+ *   - manufacturer {string}: Manufacturer name for this batch
+ *   - batchLot {string}: Batch or lot number from packaging
+ *   - _open {boolean}: UI state - whether notes are expanded (not saved to DB)
+ * 
+ * @example
+ * // New entry (no ID provided)
+ * ensurePurchaseDefaults({
+ *     date: "2026-12-31",
+ *     quantity: "100"
+ * })
+ * // Returns: { id: "ph-abc123...", date: "2026-12-31", quantity: "100", ... }
+ * 
+ * @example  
+ * // Existing entry from server (ID preserved)
+ * ensurePurchaseDefaults({
+ *     id: "ph-12345",
+ *     date: "2025-06-30",
+ *     quantity: "50",
+ *     manufacturer: "Pfizer"
+ * })
+ * // Returns: { id: "ph-12345", date: "2025-06-30", ..., manufacturer: "Pfizer" }
+ * 
+ * Related Functions:
+ * ------------------
+ * - Backend equivalent: ensure_purchase_defaults() in app.py
+ * - Called by: ensurePharmacyDefaults(), renderPurchaseRows()
+ * - Feeds into: collectPurchaseEntries() when saving
+ */
 function ensurePurchaseDefaults(p, open = false) {
-    // Normalize a purchase/expiry entry and keep manufacturer/batch alongside the expiry.
     return {
-        id: p.id || uid('ph'),
-        date: p.date || '',
-        quantity: p.quantity || '',
-        notes: p.notes || '',
-        manufacturer: p.manufacturer || '',
-        batchLot: p.batchLot || '',
-        _open: open
+        id: p.id || uid('ph'),                    // Generate unique ID if not present
+        date: p.date || '',                       // ISO date string (YYYY-MM-DD)
+        quantity: p.quantity || '',               // Batch quantity (string to allow decimals)
+        notes: p.notes || '',                     // Additional batch information
+        manufacturer: p.manufacturer || '',       // Manufacturer for this batch
+        batchLot: p.batchLot || '',              // Batch/lot number for traceability
+        _open: open                               // UI state: notes section expanded?
     };
 }
 
@@ -277,6 +332,11 @@ function handleVerifyToggle(medId) {
             badge.style.border = '1px dashed #b2c7b5';
         }
     }
+    // Update cache immediately to avoid form collapse
+    const idx = pharmacyCache.findIndex((m) => m.id === medId);
+    if (idx !== -1) {
+        pharmacyCache[idx].verified = isVerified;
+    }
     // Save just the verified flag to avoid any expiry validation side-effects.
     fetch(`/api/data/inventory/${encodeURIComponent(medId)}/verify`, {
         method: 'POST',
@@ -289,21 +349,56 @@ function handleVerifyToggle(medId) {
             if (data && data.error) {
                 showToast(`Save failed: ${data.error}`, true);
                 if (cb) cb.checked = !isVerified; // revert UI on failure
+                // revert cache on failure
+                if (idx !== -1) {
+                    pharmacyCache[idx].verified = !isVerified;
+                }
             } else {
                 showToast(isVerified ? 'Marked as Verified' : 'Marked as Not Verified');
-                // update cache so later saves don't overwrite
-                const idx = pharmacyCache.findIndex((m) => m.id === medId);
-                if (idx !== -1) {
-                    pharmacyCache[idx].verified = isVerified;
-                }
-                // refresh single med to sync UI
-                loadPharmacy();
+                // DO NOT call loadPharmacy() - it causes form to collapse
             }
         })
         .catch((err) => {
             showToast(`Save failed: ${err.message}`, true);
             if (cb) cb.checked = !isVerified;
+            // revert cache on error
+            if (idx !== -1) {
+                pharmacyCache[idx].verified = !isVerified;
+            }
         });
+}
+
+function handleExcludeToggle(medId) {
+    const cb = document.getElementById(`exclude-${medId}`);
+    const isExcluded = !!cb?.checked;
+    
+    // Update availability badge directly by ID (same pattern as verified badge)
+    const badge = document.getElementById(`badge-avail-${medId}`);
+    if (badge) {
+        badge.style.background = isExcluded ? '#d32f2f' : '#2e7d32';
+        badge.textContent = isExcluded ? 'Resource Currently Unavailable' : 'Resource Available';
+    }
+    
+    // Update header background colors immediately
+    const header = cb?.closest('.history-item')?.querySelector('.col-header');
+    const body = cb?.closest('.history-item')?.querySelector('.col-body');
+    if (header) {
+        header.style.background = isExcluded ? '#ffecef' : '#eef7ff';
+        header.style.borderColor = isExcluded ? '#ffcfe0' : '#c7ddff';
+    }
+    if (body) {
+        body.style.background = isExcluded ? '#fff6f6' : '#f7fff7';
+        body.style.borderColor = isExcluded ? '#ffcfd0' : '#cfe9d5';
+    }
+    
+    // Update cache immediately
+    const idx = pharmacyCache.findIndex((m) => m.id === medId);
+    if (idx !== -1) {
+        pharmacyCache[idx].excludeFromResources = isExcluded;
+    }
+    
+    // Trigger save without rerender to avoid form collapse
+    scheduleSaveMedication(medId, false);
 }
 
 function canonicalMedKey(generic, brand, strength, formStrength = '') {
@@ -313,13 +408,14 @@ function canonicalMedKey(generic, brand, strength, formStrength = '') {
 }
 
 function scheduleSaveMedication(id, rerender = false) {
-    // Debounce saves so quick typing doesn't flood the backend; rerender when structure changes.
+    // Debounce saves to prevent form collapse during typing.
+    // Longer delay prevents save/reload while user is still typing.
     if (pharmacySaveTimers[id]) {
         clearTimeout(pharmacySaveTimers[id]);
     }
     pharmacySaveTimers[id] = setTimeout(() => {
         saveMedication(id, rerender);
-    }, 50); // very short debounce for snappier UI feedback
+    }, 800); // 800ms debounce - waits for user to pause typing
 }
 
 function getMedicationDisplayName(med) {
@@ -407,37 +503,39 @@ async function preloadPharmacy() {
 }
 
 // Primary loader for the Medical Chest list. Pulls server data, normalizes, renders cards,
-// and keeps the count badge in sync. WHO list is lazy-loaded alongside.
+// and keeps the count badge in sync. WHO list is lazy-loaded on demand.
 async function loadPharmacy() {
     const list = document.getElementById('pharmacy-list');
     if (!list) return;
     list.innerHTML = '<div style="color:#666;">Loading inventory...</div>';
-    // Kick off prerequisites in parallel
-    const preloadPromise = preloadPharmacy().catch((err) => {
-        console.warn('[pharmacy] preload failed', err);
-        throw err;
-    });
-    const whoPromise = loadWhoMedsFromServer();
-    const labelsPromise = ensurePharmacyLabels();
-
+    
     // If we already have cached meds, render them immediately for perceived speed
     if (pharmacyCache.length) {
         updatePharmacyCount(pharmacyCache.length);
         renderPharmacy(pharmacyCache);
-        renderWhoMedList();
+        // Skip - don't block on WHO list
     }
 
     try {
+        // Only fetch critical data first (labels needed for dropdowns)
+        const labelsPromise = ensurePharmacyLabels();
+        
+        // Fetch inventory data
         const data = await fetchInventory();
         pharmacyCache = (Array.isArray(data) ? data : []).map(ensurePharmacyDefaults);
-        await Promise.all([whoPromise, labelsPromise]);
+        
+        // Wait for labels (needed for render)
+        await labelsPromise;
+        
+        // Render immediately - don't wait for WHO list
         populateNewMedUserLabelSelect();
         observePharmacyList();
         updatePharmacyCount(pharmacyCache.length);
         renderPharmacy(pharmacyCache);
-        renderWhoMedList();
         syncPharmacyCountFromDOM();
-        setTimeout(syncPharmacyCountFromDOM, 50);
+        
+        // Load WHO list in background (non-blocking)
+        loadWhoMedsFromServer().catch(err => console.warn('[pharmacy] WHO list load failed:', err));
     } catch (err) {
         updatePharmacyCount(0);
         list.innerHTML = `<div style="color:red;">Error loading inventory: ${err.message}</div>`;
@@ -466,17 +564,24 @@ function renderPharmacy(items, openIds = [], textHeights = {}) {
         return;
     }
     const sorted = sortPharmacyItems(items);
-    list.innerHTML = '<div style="color:#666; padding:12px;">Rendering medicines…</div>';
-    const chunkSize = 40;
+    
+    // For small lists (≤50 items), render immediately without chunking
+    if (sorted.length <= 50) {
+        list.innerHTML = sorted.map((m) => renderMedicationCard(m, openIds.includes(m.id), textHeights)).join('');
+        syncPharmacyCountFromDOM();
+        populateNewMedUserLabelSelect();
+        return;
+    }
+    
+    // For larger lists, use aggressive chunking
+    list.innerHTML = '<div style="color:#666; padding:12px;">Loading medications...</div>';
+    const chunkSize = 100; // Increased from 40 to 100
     let idx = 0;
     list.innerHTML = ''; // clear placeholder
+    
     const renderChunk = () => {
         if (idx >= sorted.length) {
             syncPharmacyCountFromDOM();
-            setTimeout(syncPharmacyCountFromDOM, 50);
-            if (typeof requestAnimationFrame === 'function') {
-                requestAnimationFrame(() => syncPharmacyCountFromDOM());
-            }
             populateNewMedUserLabelSelect();
             return;
         }
@@ -484,8 +589,9 @@ function renderPharmacy(items, openIds = [], textHeights = {}) {
         const html = slice.map((m) => renderMedicationCard(m, openIds.includes(m.id), textHeights)).join('');
         list.insertAdjacentHTML('beforeend', html);
         idx += chunkSize;
-        const scheduler = window.requestIdleCallback || window.requestAnimationFrame || ((fn) => setTimeout(fn, 0));
-        scheduler(renderChunk);
+        
+        // Use setTimeout(0) for fastest rendering without blocking
+        setTimeout(renderChunk, 0);
     };
     renderChunk();
 }
@@ -495,40 +601,52 @@ function renderPurchaseRows(med) {
     //  - Rows carry stable ph-id so deletes map 1:1 to saved rows.
     //  - Manufacturer / batch live per-row (stock provenance).
     //  - We keep at least one row visible for usability.
-    const rows = med.purchaseHistory.length ? med.purchaseHistory : [ensurePurchaseDefaults({}, true)];
+    const rows = med.purchaseHistory.length ? med.purchaseHistory : [ensurePurchaseDefaults({}, false)];
     return rows
-        .map((p) => {
+        .map((p, idx) => {
+            const rowNum = idx + 1;
+            const expDate = p.date || 'No date';
+            const qty = p.quantity || '0';
             return `
-                <div class="purchase-row" data-med-id="${med.id}" data-ph-id="${p.id || ''}" style="border:1px solid #d9e5f7; padding:10px; border-radius:6px; margin-bottom:10px; background:#f5f9ff;">
-                <div style="display:grid; grid-template-columns: repeat(2, minmax(200px, 1fr)); gap:10px; align-items:center; margin-bottom:10px;">
-                    <div style="display:flex; align-items:center; gap:8px;">
-                        <span class="ph-notes-toggle" style="cursor:pointer; font-weight:800; color:var(--dark);" onclick="togglePurchaseNotes(this)">${p._open ? 'v' : '>'}</span>
-                        <input type="date" class="ph-date" value="${p.date || ''}" style="padding:8px; font-size:14px; width:100%;" onchange="scheduleSaveMedication('${med.id}')" title="Expiry Date">
+                <div class="collapsible purchase-row" data-med-id="${med.id}" data-ph-id="${p.id || ''}" style="margin-bottom:8px;">
+                    <div class="col-header crew-med-header" onclick="toggleCrewSection(this)" style="background:#fff; justify-content:flex-start; align-items:center; padding:8px 12px;">
+                        <span class="toggle-label history-arrow" style="font-size:16px; margin-right:8px;">▸</span>
+                        <span style="font-weight:700; color:#37474f;">Batch ${rowNum}</span>
+                        <span style="margin-left:auto; font-size:12px; color:#555;">Exp: ${expDate} • Qty: ${qty}</span>
+                        <button class="btn btn-sm history-action-btn" style="background:var(--red); padding:4px 10px; margin-left:8px; visibility:hidden;" onclick="event.stopPropagation(); deletePurchaseEntry('${med.id}','${p.id || ''}')" title="Delete this batch entry">Delete</button>
                     </div>
-                    <input type="number" class="ph-qty" value="${p.quantity || ''}" placeholder="Qty" style="padding:8px; font-size:14px;" oninput="scheduleSaveMedication('${med.id}')" title="Quantity tied to this expiry">
-                </div>
-                <div style="display:grid; grid-template-columns: repeat(2, minmax(200px, 1fr)); gap:10px; align-items:center; margin-bottom:10px;">
-                    <div>
-                        <label style="font-weight:700; font-size:12px;">Manufacturer</label>
-                        <input type="text" class="ph-manufacturer" value="${p.manufacturer || ''}" placeholder="Manufacturer" style="padding:8px; font-size:14px; width:100%;" oninput="scheduleSaveMedication('${med.id}')">
+                    <div class="col-body" style="padding:10px; display:none; background:#f9fbff; border:1px solid #d9e5f7; border-top:none;">
+                        <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap:10px; margin-bottom:10px;">
+                            <div>
+                                <label style="font-weight:700; font-size:12px; display:block; margin-bottom:4px;">Expiry Date *</label>
+                                <input type="date" class="ph-date" value="${p.date || ''}" style="padding:8px; font-size:14px; width:100%; border:1px solid #d0d7e2; border-radius:4px;" onchange="scheduleSaveMedication('${med.id}')">
+                            </div>
+                            <div>
+                                <label style="font-weight:700; font-size:12px; display:block; margin-bottom:4px;">Quantity *</label>
+                                <input type="number" class="ph-qty" value="${p.quantity || ''}" placeholder="0" style="padding:8px; font-size:14px; width:100%; border:1px solid #d0d7e2; border-radius:4px;" oninput="scheduleSaveMedication('${med.id}')">
+                            </div>
+                        </div>
+                        <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap:10px; margin-bottom:10px;">
+                            <div>
+                                <label style="font-weight:700; font-size:12px; display:block; margin-bottom:4px;">Manufacturer</label>
+                                <input type="text" class="ph-manufacturer" value="${p.manufacturer || ''}" placeholder="Optional" style="padding:8px; font-size:14px; width:100%; border:1px solid #d0d7e2; border-radius:4px;" oninput="scheduleSaveMedication('${med.id}')">
+                            </div>
+                            <div>
+                                <label style="font-weight:700; font-size:12px; display:block; margin-bottom:4px;">Batch / Lot #</label>
+                                <input type="text" class="ph-batch" value="${p.batchLot || ''}" placeholder="Optional" style="padding:8px; font-size:14px; width:100%; border:1px solid #d0d7e2; border-radius:4px;" oninput="scheduleSaveMedication('${med.id}')">
+                            </div>
+                        </div>
+                        <div>
+                            <label style="font-weight:700; font-size:12px; display:block; margin-bottom:4px;">Notes</label>
+                            <textarea class="ph-notes" placeholder="Optional notes about this batch" style="width:100%; padding:8px; min-height:50px; font-size:14px; border:1px solid #d0d7e2; border-radius:4px; resize:vertical;" oninput="scheduleSaveMedication('${med.id}')">${p.notes || ''}</textarea>
+                        </div>
                     </div>
-                    <div>
-                        <label style="font-weight:700; font-size:12px;">Batch / Lot Number</label>
-                        <input type="text" class="ph-batch" value="${p.batchLot || ''}" placeholder="Batch or Lot" style="padding:8px; font-size:14px; width:100%;" oninput="scheduleSaveMedication('${med.id}')">
-                    </div>
-                </div>
-                <div class="ph-notes-container" style="margin-bottom:10px; display:${p._open ? 'block' : 'none'};">
-                    <textarea class="ph-notes" placeholder="Notes (batch/lot/location)" style="width:100%; padding:8px; min-height:60px; font-size:14px;" oninput="scheduleSaveMedication('${med.id}')">${p.notes || ''}</textarea>
-                </div>
-                <div style="display:flex; gap:10px; margin-top:10px; flex-wrap:wrap;">
-                    <button class="btn btn-sm" style="background:var(--red);" onclick="deletePurchaseEntry('${med.id}','${p.id || ''}')">Delete Expiry Entry</button>
-                </div>
-            </div>`;
+                </div>`;
         })
         .join('');
 }
 
-function renderMedicationCard(med, isOpen = true, textHeights = {}) {
+function renderMedicationCard(med, isOpen = false, textHeights = {}) {
     // Render a single medication card with summary badges and collapsible details/expiry tracking.
     const currentQty = getCurrentQuantity(med);
     const lowStock = med.minThreshold && Number(currentQty) <= Number(med.minThreshold);
@@ -549,14 +667,14 @@ function renderMedicationCard(med, isOpen = true, textHeights = {}) {
         ? `<span style="margin-left:8px; padding:2px 8px; border-radius:999px; background:rgba(46,125,50,0.12); color:var(--inquiry); font-size:11px; white-space:nowrap;">${escapeHtml(med.sortCategory.trim())}</span>`
         : '';
     const bodyDisplay = isOpen ? 'display:block;' : 'display:none;';
-    const arrow = isOpen ? 'v' : '>';
+    const arrow = isOpen ? '▾' : '▸';
     const headerBg = med.excludeFromResources ? '#ffecef' : '#eef7ff';
     const headerBorderColor = med.excludeFromResources ? '#ffcfe0' : '#c7ddff';
     const bodyBg = med.excludeFromResources ? '#fff6f6' : '#f7fff7';
     const bodyBorderColor = med.excludeFromResources ? '#ffcfd0' : '#cfe9d5';
     const badgeColor = med.excludeFromResources ? '#d32f2f' : '#2e7d32';
     const badgeText = med.excludeFromResources ? 'Resource Currently Unavailable' : 'Resource Available';
-    const availabilityBadge = `<span style="padding:2px 10px; border-radius:999px; background:${badgeColor}; color:#fff; font-size:11px; white-space:nowrap;">${badgeText}</span>`;
+    const availabilityBadge = `<span id="badge-avail-${med.id}" style="padding:2px 10px; border-radius:999px; background:${badgeColor}; color:#fff; font-size:11px; white-space:nowrap;">${badgeText}</span>`;
     const verifiedBadge = med.verified
         ? `<span class="dev-tag">dev:med-verified</span><span id="badge-ver-${med.id}" style="padding:2px 10px; border-radius:999px; background:var(--inquiry); color:#fff; font-size:11px; white-space:nowrap;">Verified</span>`
         : `<span class="dev-tag">dev:med-verified</span><span id="badge-ver-${med.id}" style="padding:2px 10px; border-radius:999px; background:transparent; color:var(--inquiry); font-size:11px; white-space:nowrap; border:1px dashed #b2c7b5;">Not Verified</span>`;
@@ -578,13 +696,13 @@ function renderMedicationCard(med, isOpen = true, textHeights = {}) {
             <div class="collapsible" style="margin-bottom:10px;">
                 <div class="col-header crew-med-header" onclick="toggleMedDetails(this)" style="background:#fff; justify-content:flex-start; align-items:center;">
                     <span class="dev-tag">dev:med-details</span>
-                    <span class="detail-icon history-arrow" style="font-size:16px; margin-right:8px;">v</span>
+                    <span class="detail-icon history-arrow" style="font-size:16px; margin-right:8px;">▾</span>
                     <span style="font-weight:700;">Medication Details</span>
                 </div>
             <div class="col-body" style="padding:10px; display:block;" id="details-${med.id}">
                 <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px; flex-wrap:wrap;">
                     <label style="display:flex; align-items:center; gap:6px; font-size:12px; padding:6px 10px; border:1px solid #ffcfe0; border-radius:6px; background:#fff; margin:0;">
-                        <input id="exclude-${med.id}" type="checkbox" ${med.excludeFromResources ? 'checked' : ''} onchange="scheduleSaveMedication('${med.id}', true)">
+                        <input id="exclude-${med.id}" type="checkbox" ${med.excludeFromResources ? 'checked' : ''} onchange="handleExcludeToggle('${med.id}')">
                         Resource Currently Unavailable
                     </label>
                     <label style="display:flex; align-items:center; gap:6px; font-size:12px; padding:6px 10px; border:1px solid #c7ddff; border-radius:6px; background:#fff; margin:0;">
@@ -652,15 +770,51 @@ function renderMedicationCard(med, isOpen = true, textHeights = {}) {
                     </div>
                 </div>
             </div>
-            <div style="margin:10px 0; border-top:1px solid #d0dff5; padding-top:10px;">
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; gap:8px;">
-                    <div style="display:flex; align-items:center; gap:6px; font-weight:800; color:var(--dark);">
-                        <span>Expiry Tracking</span>
-                        <span class="dev-tag">dev:med-expiry</span>
-                    </div>
-                    <button class="btn btn-sm" style="background:var(--inquiry);" onclick="addPurchaseEntry('${med.id}')">Add Entry</button>
+            <div class="collapsible" style="margin-top:12px;">
+                <div class="col-header crew-med-header" onclick="toggleCrewSection(this)" style="background:#fff6e8; border:1px solid #f0d9a8; justify-content:flex-start;">
+                    <span class="dev-tag">dev:med-expiry-shell</span>
+                    <span class="toggle-label history-arrow" style="font-size:18px; margin-right:8px;">▸</span>
+                    <span style="font-weight:700;">Expiry Tracking</span>
+                    <span style="font-size:12px; color:#6a5b3a; margin-left:8px;">${med.purchaseHistory.length} batch(es)</span>
                 </div>
-                <div id="ph-${med.id}">${renderPurchaseRows(med)}</div>
+                <div class="col-body" style="padding:10px; background:#fffdf7; border:1px solid #f0d9a8; border-top:none; display:none;">
+                    <div class="collapsible" style="margin-bottom:10px;">
+                        <div class="col-header crew-med-header" onclick="toggleCrewSection(this)" style="background:#fff; justify-content:flex-start; align-items:center;">
+                            <span class="dev-tag">dev:med-expiry-add-form</span>
+                            <span class="toggle-label history-arrow" style="font-size:16px; margin-right:8px;">▸</span>
+                            <span style="font-weight:700;">Add New Batch Entry</span>
+                        </div>
+                        <div class="col-body" style="padding:10px; display:none; background:#f9fbff; border:1px solid #d9e5f7; border-top:none;">
+                            <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap:10px; margin-bottom:10px;">
+                                <div>
+                                    <label style="font-weight:700; font-size:12px; display:block; margin-bottom:4px;">Expiry Date *</label>
+                                    <input type="date" id="new-exp-date-${med.id}" style="padding:8px; font-size:14px; width:100%; border:1px solid #d0d7e2; border-radius:4px;">
+                                </div>
+                                <div>
+                                    <label style="font-weight:700; font-size:12px; display:block; margin-bottom:4px;">Quantity *</label>
+                                    <input type="number" id="new-exp-qty-${med.id}" placeholder="0" style="padding:8px; font-size:14px; width:100%; border:1px solid #d0d7e2; border-radius:4px;">
+                                </div>
+                            </div>
+                            <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap:10px; margin-bottom:10px;">
+                                <div>
+                                    <label style="font-weight:700; font-size:12px; display:block; margin-bottom:4px;">Manufacturer</label>
+                                    <input type="text" id="new-exp-manu-${med.id}" placeholder="Optional" style="padding:8px; font-size:14px; width:100%; border:1px solid #d0d7e2; border-radius:4px;">
+                                </div>
+                                <div>
+                                    <label style="font-weight:700; font-size:12px; display:block; margin-bottom:4px;">Batch / Lot #</label>
+                                    <input type="text" id="new-exp-batch-${med.id}" placeholder="Optional" style="padding:8px; font-size:14px; width:100%; border:1px solid #d0d7e2; border-radius:4px;">
+                                </div>
+                            </div>
+                            <div>
+                                <label style="font-weight:700; font-size:12px; display:block; margin-bottom:4px;">Notes</label>
+                                <textarea id="new-exp-notes-${med.id}" placeholder="Optional notes about this batch" style="width:100%; padding:8px; min-height:50px; font-size:14px; border:1px solid #d0d7e2; border-radius:4px; resize:vertical;"></textarea>
+                            </div>
+                            <button onclick="addPurchaseEntry('${med.id}')" class="btn btn-sm" style="background:var(--dark); width:100%; margin-top:10px;">Add Batch Entry</button>
+                        </div>
+                    </div>
+                    <div class="dev-tag" style="margin:10px 0 6px;">dev:med-expiry-list</div>
+                    <div id="ph-${med.id}">${renderPurchaseRows(med)}</div>
+                </div>
             </div>
         </div>
     </div>`;
@@ -874,39 +1028,86 @@ function daysUntil(dateStr) {
     return Math.ceil(diff / (1000 * 60 * 60 * 24));
 }
 
+function clearExpiryForm(medId) {
+    const fields = ['new-exp-date', 'new-exp-qty', 'new-exp-manu', 'new-exp-batch', 'new-exp-notes'];
+    fields.forEach(prefix => {
+        const el = document.getElementById(`${prefix}-${medId}`);
+        if (el) el.value = '';
+    });
+}
+
 function addPurchaseEntry(medId) {
-    // Adds a fresh expiry row with new ph-id; values remain empty so validation can catch missing dates/qty.
+    // Read values from the add form (like crew vaccine pattern)
+    const date = document.getElementById(`new-exp-date-${medId}`)?.value || '';
+    const qty = document.getElementById(`new-exp-qty-${medId}`)?.value || '';
+    const manu = document.getElementById(`new-exp-manu-${medId}`)?.value || '';
+    const batch = document.getElementById(`new-exp-batch-${medId}`)?.value || '';
+    const notes = document.getElementById(`new-exp-notes-${medId}`)?.value || '';
+    
+    // Validate required fields (like crew vaccine pattern)
+    if (!date) {
+        alert('Please enter an Expiry Date');
+        const dateField = document.getElementById(`new-exp-date-${medId}`);
+        if (dateField) dateField.focus();
+        return;
+    }
+    if (!qty) {
+        alert('Please enter a Quantity');
+        const qtyField = document.getElementById(`new-exp-qty-${medId}`);
+        if (qtyField) qtyField.focus();
+        return;
+    }
+    
     const container = document.getElementById(`ph-${medId}`);
     if (!container) return;
+    
+    // Get current batch count for numbering
+    const currentRows = container.querySelectorAll('.purchase-row').length;
+    const rowNum = currentRows + 1;
+    
+    // Create new row with values from form
     const row = document.createElement('div');
     row.className = 'purchase-row';
     row.dataset.medId = medId;
     const newPhId = uid('ph');
     row.dataset.phId = newPhId;
-    row.style = 'border:1px solid #d9e5f7; padding:10px; border-radius:6px; margin-bottom:10px; background:#f5f9ff;';
+    row.style.cssText = 'border:1px solid #d9e5f7; padding:12px; border-radius:8px; margin-bottom:12px; background:#fff; position:relative;';
     row.innerHTML = `
-        <div style="display:grid; grid-template-columns: repeat(2, minmax(200px, 1fr)); gap:10px; align-items:center; margin-bottom:10px;">
-            <div style="display:flex; align-items:center; gap:8px;">
-                <span class="ph-notes-toggle" style="cursor:pointer; font-weight:800; color:var(--dark);" onclick="togglePurchaseNotes(this)">v</span>
-                <input type="date" class="ph-date" style="padding:8px; font-size:14px; width:100%;" onchange="scheduleSaveMedication('${medId}')" title="Expiry Date">
-            </div>
-            <input type="number" class="ph-qty" placeholder="Qty" style="padding:8px; font-size:14px;" oninput="scheduleSaveMedication('${medId}')" title="Quantity tied to this expiry">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+            <span style="font-weight:700; color:#37474f;">Batch ${rowNum}</span>
+            <button class="btn btn-sm" style="background:var(--red); padding:4px 10px;" onclick="deletePurchaseEntry('${medId}','${newPhId}')" title="Delete this batch entry">Delete</button>
         </div>
-        <div style="display:grid; grid-template-columns: repeat(2, minmax(200px, 1fr)); gap:10px; align-items:center; margin-bottom:10px;">
+        <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap:10px; margin-bottom:10px;">
             <div>
-                <label style="font-weight:700; font-size:12px;">Manufacturer</label>
-                <input type="text" class="ph-manufacturer" placeholder="Manufacturer" style="padding:8px; font-size:14px; width:100%;" oninput="scheduleSaveMedication('${medId}')">
+                <label style="font-weight:700; font-size:12px; display:block; margin-bottom:4px;">Expiry Date *</label>
+                <input type="date" class="ph-date" value="${date}" style="padding:8px; font-size:14px; width:100%; border:1px solid #d0d7e2; border-radius:4px;" onchange="scheduleSaveMedication('${medId}')">
             </div>
             <div>
-                <label style="font-weight:700; font-size:12px;">Batch / Lot Number</label>
-                <input type="text" class="ph-batch" placeholder="Batch or Lot" style="padding:8px; font-size:14px; width:100%;" oninput="scheduleSaveMedication('${medId}')">
+                <label style="font-weight:700; font-size:12px; display:block; margin-bottom:4px;">Quantity *</label>
+                <input type="number" class="ph-qty" value="${qty}" placeholder="0" style="padding:8px; font-size:14px; width:100%; border:1px solid #d0d7e2; border-radius:4px;" oninput="scheduleSaveMedication('${medId}')">
             </div>
         </div>
-        <div class="ph-notes-container" style="margin-bottom:10px; display:block;">
-            <textarea class="ph-notes" placeholder="Notes (batch/lot/location)" style="width:100%; padding:8px; min-height:60px; font-size:14px;" oninput="scheduleSaveMedication('${medId}')"></textarea>
+        <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap:10px; margin-bottom:10px;">
+            <div>
+                <label style="font-weight:700; font-size:12px; display:block; margin-bottom:4px;">Manufacturer</label>
+                <input type="text" class="ph-manufacturer" value="${manu}" placeholder="Optional" style="padding:8px; font-size:14px; width:100%; border:1px solid #d0d7e2; border-radius:4px;" oninput="scheduleSaveMedication('${medId}')">
+            </div>
+            <div>
+                <label style="font-weight:700; font-size:12px; display:block; margin-bottom:4px;">Batch / Lot #</label>
+                <input type="text" class="ph-batch" value="${batch}" placeholder="Optional" style="padding:8px; font-size:14px; width:100%; border:1px solid #d0d7e2; border-radius:4px;" oninput="scheduleSaveMedication('${medId}')">
+            </div>
+        </div>
+        <div>
+            <label style="font-weight:700; font-size:12px; display:block; margin-bottom:4px;">Notes</label>
+            <textarea class="ph-notes" placeholder="Optional notes about this batch" style="width:100%; padding:8px; min-height:50px; font-size:14px; border:1px solid #d0d7e2; border-radius:4px; resize:vertical;" oninput="scheduleSaveMedication('${medId}')">${notes}</textarea>
         </div>
     `;
     container.appendChild(row);
+    
+    // Clear the form fields (like crew vaccine pattern)
+    clearExpiryForm(medId);
+    
+    // Save medication with new batch entry
     scheduleSaveMedication(medId);
 }
 
@@ -935,8 +1136,9 @@ async function saveMedication(id, rerender = false) {
     const genericVal = (document.getElementById(`gn-${id}`)?.value || '').trim();
     const strengthVal = (document.getElementById(`str-${id}`)?.value || '').trim();
     const brandVal = (document.getElementById(`bn-${id}`)?.value || '').trim();
+    const formVal = (document.getElementById(`form-${id}`)?.value || '').trim();
     const targetKey = canonicalMedKey(genericVal, brandVal, strengthVal, `${formVal} ${strengthVal}`.trim());
-    const dup = meds.find((m) => {
+    const dup = pharmacyCache.find((m) => {
         if (m.id === id) return false;
         return canonicalMedKey(m.genericName, m.brandName, m.strength, m.formStrength) === targetKey;
     });
@@ -997,17 +1199,30 @@ async function saveMedication(id, rerender = false) {
         return;
     }
     try {
-        await fetch(`/api/data/inventory/${encodeURIComponent(id)}`, {
+        const res = await fetch(`/api/data/inventory/${encodeURIComponent(id)}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'same-origin',
             body: JSON.stringify(med),
         });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.error) {
+            throw new Error(data.error || `Status ${res.status}`);
+        }
         showToast('Medication saved');
-        // Refresh from server to ensure purchase history / flags persist
-        await loadPharmacy();
+        // Update local cache without full reload to prevent form collapse
+        const idx = pharmacyCache.findIndex(m => m.id === id);
+        if (idx !== -1) {
+            pharmacyCache[idx] = med;
+        }
+        // Only rerender if structure changed (labels, availability, etc)
+        if (rerender) {
+            renderPharmacy(pharmacyCache, openMedIds, textHeights);
+        }
     } catch (err) {
         showToast(`Save failed: ${err.message}`, true);
+        console.error('[pharmacy] saveMedication error:', err);
+        // On error, reload from server to ensure consistency
         await loadPharmacy();
     }
 }
@@ -1029,19 +1244,127 @@ function validateMedication(med) {
     return { ok: true };
 }
 
+/**
+ * Collect and serialize all expiry entries from the DOM for a specific medication.
+ * 
+ * This is the **critical serialization function** that bridges UI state → data model.
+ * When a user edits expiry information in the UI, this function extracts all the
+ * values from the DOM and packages them into the purchaseHistory array structure
+ * expected by the backend.
+ * 
+ * Serialization Flow:
+ * -------------------
+ * 1. User edits expiry fields in the UI (date, quantity, manufacturer, batch, notes)
+ * 2. Change triggers scheduleSaveMedication() → saveMedication()
+ * 3. saveMedication() calls **collectPurchaseEntries()** to read current UI state
+ * 4. Serialized data is sent to backend via PUT /api/data/inventory/{id}
+ * 5. Backend validates and persists to database
+ * 
+ * ID Stability Contract:
+ * ---------------------
+ * Purchase entry IDs (ph-xxx) are **stable across saves**. This is critical because:
+ * - Backend uses IDs to determine update vs insert (upsert logic)
+ * - Editing an existing entry preserves its ID → backend updates in place
+ * - Adding a new entry generates new ID → backend creates new record
+ * - Deleting an entry removes its DOM row → backend deletes from database
+ * 
+ * This ID stability enables precise batch-level tracking where each expiry entry
+ * maintains its identity throughout its lifecycle.
+ * 
+ * @param {string} medId - The medication ID whose expiry entries to collect
+ * 
+ * @returns {Array<Object>} Array of purchase/expiry entries with structure:
+ *   - id {string}: Stable purchase entry ID (ph-<uuid>)
+ *   - date {string}: Expiry date from date input (ISO format YYYY-MM-DD)
+ *   - quantity {string}: Quantity from number input (can be decimal)
+ *   - notes {string}: Notes from textarea
+ *   - manufacturer {string}: Manufacturer name from text input
+ *   - batchLot {string}: Batch/lot number from text input
+ * 
+ * @example
+ * // User has edited two expiry entries in the UI
+ * collectPurchaseEntries('med-12345')
+ * // Returns:
+ * [
+ *   {
+ *     id: "ph-abc123",
+ *     date: "2026-12-31",
+ *     quantity: "100",
+ *     manufacturer: "Pfizer",
+ *     batchLot: "LOT-456",
+ *     notes: "Refrigerate"
+ *   },
+ *   {
+ *     id: "ph-def456",
+ *     date: "2025-06-30",
+ *     quantity: "50",
+ *     manufacturer: "Bayer",
+ *     batchLot: "BATCH-789",
+ *     notes: ""
+ *   }
+ * ]
+ * 
+ * Edge Cases Handled:
+ * ------------------
+ * - Missing container: Returns empty array (medication may not exist or not rendered)
+ * - Missing ph-id on row: Generates new ID (defensive - shouldn't happen normally)
+ * - Missing DOM elements: Uses empty string fallbacks (?.value || '')
+ * - Empty values: Preserved as empty strings (backend validates required fields)
+ * 
+ * Data Flow Integration:
+ * ---------------------
+ * This function is part of the critical save path:
+ * ```
+ * User Edit → collectPurchaseEntries() → saveMedication() → 
+ * → Backend PUT → Database persist → UI refresh
+ * ```
+ * 
+ * Related Functions:
+ * ------------------
+ * - Called by: saveMedication() during save operation
+ * - Counterpart: renderPurchaseRows() (data → DOM rendering)
+ * - Feeds into: Backend upsert_inventory_item() for persistence
+ * - Depends on: DOM structure created by renderPurchaseRows()
+ * 
+ * DOM Structure Expected:
+ * ----------------------
+ * Container: #ph-{medId}
+ * Rows: .purchase-row elements with data-ph-id attribute
+ * Fields within each row:
+ *   - .ph-date (date input)
+ *   - .ph-qty (number input)
+ *   - .ph-notes (textarea)
+ *   - .ph-manufacturer (text input)
+ *   - .ph-batch (text input)
+ * 
+ * Business Context:
+ * ----------------
+ * This function enables batch-level inventory tracking - critical for medical
+ * supplies where different batches of the same medication have different:
+ * - Expiration dates (safety compliance)
+ * - Manufacturers (quality traceability)
+ * - Lot numbers (recall management)
+ * - Quantities (stock management)
+ */
 function collectPurchaseEntries(medId) {
+    // Locate the container holding all expiry rows for this medication
     const container = document.getElementById(`ph-${medId}`);
     if (!container) return [];
-    // Serialize every row back into a stable structure; ids are preserved so backend upserts map correctly.
+    
+    // Serialize every row back into a stable structure
+    // IDs are preserved so backend upserts map correctly (update vs insert)
     return Array.from(container.querySelectorAll('.purchase-row')).map((row) => {
+        // Extract stable purchase entry ID from data attribute
+        // Generate new ID if missing (defensive - shouldn't happen in normal flow)
         const phId = row.dataset.phId || uid('ph');
+        
         return {
-            id: phId,
-            date: row.querySelector('.ph-date')?.value || '',
-            quantity: row.querySelector('.ph-qty')?.value || '',
-            notes: row.querySelector('.ph-notes')?.value || '',
-            manufacturer: row.querySelector('.ph-manufacturer')?.value || '',
-            batchLot: row.querySelector('.ph-batch')?.value || '',
+            id: phId,                                                    // Stable ID for backend upsert
+            date: row.querySelector('.ph-date')?.value || '',           // Expiry date (ISO format)
+            quantity: row.querySelector('.ph-qty')?.value || '',        // Batch quantity
+            notes: row.querySelector('.ph-notes')?.value || '',         // Additional info
+            manufacturer: row.querySelector('.ph-manufacturer')?.value || '', // Manufacturer name
+            batchLot: row.querySelector('.ph-batch')?.value || '',      // Batch/lot number
         };
     });
 }
@@ -1137,7 +1460,7 @@ window.toggleMedDetails = function(el) {
     const icon = el.querySelector('.detail-icon');
     const isExpanded = body && body.style.display === 'block';
     if (body) body.style.display = isExpanded ? 'none' : 'block';
-    if (icon) icon.textContent = isExpanded ? '>' : 'v';
+    if (icon) icon.textContent = isExpanded ? '▸' : '▾';
 };
 window.deletePurchaseEntry = deletePurchaseEntry;
 window.togglePurchaseNotes = function(el) {

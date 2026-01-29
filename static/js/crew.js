@@ -1,7 +1,39 @@
-// Crew management functionality
+/*
+File: static/js/crew.js
+Author notes: Client-side controller for Crew & Vessel information management.
+I handle crew member profiles, medical histories, vaccine tracking, document uploads,
+vessel information, and integration with the chat system for patient selection.
+
+Key Responsibilities:
+- Crew member CRUD operations (add, edit, delete crew profiles)
+- Vaccine record management with customizable vaccine types
+- Document upload/storage for passport photos and identification
+- Medical history tracking and export functionality
+- Emergency contact management with copy-between-crew feature
+- Vessel information management with auto-save
+- Integration with chat system for patient/crew selection
+- Chat history tracking and display per crew member
+- Export capabilities for crew lists, medical histories, and individual records
+
+Data Flow:
+- Crew data stored in /data/patients.json via /api/data/patients endpoint
+- Vessel data stored in /data/vessel.json via /api/data/vessel endpoint  
+- Chat history stored separately and grouped by patient for display
+- Documents stored as base64 in crew records (passportHeadshot, passportPage)
+
+Integration Points:
+- Chat system: Updates #p-select dropdown for patient selection
+- Settings: Uses customizable vaccine types from settings
+- Main.js: Called by loadData() for initial load and refreshes
+*/
 
 // Reuse the chat dropdown storage key without redefining the global constant
 const CREW_LAST_PATIENT_KEY = typeof LAST_PATIENT_KEY !== 'undefined' ? LAST_PATIENT_KEY : 'sailingmed:lastPatient';
+/**
+ * Default vaccine types used when settings don't provide custom types.
+ * These represent common vaccinations tracked for maritime crew health records.
+ * Can be overridden via Settings → Vaccine Types configuration.
+ */
 const DEFAULT_VACCINE_TYPES = [
     'Diphtheria, Tetanus, and Pertussis (DTaP/Tdap)',
     'Polio (IPV/OPV)',
@@ -22,10 +54,21 @@ const DEFAULT_VACCINE_TYPES = [
     'Cholera',
 ];
 
-let historyStore = [];
-let historyStoreById = {};
+// In-memory caches for crew history tracking
+let historyStore = [];           // Array of all chat history entries
+let historyStoreById = {};        // Map of history entries by ID for quick lookup
 
-// Calculate age from birthdate
+/**
+ * Calculate age from birthdate string.
+ * 
+ * @param {string} birthdate - ISO date string (YYYY-MM-DD)
+ * @returns {string} Age string in format " (XX yo)" or empty string if invalid
+ * 
+ * @example
+ * calculateAge("1990-05-15")  // Returns " (35 yo)" in 2026
+ * calculateAge("")            // Returns ""
+ * calculateAge(null)          // Returns ""
+ */
 function calculateAge(birthdate) {
     if (!birthdate) return '';
     const today = new Date();
@@ -38,7 +81,12 @@ function calculateAge(birthdate) {
     return age >= 0 ? ` (${age} yo)` : '';
 }
 
-// Toggle individual log entries (query/response)
+/**
+ * Toggle visibility of individual chat log entry (query/response pair).
+ * Also shows/hides action buttons (Reactivate, Export, Delete) when expanded.
+ * 
+ * @param {HTMLElement} el - The header element that was clicked
+ */
 function toggleLogEntry(el) {
     const body = el.nextElementSibling;
     const arrow = el.querySelector('.history-arrow');
@@ -51,6 +99,28 @@ function toggleLogEntry(el) {
     });
 }
 
+/**
+ * Export a single chat history entry as a text file.
+ * 
+ * Creates a formatted text file with the query and response from a specific
+ * chat log entry. Useful for sharing specific medical consultations or
+ * keeping offline records of important interactions.
+ * 
+ * @param {string} id - The unique ID of the history entry to export
+ * 
+ * File Format:
+ * ```
+ * Date: [ISO timestamp]
+ * Patient: [Crew member name]
+ * Title: [Optional title]
+ * 
+ * Query:
+ * [User's question/input]
+ * 
+ * Response:
+ * [AI's response]
+ * ```
+ */
 function exportHistoryItemById(id) {
     if (!id || !historyStoreById[id]) {
         alert('Unable to export: entry not found.');
@@ -79,6 +149,17 @@ function exportHistoryItemById(id) {
     URL.revokeObjectURL(url);
 }
 
+/**
+ * Delete a specific chat history entry with double confirmation.
+ * 
+ * Implements a two-step confirmation process:
+ * 1. Confirm dialog with crew member name
+ * 2. Type "DELETE" prompt for final confirmation
+ * 
+ * After deletion, reloads the entire history list to update UI.
+ * 
+ * @param {string} id - The unique ID of the history entry to delete
+ */
 async function deleteHistoryItemById(id) {
     if (!id) {
         alert('Unable to delete: entry not found.');
@@ -110,7 +191,18 @@ async function deleteHistoryItemById(id) {
     }
 }
 
-// Get display name for crew member
+/**
+ * Get display name for crew member in "Last, First" format.
+ * Used in lists and headers where formal display is preferred.
+ * 
+ * @param {Object} crew - Crew member object
+ * @returns {string} Display name in "Last, First" format or fallback
+ * 
+ * @example
+ * getCrewDisplayName({firstName: "John", lastName: "Smith"})  // "Smith, John"
+ * getCrewDisplayName({name: "John Smith"})                     // "John Smith"
+ * getCrewDisplayName({})                                        // "Unknown"
+ */
 function getCrewDisplayName(crew) {
     if (crew.firstName && crew.lastName) {
         return `${crew.lastName}, ${crew.firstName}`;
@@ -118,7 +210,18 @@ function getCrewDisplayName(crew) {
     return crew.name || 'Unknown';
 }
 
-// Get full name for crew member
+/**
+ * Get full name for crew member in "First Last" format.
+ * Used in conversational contexts and chat system.
+ * 
+ * @param {Object} crew - Crew member object
+ * @returns {string} Full name in "First Last" format or fallback
+ * 
+ * @example
+ * getCrewFullName({firstName: "John", lastName: "Smith"})  // "John Smith"
+ * getCrewFullName({name: "John Smith"})                     // "John Smith"
+ * getCrewFullName({})                                        // "Unknown"
+ */
 function getCrewFullName(crew) {
     if (crew.firstName && crew.lastName) {
         return `${crew.firstName} ${crew.lastName}`;
@@ -126,6 +229,32 @@ function getCrewFullName(crew) {
     return crew.name || 'Unknown';
 }
 
+/**
+ * Group chat history entries by patient/crew member.
+ * 
+ * Creates multiple lookup keys per entry to handle various matching scenarios:
+ * - By patient name (text)
+ * - By patient ID (id:xxx)
+ * - "Unnamed Crew" for entries without patient info
+ * - "Inquiry History" for general medical inquiries
+ * 
+ * Also populates historyStoreById map for quick ID-based lookups.
+ * 
+ * @param {Array<Object>} history - Array of chat history entries
+ * @returns {Object} Map of patient keys to arrays of history entries
+ * 
+ * @example
+ * groupHistoryByPatient([
+ *   {id: "h1", patient: "John Smith", patient_id: "123", ...},
+ *   {id: "h2", patient: "Inquiry", ...}
+ * ])
+ * // Returns:
+ * {
+ *   "John Smith": [{id: "h1", ...}],
+ *   "id:123": [{id: "h1", ...}],
+ *   "Inquiry History": [{id: "h2", ...}]
+ * }
+ */
 function groupHistoryByPatient(history) {
     const map = {};
     history.forEach((item) => {
@@ -146,6 +275,17 @@ function groupHistoryByPatient(history) {
     return map;
 }
 
+/**
+ * Render HTML for a list of chat history entries.
+ * 
+ * Each entry is displayed as a collapsible card with:
+ * - Date and preview of first line of query
+ * - Expandable query/response details
+ * - Action buttons: Reactivate, Export, Delete (visible when expanded)
+ * 
+ * @param {Array<Object>} entries - Array of history entry objects
+ * @returns {string} HTML markup for all entries
+ */
 function renderHistoryEntries(entries) {
     if (!entries || entries.length === 0) {
         return '<div style="color:#666;">No chat history recorded.</div>';
@@ -180,6 +320,14 @@ function renderHistoryEntries(entries) {
         .join('');
 }
 
+/**
+ * Render a collapsible section containing grouped history entries.
+ * 
+ * @param {string} label - Section header label (e.g., "Smith, John Log")
+ * @param {Array<Object>} entries - History entries for this section
+ * @param {boolean} defaultOpen - Whether section starts expanded (default: true)
+ * @returns {string} HTML markup for the entire section
+ */
 function renderHistorySection(label, entries, defaultOpen = true) {
     const bodyStyle = defaultOpen ? 'display:block;' : '';
     const arrow = defaultOpen ? '▾' : '▸';
@@ -197,6 +345,19 @@ function renderHistorySection(label, entries, defaultOpen = true) {
         </div>`;
 }
 
+/**
+ * Retrieve chat history entries for a specific crew member.
+ * 
+ * Tries multiple lookup strategies to find matching history:
+ * 1. Full name from getCrewFullName()
+ * 2. Legacy name field
+ * 3. Constructed name from firstName/lastName
+ * 4. Patient ID lookup (id:xxx)
+ * 
+ * @param {Object} p - Crew member object
+ * @param {Object} historyMap - Map from groupHistoryByPatient()
+ * @returns {Array<Object>} Array of history entries or empty array
+ */
 function getHistoryForCrew(p, historyMap) {
     const keys = [];
     const fullName = getCrewFullName(p);
@@ -210,6 +371,15 @@ function getHistoryForCrew(p, historyMap) {
     return [];
 }
 
+/**
+ * Get vaccine type options from settings or defaults.
+ * 
+ * Normalizes and deduplicates vaccine types, preferring settings values
+ * when available. Case-insensitive duplicate detection ensures clean lists.
+ * 
+ * @param {Object} settings - Settings object with optional vaccine_types array
+ * @returns {Array<string>} Normalized, deduplicated vaccine type names
+ */
 function getVaccineOptions(settings = {}) {
     const raw = Array.isArray(settings.vaccine_types) ? settings.vaccine_types : DEFAULT_VACCINE_TYPES;
     const seen = new Set();
@@ -224,6 +394,16 @@ function getVaccineOptions(settings = {}) {
         });
 }
 
+/**
+ * Render detailed information for a single vaccine record.
+ * 
+ * Displays all available fields for a vaccine entry including dates,
+ * manufacturer info, batch numbers, provider details, and reactions.
+ * Only shows fields that have values.
+ * 
+ * @param {Object} v - Vaccine record object
+ * @returns {string} HTML markup with labeled field details
+ */
 function renderVaccineDetails(v) {
     const fields = [
         ['Vaccine Type/Disease', v.vaccineType],
@@ -246,6 +426,18 @@ function renderVaccineDetails(v) {
     return rows || '<div style="color:#666;">No details recorded for this dose.</div>';
 }
 
+/**
+ * Render a list of vaccine records for a crew member.
+ * 
+ * Each vaccine is shown as a collapsible card with:
+ * - Header: vaccine type and date administered
+ * - Body: Full details when expanded
+ * - Delete button (visible when expanded)
+ * 
+ * @param {Array<Object>} vaccines - Array of vaccine records
+ * @param {string} crewId - Crew member ID for scoping delete operations
+ * @returns {string} HTML markup for vaccine list or "no vaccines" message
+ */
 function renderVaccineList(vaccines = [], crewId) {
     if (!Array.isArray(vaccines) || vaccines.length === 0) {
         return '<div style="font-size:12px; color:#666;">No vaccines recorded.</div>';
@@ -271,6 +463,12 @@ function renderVaccineList(vaccines = [], crewId) {
         .join('');
 }
 
+/**
+ * Clear all vaccine input fields after successful add operation.
+ * Also hides the "other" vaccine type input field.
+ * 
+ * @param {string} crewId - Crew member ID for field identification
+ */
 function clearVaccineInputs(crewId) {
     const ids = [
         `vx-type-${crewId}`,
@@ -301,6 +499,14 @@ function clearVaccineInputs(crewId) {
     if (typeSelect) typeSelect.value = '';
 }
 
+/**
+ * Handle vaccine type dropdown change to show/hide "Other" input field.
+ * 
+ * When "__other__" option is selected, displays a text input for custom
+ * vaccine types. Otherwise hides it and clears any custom value.
+ * 
+ * @param {string} crewId - Crew member ID for field identification
+ */
 function handleVaccineTypeChange(crewId) {
     const select = document.getElementById(`vx-type-${crewId}`);
     const other = document.getElementById(`vx-type-other-${crewId}`);
@@ -314,7 +520,33 @@ function handleVaccineTypeChange(crewId) {
     }
 }
 
-// Load crew data for both medical and vessel/crew info
+/**
+ * Primary data loading and rendering function for crew management.
+ * 
+ * This is the main controller function that orchestrates rendering of:
+ * - Patient selection dropdown in chat interface
+ * - Crew medical history list with chat logs
+ * - Crew information list with editable profiles
+ * - Vaccine tracking sections
+ * 
+ * Data Flow:
+ * 1. Receives crew data, history, and settings from main loadData()
+ * 2. Groups history by patient for efficient lookup
+ * 3. Sorts crew based on user preference (last name, first name, age)
+ * 4. Updates chat system's patient selector dropdown
+ * 5. Renders medical histories with grouped chat logs
+ * 6. Renders editable crew profile cards with all fields
+ * 7. Renders vaccine tracking UI for each crew member
+ * 
+ * Called By:
+ * - main.js loadData() on initial page load
+ * - main.js loadData() after any crew data changes
+ * - Internally after crew additions/deletions
+ * 
+ * @param {Array<Object>} data - Array of crew member objects
+ * @param {Array<Object>} history - Array of chat history entries
+ * @param {Object} settings - Settings object with vaccine_types, etc.
+ */
 function loadCrewData(data, history = [], settings = {}) {
     if (!Array.isArray(data)) {
         console.warn('loadCrewData expected array, got', data);
@@ -592,7 +824,46 @@ if (typeof window.loadCrewData === 'function') {
     console.error('[DEBUG] window.loadCrewData is NOT available after attach');
 }
 
-// Add new crew member
+/**
+ * Add a new crew member from the "Add New Crew Member" form.
+ * 
+ * Validation:
+ * - First name and last name are required
+ * - All other fields are optional
+ * 
+ * After successful addition:
+ * - Clears all form fields
+ * - Calls loadData() to refresh UI
+ * - New crew appears in all crew lists and patient selector
+ * 
+ * Data Structure Created:
+ * ```javascript
+ * {
+ *   id: string,              // Timestamp-based unique ID
+ *   firstName: string,       // Required
+ *   middleName: string,
+ *   lastName: string,        // Required
+ *   sex: string,
+ *   birthdate: string,       // ISO date
+ *   position: string,        // Captain | Crew | Passenger
+ *   citizenship: string,
+ *   birthplace: string,
+ *   passportNumber: string,
+ *   passportIssue: string,
+ *   passportExpiry: string,
+ *   emergencyContactName: string,
+ *   emergencyContactRelation: string,
+ *   emergencyContactPhone: string,
+ *   emergencyContactEmail: string,
+ *   emergencyContactNotes: string,
+ *   phoneNumber: string,
+ *   vaccines: [],            // Empty array, vaccines added separately
+ *   passportHeadshot: '',    // Base64 or URL, uploaded separately
+ *   passportPage: '',        // Base64 or URL, uploaded separately
+ *   history: ''              // Medical notes, edited separately
+ * }
+ * ```
+ */
 async function addCrew() {
     const firstName = document.getElementById('cn-first').value.trim();
     const middleName = document.getElementById('cn-middle').value.trim();
@@ -670,6 +941,38 @@ async function addCrew() {
     loadData();
 }
 
+/**
+ * Add a new vaccine record to a crew member's profile.
+ * 
+ * Validation:
+ * - Vaccine type/disease is required (either from dropdown or custom input)
+ * - All other fields are optional
+ * 
+ * The vaccine record is sent to the backend API which appends it to the
+ * crew member's vaccines array. After successful save, the form is cleared
+ * and the UI is refreshed to show the new vaccine entry.
+ * 
+ * Vaccine Record Structure:
+ * ```javascript
+ * {
+ *   id: string,                      // "vax-[timestamp]"
+ *   vaccineType: string,             // Required
+ *   dateAdministered: string,
+ *   doseNumber: string,              // e.g., "Dose 1 of 3"
+ *   tradeNameManufacturer: string,
+ *   lotNumber: string,
+ *   provider: string,                // Clinic/provider name
+ *   providerCountry: string,
+ *   nextDoseDue: string,
+ *   expirationDate: string,          // Expiry of the dose
+ *   siteRoute: string,               // e.g., "Left Arm - IM"
+ *   reactions: string,               // Allergic reactions or side effects
+ *   remarks: string                  // Additional notes
+ * }
+ * ```
+ * 
+ * @param {string} crewId - The crew member's unique ID
+ */
 async function addVaccine(crewId) {
     const getVal = (suffix) => document.getElementById(`vx-${suffix}-${crewId}`)?.value.trim() || '';
     const typeSelect = document.getElementById(`vx-type-${crewId}`);
@@ -719,6 +1022,15 @@ async function addVaccine(crewId) {
     loadData();
 }
 
+/**
+ * Delete a vaccine record from a crew member's profile.
+ * 
+ * Single confirmation dialog before deletion. After successful delete,
+ * refreshes the UI to remove the vaccine entry from display.
+ * 
+ * @param {string} crewId - The crew member's unique ID
+ * @param {string} vaccineId - The vaccine record's unique ID
+ */
 async function deleteVaccine(crewId, vaccineId) {
     if (!vaccineId) return;
     if (!confirm('Delete this vaccine record?')) return;
@@ -736,7 +1048,25 @@ async function deleteVaccine(crewId, vaccineId) {
     loadData();
 }
 
-// Auto-save profile (debounced to prevent excessive saves)
+/**
+ * Auto-save crew profile changes with debouncing.
+ * 
+ * Debouncing Strategy:
+ * - Waits 1 second after last change before saving
+ * - Each crew member has independent save timer
+ * - Prevents excessive API calls during rapid typing
+ * 
+ * After Save:
+ * - Updates chat system patient dropdown if name changed
+ * - Refreshes prompt preview in chat if needed
+ * - Logs confirmation to console
+ * 
+ * Fields Saved:
+ * All profile fields including names, dates, passport info, emergency contacts,
+ * and medical history notes. Document uploads are handled separately.
+ * 
+ * @param {string} id - Crew member's unique ID
+ */
 let saveTimers = {};
 async function autoSaveProfile(id) {
     // Clear any existing timer for this crew member
@@ -797,7 +1127,27 @@ async function autoSaveProfile(id) {
     }, 1000);
 }
 
-// Copy emergency contact from another crew member
+/**
+ * Copy emergency contact information from one crew member to another.
+ * 
+ * Useful Feature:
+ * Family members traveling together often share the same emergency contact.
+ * This function copies all emergency contact fields and auto-saves.
+ * 
+ * Important:
+ * Shows alert reminding user to check the RELATIONSHIP field, as it likely
+ * needs adjustment (e.g., "spouse" for one person might be "parent" for another).
+ * 
+ * Fields Copied:
+ * - Emergency contact name
+ * - Relationship
+ * - Phone number
+ * - Email address
+ * - Notes
+ * 
+ * @param {string} targetId - Crew member receiving the copied contact info
+ * @param {string} sourceId - Crew member whose contact info to copy from
+ */
 async function copyEmergencyContact(targetId, sourceId) {
     if (!sourceId) return;
     
@@ -818,7 +1168,28 @@ async function copyEmergencyContact(targetId, sourceId) {
     }
 }
 
-// Upload document (passport photo or passport page)
+/**
+ * Upload and store a document (passport photo or passport page) for a crew member.
+ * 
+ * Process:
+ * 1. Validates file size (max 5MB)
+ * 2. Converts file to base64 data URL using FileReader
+ * 3. Sends to backend API for storage in crew record
+ * 4. Refreshes UI to display uploaded document
+ * 
+ * Storage:
+ * Documents are stored as base64-encoded strings directly in the crew member's
+ * JSON record. Images display inline; PDFs show as links.
+ * 
+ * Limitations:
+ * - 5MB max file size
+ * - Base64 storage increases data size by ~33%
+ * - Large documents may cause performance issues with JSON parsing
+ * 
+ * @param {string} id - Crew member's unique ID
+ * @param {string} fieldName - Field name ("passportHeadshot" or "passportPage")
+ * @param {HTMLInputElement} inputElement - The file input element
+ */
 async function uploadDocument(id, fieldName, inputElement) {
     const file = inputElement.files[0];
     if (!file) return;
@@ -857,7 +1228,15 @@ async function uploadDocument(id, fieldName, inputElement) {
     reader.readAsDataURL(file);
 }
 
-// Delete document
+/**
+ * Delete a document (passport photo or passport page) from crew record.
+ * 
+ * Single confirmation dialog before deletion. Sets the document field to
+ * empty string and refreshes UI to remove display.
+ * 
+ * @param {string} id - Crew member's unique ID
+ * @param {string} fieldName - Field name ("passportHeadshot" or "passportPage")
+ */
 async function deleteDocument(id, fieldName) {
     if (!confirm('Are you sure you want to delete this document?')) return;
     
@@ -889,7 +1268,20 @@ async function deleteDocument(id, fieldName) {
     }
 }
 
-// Import crew data from text file
+/**
+ * Import medical history data from a text file into crew member's notes.
+ * 
+ * Use Case:
+ * Allows importing pre-existing medical records, doctor's notes, or
+ * previous health history from external text files.
+ * 
+ * Behavior:
+ * - Appends imported content to existing medical history notes
+ * - Separates with double newlines for readability
+ * - User must manually save after reviewing import
+ * 
+ * @param {string} id - Crew member's unique ID
+ */
 async function importCrewData(id) {
     const input = document.createElement('input');
     input.type = 'file';
@@ -912,7 +1304,17 @@ async function importCrewData(id) {
     input.click();
 }
 
-// Export individual crew member data
+/**
+ * Export individual crew member's medical history to text file.
+ * 
+ * Exports only the medical history/notes field. For complete crew profiles
+ * including passport info and emergency contacts, use exportCrewList().
+ * 
+ * Filename Format: crew_[Name]_[YYYY-MM-DD].txt
+ * 
+ * @param {string} id - Crew member's unique ID
+ * @param {string} name - Crew member's name for filename
+ */
 function exportCrew(id, name) {
     const textarea = document.getElementById('h-' + id);
     const content = textarea.value;
@@ -936,7 +1338,20 @@ function exportCrew(id, name) {
     alert(`Exported ${name}'s data to ${filename}`);
 }
 
-// Export all crew data
+/**
+ * Export all crew members' intake information to a single text file.
+ * 
+ * Creates a formatted document with:
+ * - Header with export date
+ * - Each crew member's complete history notes
+ * - Separator lines between entries
+ * 
+ * Filename Format: all_crew_[YYYY-MM-DD].txt
+ * 
+ * Use Case:
+ * Creating backup of all crew medical information for offline access
+ * or transfer to shore-based medical facility.
+ */
 async function exportAllCrew() {
     const data = await (await fetch('/api/data/patients', {credentials:'same-origin'})).json();
     
@@ -971,7 +1386,14 @@ async function exportAllCrew() {
     alert(`Exported all crew data (${data.length} members) to ${filename}`);
 }
 
-// Export all medical histories into one text file
+/**
+ * Export all crew medical histories to a single text file.
+ * 
+ * Similar to exportAllCrew() but specifically labeled as "MEDICAL HISTORY EXPORT".
+ * Contains the same data (history notes for each crew member).
+ * 
+ * Filename Format: all_crew_medical_[YYYY-MM-DD].txt
+ */
 async function exportAllMedical() {
     const data = await (await fetch('/api/data/patients', {credentials:'same-origin'})).json();
     
@@ -1007,7 +1429,30 @@ async function exportAllMedical() {
     alert(`Exported all crew medical histories (${data.length} members) to ${filename}`);
 }
 
-// Delete crew member with double confirmation
+/**
+ * Delete a crew member with double confirmation process.
+ * 
+ * Two-Step Confirmation:
+ * 1. Standard confirm dialog with warning message
+ * 2. Type "DELETE" prompt for final confirmation
+ * 
+ * Safety:
+ * - Requires exact text "DELETE" (all caps)
+ * - Shows multiple warnings about permanent data loss
+ * - Cancels if confirmation text doesn't match
+ * 
+ * After Deletion:
+ * - Removes from patients.json
+ * - Refreshes all crew displays
+ * - Shows confirmation alert
+ * 
+ * Note: This does NOT delete associated chat history, which remains in
+ * history.json but becomes orphaned.
+ * 
+ * @param {string} category - Data category ("patients")
+ * @param {string} id - Crew member's unique ID
+ * @param {string} name - Crew member's name for confirmation messages
+ */
 async function deleteCrewMember(category, id, name) {
     // First warning
     if (!confirm(`Are you sure you want to delete ${name}'s intake information?`)) return;
@@ -1032,7 +1477,24 @@ async function deleteCrewMember(category, id, name) {
     alert(`${name}'s data has been permanently deleted.`);
 }
 
-// Export Crew List (CSV for border crossings)
+/**
+ * Export crew list in CSV format for official use (border crossings, port authorities).
+ * 
+ * CSV Structure:
+ * - Header with vessel name and date
+ * - Table with columns: No., Name, Birth Date, Position, Citizenship, Birthplace,
+ *   Passport No., Issue Date, Expiry Date
+ * - Footer with captain name and signature line
+ * 
+ * Use Case:
+ * Required documentation for:
+ * - International border crossings
+ * - Port authority check-ins
+ * - Maritime customs declarations
+ * - Crew change documentation
+ * 
+ * Filename Format: crew_list_[YYYY-MM-DD].csv
+ */
 async function exportCrewList() {
     const data = await (await fetch('/api/data/patients', {credentials:'same-origin'})).json();
     const vessel = await (await fetch('/api/data/vessel', {credentials:'same-origin'})).json();
@@ -1083,7 +1545,26 @@ async function exportCrewList() {
     alert(`Crew list exported to crew_list_${date}.csv`);
 }
 
-// Vessel info load/save
+/**
+ * Load vessel information from server and populate form fields.
+ * 
+ * Two-Stage Loading:
+ * 1. Uses server-rendered prefill data (window.VESSEL_PREFILL) if available
+ * 2. Fetches latest data from API to ensure current values
+ * 
+ * This dual approach provides instant UI population (from prefill) while
+ * ensuring accuracy (from API fetch).
+ * 
+ * Vessel Fields:
+ * - vesselName, registrationNumber, flagCountry, homePort
+ * - callSign, mmsi, hullNumber
+ * - tonnage, netTonnage
+ * - Engine info: starboardEngine, starboardEngineSn, portEngine, portEngineSn
+ * - ribSn (tender/dinghy serial number)
+ * 
+ * Integration:
+ * Called by ensureVesselLoaded() on tab navigation to Vessel & Crew section.
+ */
 async function loadVesselInfo() {
     console.log('[VESSEL] loadVesselInfo invoked');
     const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val || ''; };
@@ -1145,6 +1626,24 @@ async function loadVesselInfo() {
     }
 }
 
+/**
+ * Save vessel information to server.
+ * 
+ * Process:
+ * 1. Collects all vessel field values from form
+ * 2. POSTs to /api/data/vessel endpoint
+ * 3. Fetches back latest data to ensure UI matches database
+ * 4. Shows save confirmation with timestamp
+ * 5. Clears user-edited flags to allow future refreshes
+ * 
+ * User Feedback:
+ * Displays "Saved at [time]" message in green for 4 seconds.
+ * 
+ * Called By:
+ * - scheduleVesselSave() (debounced auto-save)
+ * - Direct user action (Save button)
+ * - mouseleave events on fields with pending changes
+ */
 async function saveVesselInfo() {
     console.log('[VESSEL] saveVesselInfo start');
     const v = {
@@ -1214,6 +1713,18 @@ async function saveVesselInfo() {
     });
 }
 
+/**
+ * Schedule a debounced auto-save for vessel information.
+ * 
+ * Debounce Period: 200ms
+ * 
+ * Triggered by:
+ * - input events on vessel fields
+ * - change events on vessel fields
+ * 
+ * Shorter debounce than crew profiles (200ms vs 1000ms) because vessel
+ * edits are typically less frequent and users expect faster feedback.
+ */
 let vesselSaveTimer = null;
 function scheduleVesselSave() {
     if (vesselSaveTimer) clearTimeout(vesselSaveTimer);
@@ -1223,6 +1734,21 @@ function scheduleVesselSave() {
     }, 200);
 }
 
+/**
+ * Bind auto-save event listeners to all vessel input fields.
+ * 
+ * Event Strategy:
+ * - input: Triggers debounced save, marks field as edited
+ * - change: Triggers debounced save, marks field as edited  
+ * - mouseleave: Immediate save if field has pending edits
+ * 
+ * The mouseleave trigger ensures changes are saved when user moves away
+ * from a field, even if they haven't triggered change event (e.g., by
+ * clicking outside instead of tabbing away).
+ * 
+ * Idempotent:
+ * Uses data-vesselAutosave flag to prevent duplicate binding on repeated calls.
+ */
 function bindVesselAutosave() {
     const ids = [
         'vessel-name','vessel-registration','vessel-flag','vessel-homeport','vessel-callsign',
@@ -1248,6 +1774,24 @@ function bindVesselAutosave() {
     });
 }
 
+/**
+ * Ensure vessel information is loaded and auto-save is enabled.
+ * 
+ * One-Time Initialization:
+ * Uses vesselLoaded flag to prevent redundant setup on repeated tab navigation.
+ * 
+ * Setup Process:
+ * 1. Binds auto-save event listeners to all vessel fields
+ * 2. Loads initial vessel data from server
+ * 3. Exposes debug helpers on window object
+ * 
+ * Debug Helpers:
+ * - window.VESSEL_DEBUG = true (enables verbose logging)
+ * - window.forceSaveVessel() (manual save trigger for debugging)
+ * 
+ * Called By:
+ * Tab navigation handlers when user switches to Vessel & Crew tab.
+ */
 let vesselLoaded = false;
 async function ensureVesselLoaded() {
     if (vesselLoaded) return;

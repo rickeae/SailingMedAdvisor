@@ -6,14 +6,14 @@ echo "🏥 Starting MedGemma Offshore Medical Advisor..."
 echo "=================================================="
 
 # Check if virtual environment exists
-if [ ! -d "venv" ]; then
+if [ ! -d ".venv" ]; then
     echo "❌ Error: Virtual environment not found!"
-    echo "Please create it first: python3 -m venv venv"
+    echo "Please create it first: python3 -m venv .venv"
     exit 1
 fi
 
 # Activate virtual environment
-source venv/bin/activate
+source .venv/bin/activate
 
 # Check if required packages are installed
 python3 -c "import fastapi, uvicorn" 2>/dev/null || {
@@ -28,6 +28,8 @@ python3 -c "import fastapi, uvicorn" 2>/dev/null || {
 export FORCE_FP16=1
 export USE_FLASH_ATTENTION=1
 export TORCH_USE_CUDA_DSA=0
+# Force CUDA placement when available
+export FORCE_CUDA=1
 # Allow model to use more VRAM before offloading
 export MODEL_MAX_GPU_MEM=15GiB
 export MODEL_MAX_CPU_MEM=64GiB

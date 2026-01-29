@@ -1,15 +1,76 @@
 /*
 File: static/js/chat.js
-Author notes: Front-end for MedGemma chat (Triage + Inquiry). Handles prompt
-build, patient context, history display, and UI states like logging/privacy.
+Author notes: Front-end controller for MedGemma AI chat interface.
+
+Key Responsibilities:
+- Dual-mode chat system (Triage vs Inquiry consultations)
+- Dynamic prompt composition with patient context injection
+- Privacy/logging toggle (saves history or runs ephemeral)
+- Model selection and performance metrics tracking
+- Chat history reactivation (resume previous conversations)
+- Triage-specific metadata fields (consciousness, breathing, pain, etc.)
+- Test case samples for triage validation
+- LocalStorage persistence of chat state across sessions
+- Real-time prompt preview with edit capability
+- Integration with crew/patient selection from crew.js
+
+Chat Modes:
+1. TRIAGE MODE: Medical emergency assessment with structured fields
+   - Requires: consciousness, breathing, pain, main problem, temp, circulation, cause
+   - Optimized for rapid emergency decision support
+   - Visual: Red theme (#ffecec background)
+
+2. INQUIRY MODE: General medical questions and consultations
+   - Open-ended questions without structured fields
+   - Used for non-emergency medical information
+   - Visual: Green theme (#e6f5ec background)
+
+Data Flow:
+- User input → Prompt builder → API /api/chat → AI model → Response display
+- Chat logs saved to history.json (unless logging disabled)
+- Patient context injected from crew selection
+- Prompt customization via expandable editor
+
+Privacy Modes:
+- LOGGING ON: Saves all chats to history.json, associates with crew member
+- LOGGING OFF: Ephemeral mode, no persistence, clears on page refresh
+
+LocalStorage Keys:
+- sailingmed:lastPrompt: Most recent user message
+- sailingmed:lastPatient: Selected crew member ID
+- sailingmed:lastChatMode: Current mode (triage/inquiry)
+- sailingmed:loggingOff: Privacy toggle state (1=off, 0=on)
+- sailingmed:promptPreviewOpen: Prompt editor expanded state
+- sailingmed:promptPreviewContent: Custom prompt text
+- sailingmed:chatState: Per-mode input field persistence
+- sailingmed:skipLastChat: Flag to skip restoring last chat on load
+
+Integration Points:
+- crew.js: Patient selection dropdown, history display
+- settings.js: Custom prompts, model configuration
+- main.js: Tab navigation, data loading coordination
 */
 
+// HTML escaping utility (from utils.js or fallback)
 const escapeHtml = (window.Utils && window.Utils.escapeHtml) ? window.Utils.escapeHtml : (str) => str;
 
+// ============================================================================
+// STATE MANAGEMENT
+// ============================================================================
+
+// Privacy state: true = logging disabled (ephemeral), false = logging enabled
 let isPrivate = false;
+
+// Most recent user message (persisted to localStorage)
 let lastPrompt = '';
+
+// Flag to prevent concurrent chat submissions
 let isProcessing = false;
+
+// Current chat mode: 'triage' or 'inquiry'
 let currentMode = 'triage';
+
+// LocalStorage persistence keys
 const LAST_PROMPT_KEY = 'sailingmed:lastPrompt';
 const LAST_PATIENT_KEY = 'sailingmed:lastPatient';
 const LAST_CHAT_MODE_KEY = 'sailingmed:lastChatMode';
@@ -18,10 +79,40 @@ const PROMPT_PREVIEW_STATE_KEY = 'sailingmed:promptPreviewOpen';
 const PROMPT_PREVIEW_CONTENT_KEY = 'sailingmed:promptPreviewContent';
 const CHAT_STATE_KEY = 'sailingmed:chatState';
 const SKIP_LAST_CHAT_KEY = 'sailingmed:skipLastChat';
+
+// Triage test samples loaded from server
 let triageSamples = [];
-let chatMetrics = {}; // { model: {count, total_ms, avg_ms}}
+
+// Model performance tracking: { model: {count, total_ms, avg_ms} }
+let chatMetrics = {};
+
+// Dynamic triage field options loaded from server
 let triageOptions = {};
 
+/**
+ * Load chat performance metrics from server.
+ * 
+ * Metrics track average response times per model to provide ETA estimates
+ * during chat processing. Used to show users expected wait times.
+ * 
+ * Metrics Structure:
+ * ```javascript
+ * {
+ *   "google/medgemma-1.5-4b-it": {
+ *     count: 15,
+ *     total_ms: 300000,
+ *     avg_ms: 20000  // ~20 seconds average
+ *   },
+ *   "google/medgemma-1.5-27b-it": {
+ *     count: 3,
+ *     total_ms: 180000,
+ *     avg_ms: 60000  // ~60 seconds average
+ *   }
+ * }
+ * ```
+ * 
+ * Called on page load to initialize ETA estimates.
+ */
 async function loadChatMetrics() {
     try {
         const res = await fetch('/api/chat/metrics', { credentials: 'same-origin' });
@@ -34,6 +125,32 @@ async function loadChatMetrics() {
     }
 }
 
+/**
+ * Load triage test case samples from server.
+ * 
+ * Test samples allow quick testing of triage functionality with pre-defined
+ * scenarios. Each sample includes situation text and all triage metadata fields.
+ * 
+ * Populates the "Select a Test Case" dropdown in triage mode for rapid testing.
+ * 
+ * Sample Structure:
+ * ```javascript
+ * {
+ *   id: 1,
+ *   situation: "Crew member fell from mast",
+ *   chat_text: "John fell 15 feet, unconscious...",
+ *   responsive: "Unconscious",
+ *   breathing: "Labored breathing",
+ *   pain: "Unable to assess",
+ *   main_problem: "Head trauma",
+ *   temp: "Normal",
+ *   circulation: "Weak pulse",
+ *   cause: "Trauma/Injury"
+ * }
+ * ```
+ * 
+ * @returns {Promise<Array>} Array of triage sample objects
+ */
 async function loadTriageSamples() {
     if (triageSamples.length) return triageSamples;
     try {
@@ -56,6 +173,25 @@ async function loadTriageSamples() {
     return triageSamples;
 }
 
+/**
+ * Load dynamic triage field options from server.
+ * 
+ * Allows customization of triage dropdown options via settings without
+ * code changes. Populates all triage metadata select fields.
+ * 
+ * Fields Populated:
+ * - triage-consciousness: Patient responsiveness level
+ * - triage-breathing-status: Breathing quality/pattern
+ * - triage-pain-level: Pain severity (1-10 or descriptive)
+ * - triage-main-problem: Primary complaint category
+ * - triage-temperature: Body temperature status
+ * - triage-circulation: Blood circulation/pulse status
+ * - triage-cause: Injury/illness cause category
+ * 
+ * Falls back to existing options if server load fails.
+ * 
+ * @returns {Promise<Object>} Map of field IDs to option arrays
+ */
 async function loadTriageOptions() {
     if (Object.keys(triageOptions).length) return triageOptions;
     try {
@@ -90,6 +226,16 @@ async function loadTriageOptions() {
     return triageOptions;
 }
 
+/**
+ * Safely set a select element's value, creating option if needed.
+ * 
+ * Handles edge case where sample data contains custom values not in
+ * the current option list. Creates a new option dynamically to avoid
+ * silently failing to apply the sample data.
+ * 
+ * @param {HTMLSelectElement} selectEl - The select element to update
+ * @param {string} value - The value to set
+ */
 function setSelectValue(selectEl, value) {
     if (!selectEl) return;
     const match = Array.from(selectEl.options).find(o => o.value === value || o.textContent === value);
@@ -102,6 +248,16 @@ function setSelectValue(selectEl, value) {
     selectEl.value = value;
 }
 
+/**
+ * Apply a triage test sample to all form fields.
+ * 
+ * Fills both the main message textarea and all triage metadata dropdowns
+ * with pre-defined test data. Useful for quick testing and demonstrations.
+ * 
+ * Triggers input events to ensure prompt preview updates reflect the changes.
+ * 
+ * @param {string|number} sampleId - ID of the sample to apply
+ */
 function applyTriageSample(sampleId) {
     if (!sampleId) return;
     const sample = triageSamples.find((s) => String(s.id) === String(sampleId));
@@ -121,6 +277,29 @@ function applyTriageSample(sampleId) {
     persistChatState();
 }
 
+/**
+ * Initialize the prompt preview/editor panel.
+ * 
+ * Setup Process:
+ * 1. Binds click/keyboard handlers to toggle expansion
+ * 2. Tracks manual edits to prevent auto-refresh overwrites
+ * 3. Restores previous state (expanded/collapsed) from localStorage
+ * 4. Pre-populates with cached or default prompt
+ * 5. Binds input handlers to all fields for state persistence
+ * 
+ * The prompt editor allows users to:
+ * - View the exact prompt being sent to the AI model
+ * - Customize the prompt for specific needs
+ * - See how patient context is injected
+ * - Edit system instructions or constraints
+ * 
+ * Auto-fill Logic:
+ * - If user has manually edited (dataset.autofilled = 'false'), preserve edits
+ * - If no manual edits, auto-refresh when patient/mode/fields change
+ * - Restore from localStorage on page load
+ * 
+ * Called on DOMContentLoaded to ensure all elements exist.
+ */
 function setupPromptInjectionPanel() {
     const promptHeader = document.getElementById('prompt-preview-header');
     const promptBox = document.getElementById('prompt-preview');
@@ -204,6 +383,29 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 });
 
+/**
+ * Update all UI elements to reflect current mode and privacy state.
+ * 
+ * Visual Changes:
+ * - Banner colors (red for triage, green for inquiry)
+ * - Button colors and text
+ * - Field visibility (triage metadata shown/hidden)
+ * - Placeholder text
+ * - Privacy indicator styling
+ * 
+ * Called After:
+ * - Mode changes (triage ↔ inquiry)
+ * - Privacy toggle
+ * - Page initialization
+ * 
+ * Mode-Specific UI:
+ * - TRIAGE: Red theme, structured fields visible, "SUBMIT FOR TRIAGE" button
+ * - INQUIRY: Green theme, fields hidden, "SUBMIT INQUIRY" button
+ * 
+ * Privacy Indicator:
+ * - LOGGING ON: Gray background, normal border
+ * - LOGGING OFF: Red background, white border, prominent warning
+ */
 function updateUI() {
     const banner = document.getElementById('banner');
     const modeSelect = document.getElementById('mode-select');
@@ -273,6 +475,24 @@ function updateUI() {
     }
 }
 
+/**
+ * Bind event listeners to triage metadata fields for prompt refresh.
+ * 
+ * When any triage field changes:
+ * 1. Persists the change to localStorage (chat state)
+ * 2. Refreshes prompt preview (if expanded and auto-fill enabled)
+ * 
+ * Uses dataset flag (tmodeBound) to prevent duplicate binding.
+ * 
+ * Fields Monitored:
+ * - Consciousness level
+ * - Breathing status
+ * - Pain level
+ * - Main problem
+ * - Temperature
+ * - Circulation
+ * - Cause of injury/illness
+ */
 function bindTriageMetaRefresh() {
     const ids = [
         'triage-consciousness',
@@ -295,6 +515,31 @@ function bindTriageMetaRefresh() {
     });
 }
 
+/**
+ * Load persisted chat state from localStorage.
+ * 
+ * Chat state is stored per-mode to allow switching between triage and
+ * inquiry without losing unsaved work in either mode.
+ * 
+ * State Structure:
+ * ```javascript
+ * {
+ *   triage: {
+ *     msg: "Patient fell from mast...",
+ *     fields: {
+ *       "triage-consciousness": "Unconscious",
+ *       "triage-breathing-status": "Labored",
+ *       // ... other triage fields
+ *     }
+ *   },
+ *   inquiry: {
+ *     msg: "What antibiotics treat UTI?"
+ *   }
+ * }
+ * ```
+ * 
+ * @returns {Object} Chat state object or empty object if not found
+ */
 function loadChatState() {
     try {
         const raw = localStorage.getItem(CHAT_STATE_KEY);
@@ -306,6 +551,19 @@ function loadChatState() {
     }
 }
 
+/**
+ * Persist current chat state to localStorage.
+ * 
+ * Saves both the main message and mode-specific fields (triage metadata)
+ * separately per mode, allowing seamless mode switching without data loss.
+ * 
+ * Called After:
+ * - User types in message field
+ * - User changes triage dropdown
+ * - Mode switch (to save state before switching)
+ * 
+ * @param {string} modeOverride - Optional mode to save state for (default: current mode)
+ */
 function persistChatState(modeOverride) {
     const mode = modeOverride || currentMode;
     const state = loadChatState();
@@ -331,6 +589,18 @@ function persistChatState(modeOverride) {
     try { localStorage.setItem(CHAT_STATE_KEY, JSON.stringify(state)); } catch (err) { /* ignore */ }
 }
 
+/**
+ * Restore chat state from localStorage to UI fields.
+ * 
+ * Called when:
+ * - Switching modes (restore previously entered data for that mode)
+ * - Page load (restore work in progress)
+ * 
+ * Only restores fields that exist in saved state to avoid overwriting
+ * with empty values.
+ * 
+ * @param {string} modeOverride - Optional mode to restore state from (default: current mode)
+ */
 function applyChatState(modeOverride) {
     const mode = modeOverride || currentMode;
     const state = loadChatState();
@@ -347,6 +617,25 @@ function applyChatState(modeOverride) {
     }
 }
 
+/**
+ * Toggle privacy/logging mode.
+ * 
+ * Privacy Modes:
+ * - LOGGING ON (isPrivate=false): All chats saved to history.json with crew association
+ * - LOGGING OFF (isPrivate=true): Ephemeral mode, no database persistence
+ * 
+ * Use Cases:
+ * - LOGGING OFF: Sensitive consultations, practice scenarios, testing
+ * - LOGGING ON: Normal operations, building medical history records
+ * 
+ * Visual Feedback:
+ * - Button color changes (gray → red)
+ * - Border emphasis (solid → white outline)
+ * - Text updates ("LOGGING: ON" ↔ "LOGGING: OFF")
+ * - Banner styling changes
+ * 
+ * State persisted to localStorage for consistency across sessions.
+ */
 function togglePriv() {
     isPrivate = !isPrivate;
     const btn = document.getElementById('priv-btn');
@@ -357,6 +646,45 @@ function togglePriv() {
     updateUI();
 }
 
+/**
+ * Execute chat submission to AI model.
+ * 
+ * Processing Flow:
+ * 1. Validate input and check processing lock
+ * 2. Show loading blocker with ETA estimate
+ * 3. Collect all form data (message, patient, mode, triage fields)
+ * 4. Check for custom prompt override
+ * 5. Submit to /api/chat endpoint
+ * 6. Handle 28B model confirmation if needed
+ * 7. Parse and display Markdown response
+ * 8. Update metrics and refresh history
+ * 9. Persist state and unlock UI
+ * 
+ * Model Confirmation:
+ * 27B model requires explicit confirmation due to long processing time
+ * (potentially 60+ seconds on CPU). Shows confirm dialog before proceeding.
+ * 
+ * Prompt Override:
+ * If prompt editor is expanded and contains custom text, sends modified
+ * prompt instead of default system prompt. Allows advanced users to
+ * customize AI instructions.
+ * 
+ * Response Handling:
+ * - Parses Markdown with marked.js (if available)
+ * - Falls back to <br> replacement
+ * - Shows model name and duration
+ * - Displays errors with red border
+ * - Scrolls to show new response
+ * 
+ * Side Effects:
+ * - Saves chat to history.json (unless logging disabled)
+ * - Updates crew member's medical log
+ * - Refreshes chat metrics
+ * - Triggers loadData() to update crew history UI
+ * 
+ * @param {string} promptText - Optional override for message text
+ * @param {boolean} force28b - Skip 28B confirmation (after user confirms)
+ */
 async function runChat(promptText = null, force28b = false) {
     const txt = promptText || document.getElementById('msg').value;
     if(!txt || isProcessing) return;
@@ -497,6 +825,46 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 });
 
+/**
+ * Reactivate a previous chat conversation from history.
+ * 
+ * Reactivation Process:
+ * 1. Loads full history from server
+ * 2. Finds target entry by ID
+ * 3. Collects all entries for same patient + mode (thread)
+ * 4. Switches to correct mode
+ * 5. Navigates to chat tab
+ * 6. Restores patient selection
+ * 7. Displays previous exchange in chat area
+ * 8. Prefills message box with last query
+ * 9. Injects full transcript into prompt editor for context
+ * 
+ * Thread Grouping:
+ * Finds all history entries matching:
+ * - Same patient (by ID or name)
+ * - Same mode (triage or inquiry)
+ * Sorted chronologically to provide conversation context.
+ * 
+ * Transcript Injection:
+ * Full conversation history injected into prompt so AI model can:
+ * - Reference previous discussion
+ * - Maintain context across sessions
+ * - Provide consistent follow-up advice
+ * 
+ * Use Cases:
+ * - Continue interrupted consultations
+ * - Follow up after implementing advice
+ * - Review and expand on previous diagnosis
+ * - Share context with relief crew
+ * 
+ * UI Updates:
+ * - Auto-expands prompt editor to show transcript
+ * - Focuses message field for immediate input
+ * - Shows "Reactivated Chat" header in display
+ * - Restores patient selection and mode
+ * 
+ * @param {string} historyId - Unique ID of history entry to reactivate
+ */
 async function reactivateChat(historyId) {
     try {
         const res = await fetch('/api/data/history', { credentials: 'same-origin' });
@@ -600,6 +968,29 @@ async function reactivateChat(historyId) {
 window.reactivateChat = reactivateChat;
 window.applyTriageSample = applyTriageSample;
 
+/**
+ * Switch chat mode (triage ↔ inquiry) with state preservation.
+ * 
+ * Mode Switch Process:
+ * 1. Save current mode's state (message + fields)
+ * 2. Update currentMode variable
+ * 3. Update all UI elements (colors, visibility, text)
+ * 4. Update mode selector dropdown
+ * 5. Restore new mode's previously saved state
+ * 6. Refresh prompt preview if editor is open
+ * 
+ * State Preservation:
+ * Allows users to switch modes without losing unsaved work. Each mode's
+ * state (message text + triage fields) is independently persisted.
+ * 
+ * Use Case Example:
+ * - User enters triage consultation
+ * - Realizes it's non-emergency
+ * - Switches to inquiry mode (triage data preserved)
+ * - Later switches back (triage fields restored)
+ * 
+ * @param {string} mode - Target mode: 'triage' or 'inquiry'
+ */
 function setMode(mode) {
     const target = mode === 'inquiry' ? 'inquiry' : 'triage';
     if (target === currentMode) return;
@@ -618,14 +1009,47 @@ function setMode(mode) {
     }
 }
 
+/**
+ * Toggle between triage and inquiry modes.
+ * Convenience wrapper for setMode() that flips between the two modes.
+ */
 function toggleMode() {
     setMode(currentMode === 'triage' ? 'inquiry' : 'triage');
 }
 
+/**
+ * Normalize whitespace in prompt text.
+ * 
+ * Cleans excessive blank lines (3+ → 2) and trims leading/trailing whitespace.
+ * Improves prompt readability without affecting semantic content.
+ * 
+ * @param {string} text - Raw prompt text
+ * @returns {string} Cleaned text
+ */
 function cleanPromptWhitespace(text) {
     return (text || '').replace(/\n{3,}/g, '\n\n').trim();
 }
 
+/**
+ * Remove user message from prompt text to show template only.
+ * 
+ * When displaying prompt preview, we want to show the system instructions
+ * and context without the user's actual message embedded. This keeps the
+ * editor clean and focused on the template/customization.
+ * 
+ * The user message is visible in the main message textarea, so including
+ * it in the prompt preview would be redundant and confusing.
+ * 
+ * Removal Strategies:
+ * 1. Find label line (QUERY: or SITUATION:) and clear text after label
+ * 2. Search for exact message text and remove it
+ * 3. Fall back to returning prompt as-is if no match found
+ * 
+ * @param {string} promptText - Full prompt including message
+ * @param {string} userMessage - User's message to remove
+ * @param {string} mode - Current chat mode
+ * @returns {string} Prompt with user message removed
+ */
 function stripUserMessageFromPrompt(promptText, userMessage, mode = currentMode) {
     if (!promptText) return '';
     const msg = (userMessage || '').trim();
@@ -644,6 +1068,30 @@ function stripUserMessageFromPrompt(promptText, userMessage, mode = currentMode)
     return cleanPromptWhitespace(promptText);
 }
 
+/**
+ * Build final prompt by injecting user message into custom prompt template.
+ * 
+ * When user has edited the prompt in the preview editor, this function
+ * combines their custom template with the actual user message before
+ * sending to the AI model.
+ * 
+ * Injection Strategies:
+ * 1. Find label line (QUERY: or SITUATION:) and append message
+ * 2. If no label found, append with label at end
+ * 
+ * This allows users to:
+ * - Customize system instructions
+ * - Add constraints or guidelines
+ * - Modify context injection
+ * - Override default prompts entirely
+ * 
+ * While still ensuring the user's actual question/situation is included.
+ * 
+ * @param {string} basePrompt - Custom prompt template (without user message)
+ * @param {string} userMessage - User's message to inject
+ * @param {string} mode - Current chat mode
+ * @returns {string} Complete prompt ready for API submission
+ */
 function buildOverridePrompt(basePrompt, userMessage, mode = currentMode) {
     const base = cleanPromptWhitespace(basePrompt);
     const msg = (userMessage || '').trim();
@@ -661,6 +1109,33 @@ function buildOverridePrompt(basePrompt, userMessage, mode = currentMode) {
     return `${base}\n\n${label} ${msg}`;
 }
 
+/**
+ * Refresh prompt preview by fetching generated prompt from server.
+ * 
+ * Auto-Refresh Logic:
+ * - Only refreshes if user hasn't manually edited (autofilled=true)
+ * - Can be forced with force=true parameter
+ * - Skips if prompt editor has custom content (dataset.autofilled='false')
+ * 
+ * Preview Generation:
+ * Calls /api/chat/preview endpoint which:
+ * 1. Loads custom prompts from settings
+ * 2. Injects patient medical history
+ * 3. Adds triage metadata (if in triage mode)
+ * 4. Returns full prompt text
+ * 
+ * User Message Handling:
+ * Strips user message from preview to keep editor clean. The message
+ * is visible in main textarea, so showing it again would be redundant.
+ * 
+ * Use Cases:
+ * - User switches patient → preview updates with new medical history
+ * - User changes triage fields → preview updates with new metadata
+ * - User switches modes → preview updates with mode-specific template
+ * - User expands editor → initial preview loaded
+ * 
+ * @param {boolean} force - Force refresh even if user has edited prompt
+ */
 async function refreshPromptPreview(force = false) {
     const msgVal = document.getElementById('msg')?.value || '';
     const patientVal = document.getElementById('p-select')?.value || '';
@@ -693,6 +1168,35 @@ async function refreshPromptPreview(force = false) {
     }
 }
 
+/**
+ * Toggle visibility of prompt preview/editor panel.
+ * 
+ * Manages:
+ * - Container visibility (show/hide)
+ * - Arrow icon rotation (▸ collapsed, ▾ expanded)
+ * - Refresh button visibility
+ * - ARIA attributes for accessibility
+ * - State persistence to localStorage
+ * 
+ * When Opened:
+ * - Triggers auto-refresh to show current prompt
+ * - Focuses prompt textarea for immediate editing
+ * - Shows refresh button
+ * - Persists expanded state
+ * 
+ * When Closed:
+ * - Hides container
+ * - Rotates arrow to collapsed state
+ * - Hides refresh button
+ * - Persists collapsed state
+ * 
+ * Advanced Feature:
+ * Prompt editor is hidden by default for beginner/standard users.
+ * Advanced/developer users can expand to see and customize prompts.
+ * 
+ * @param {HTMLElement} btn - Header button element (or auto-finds)
+ * @param {boolean} forceOpen - Force specific state (null=toggle, true=open, false=close)
+ */
 function togglePromptPreviewArrow(btn, forceOpen = null) {
     const header = btn || document.getElementById('prompt-preview-header');
     const container = document.getElementById('prompt-preview-container') || header?.nextElementSibling;
@@ -712,6 +1216,20 @@ function togglePromptPreviewArrow(btn, forceOpen = null) {
     }
 }
 
+/**
+ * Clear chat response display area.
+ * 
+ * Behavior by Mode:
+ * - LOGGING ON: Confirms before clearing, reminds user of history location
+ * - LOGGING OFF: Warns that response wasn't saved, confirms deletion
+ * 
+ * Sets SKIP_LAST_CHAT_KEY to prevent restoring cleared conversation on
+ * next page load.
+ * 
+ * User Guidance:
+ * In logging mode, explains that previous (saved) responses remain
+ * accessible via Crew Health & Log tab organized by crew member.
+ */
 function clearDisplay() {
     const display = document.getElementById('display');
     if (!display) return;

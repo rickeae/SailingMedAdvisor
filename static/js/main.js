@@ -1,14 +1,106 @@
 /*
 File: static/js/main.js
-Author notes: Core UI utilities (tab switching, collapsibles, sidebar) shared
-across pages. Keeps global behaviors lightweight and reusable.
+Author notes: Application orchestration and global UI utilities.
+
+Key Responsibilities:
+- Tab navigation and content switching
+- Collapsible section management (queries, headers, details)
+- Sidebar state persistence and synchronization
+- Application initialization and data preloading
+- Medical chest global search across all inventories
+- LocalStorage state restoration
+
+Architecture Overview:
+---------------------
+main.js acts as the conductor for the single-page application, coordinating:
+
+1. **Tab System**: 5 main tabs with lazy loading
+   - Chat: AI consultation interface
+   - Medical Chest: Pharmacy inventory (preloaded for performance)
+   - Crew Health & Log: Medical records and history
+   - Vessel & Crew Info: Demographics and documents
+   - Onboard Equipment: Medical equipment and consumables
+   - Settings: Configuration and offline mode
+
+2. **Collapsible Sections**: 3 different toggle patterns
+   - toggleSection(): Standard sections (most common)
+   - toggleDetailSection(): Detail panels with special handling
+   - toggleCrewSection(): Crew cards with accordion behavior
+
+3. **Sidebar Management**: Context-sensitive help/reference
+   - Collapsed/expanded state persists across sessions
+   - Auto-syncs with collapsible section states
+   - Shows/hides relevant content per active tab
+
+4. **Initialization Strategy**: Staggered loading for performance
+   - Immediate: Chat tab (default landing)
+   - Preload: Medical Chest (frequent access)
+   - On-demand: Other tabs load when opened
+   - Concurrent: Crew data, settings, history loaded together
+
+5. **Global Search**: Unified search across all inventories
+   - Searches pharmaceuticals, equipment, consumables
+   - Scope filtering (all/pharma/equipment/consumables)
+   - Grouped results by category
+   - Expandable result sections
+
+Data Loading Flow:
+-----------------
+```
+Page Load → ensureCrewData() → Promise.all([
+  /api/data/patients,
+  /api/data/history,
+  /api/data/settings
+]) → loadCrewData() → Render UI
+
+Tab Switch → showTab() → 
+  if Chat: updateUI(), restoreCollapsibleState()
+  if CrewMedical: ensureCrewData()
+  if OnboardEquipment: loadEquipment(), loadMedPhotoQueue()
+  if Settings: loadSettingsUI(), loadCrewCredentials()
+```
+
+LocalStorage Keys:
+- sailingmed:sidebarCollapsed: Sidebar state (1=collapsed, 0=expanded)
+- sailingmed:lastOpenCrew: Last opened crew card ID
+- sailingmed:skipLastChat: Flag to skip restoring last chat
+- [headerId]: Per-section collapsed state
+
+Integration Points:
+- crew.js: loadCrewData() renders crew lists
+- pharmacy.js: preloadPharmacy(), loadPharmacy()
+- equipment.js: loadEquipment(), loadMedPhotoQueue()
+- settings.js: loadSettingsUI(), loadCrewCredentials()
+- chat.js: updateUI(), refreshPromptPreview()
 */
 
-const SIDEBAR_STATE_KEY = 'sailingmed:sidebarCollapsed';
-let globalSidebarCollapsed = false;
-let crewDataLoaded = false;
-let crewDataPromise = null;
+// ============================================================================
+// STATE MANAGEMENT
+// ============================================================================
 
+const SIDEBAR_STATE_KEY = 'sailingmed:sidebarCollapsed';
+let globalSidebarCollapsed = false;  // Sidebar collapse state (synced across all tabs)
+let crewDataLoaded = false;          // Prevent duplicate crew data loads
+let crewDataPromise = null;          // Promise for concurrent load protection
+
+/**
+ * Set sidebar collapsed state across all sidebars.
+ * 
+ * Sidebar States:
+ * - Expanded: Shows context help, reference content
+ * - Collapsed: Hides sidebar, maximizes main content area
+ * 
+ * UI Changes:
+ * 1. Adds/removes 'collapsed' class to all .page-sidebar elements
+ * 2. Updates toggle button text ("Context ←" / "Context →")
+ * 3. Adjusts page body layout classes
+ * 4. Persists state to localStorage
+ * 
+ * Applied Globally:
+ * All sidebars on the page sync to same state for consistency.
+ * 
+ * @param {boolean} collapsed - True to collapse, false to expand
+ */
 function setSidebarState(collapsed) {
     globalSidebarCollapsed = !!collapsed;
     try { localStorage.setItem(SIDEBAR_STATE_KEY, globalSidebarCollapsed ? '1' : '0'); } catch (err) { /* ignore */ }
@@ -24,7 +116,26 @@ function setSidebarState(collapsed) {
     });
 }
 
-// Toggle collapsible sections
+/**
+ * Toggle standard collapsible section visibility.
+ * 
+ * Standard Pattern:
+ * Header with .detail-icon (▸/▾) and body that expands/collapses.
+ * 
+ * Special Behaviors:
+ * 1. Crew Sort Control: Shows only when crew list expanded
+ * 2. Triage Sample Selector: Shows only when expanded AND in advanced/developer mode
+ * 3. Sidebar Sync: Updates related sidebar sections if data-sidebar-id present
+ * 4. State Persistence: Saves to localStorage if data-pref-key present
+ * 
+ * Used For:
+ * - Query form sections
+ * - Settings sections
+ * - Crew list headers
+ * - Equipment sections
+ * 
+ * @param {HTMLElement} el - Header element to toggle
+ */
 function toggleSection(el) {
     const body = el.nextElementSibling;
     const icon = el.querySelector('.detail-icon');
@@ -51,7 +162,19 @@ function toggleSection(el) {
     }
 }
 
-// Toggle detail section with icon change
+/**
+ * Toggle detail section with prompt preview special handling.
+ * 
+ * Similar to toggleSection but with additional logic for:
+ * - Prompt refresh inline button visibility (advanced/developer mode only)
+ * - ARIA attributes for accessibility (aria-expanded)
+ * 
+ * Used For:
+ * - Prompt preview/editor panel (chat.js)
+ * - Other detail panels requiring ARIA support
+ * 
+ * @param {HTMLElement} el - Header element to toggle
+ */
 function toggleDetailSection(el) {
     const body = el.nextElementSibling;
     const icon = el.querySelector('.detail-icon');
@@ -68,7 +191,27 @@ function toggleDetailSection(el) {
     }
 }
 
-// Crew-specific toggle with icon change
+/**
+ * Toggle crew card with accordion behavior.
+ * 
+ * Crew Card Features:
+ * 1. Icon: Changes ▸ (collapsed) ↔ ▾ (expanded)
+ * 2. Action Buttons: Shows/hides based on state
+ * 3. Accordion Groups: Collapses siblings in same group when opening
+ * 4. Sidebar Sync: Updates related sidebar content
+ * 5. Last Opened: Remembers last opened crew for reload restoration
+ * 
+ * Accordion Behavior (Pharmacy):
+ * When opening a medication card in pharmacy, other cards in the same
+ * collapse-group automatically close to keep UI clean and focused.
+ * 
+ * Used For:
+ * - Crew medical cards (crew.js)
+ * - Pharmacy medication cards (pharmacy.js)
+ * - Equipment cards (equipment.js)
+ * 
+ * @param {HTMLElement} el - Crew card header element
+ */
 function toggleCrewSection(el) {
     const body = el.nextElementSibling;
     const icon = el.querySelector('.toggle-label');
@@ -111,7 +254,14 @@ function toggleCrewSection(el) {
     }
 }
 
-// Sidebar expand/collapse
+/**
+ * Toggle sidebar collapsed state.
+ * 
+ * Triggered by sidebar toggle button. Applies state globally to all
+ * sidebars on the page via setSidebarState().
+ * 
+ * @param {HTMLElement} btn - Toggle button element
+ */
 function toggleSidebar(btn) {
     const sidebar = btn.closest ? btn.closest('.page-sidebar') : btn;
     if (!sidebar) return;
@@ -120,7 +270,23 @@ function toggleSidebar(btn) {
     setSidebarState(nextCollapsed);
 }
 
-// Show/hide matching sidebar sections
+/**
+ * Sync sidebar section visibility with main content sections.
+ * 
+ * When main content section opens/closes, matching sidebar sections
+ * (identified by data-sidebar-section attribute) show/hide accordingly.
+ * 
+ * Example:
+ * ```html
+ * <div data-sidebar-id="crew-medical">Crew Medical</div>
+ * <!-- Opens... -->
+ * <div data-sidebar-section="crew-medical">Related help content</div>
+ * <!-- ^ This shows in sidebar -->
+ * ```
+ * 
+ * @param {string} sectionId - Section identifier to sync
+ * @param {boolean} isOpen - True if section is open
+ */
 function syncSidebarSections(sectionId, isOpen) {
     if (!sectionId) return;
     document.querySelectorAll(`[data-sidebar-section="${sectionId}"]`).forEach(sec => {
@@ -132,7 +298,16 @@ function syncSidebarSections(sectionId, isOpen) {
     });
 }
 
-// Initialize sidebar visibility based on current collapsible state
+/**
+ * Initialize sidebar state on page load.
+ * 
+ * Initialization Process:
+ * 1. Restores collapsed state from localStorage
+ * 2. Applies state to all sidebars
+ * 3. Syncs sidebar sections with main content collapsible states
+ * 
+ * Called once on page load (window.onload).
+ */
 function initSidebarSync() {
     try {
         const saved = localStorage.getItem(SIDEBAR_STATE_KEY);
@@ -146,6 +321,19 @@ function initSidebarSync() {
     });
 }
 
+/**
+ * Ensure crew data is loaded with concurrency protection.
+ * 
+ * Loading Strategy:
+ * - First call: Initiates loadData(), sets promise
+ * - Concurrent calls: Return existing promise (no duplicate loads)
+ * - Subsequent calls after load: Return immediately (cached flag)
+ * 
+ * Protects against race conditions when multiple tabs/functions
+ * request crew data simultaneously.
+ * 
+ * @returns {Promise<void>} Resolves when crew data loaded
+ */
 async function ensureCrewData() {
     if (crewDataLoaded) return;
     if (crewDataPromise) return crewDataPromise;
@@ -155,7 +343,46 @@ async function ensureCrewData() {
     return crewDataPromise;
 }
 
-// Tab navigation
+/**
+ * Navigate to a tab and initialize its content.
+ * 
+ * Tab Switching Process:
+ * 1. Hides all content sections
+ * 2. Removes 'active' class from all tabs
+ * 3. Shows target content section
+ * 4. Adds 'active' class to clicked tab
+ * 5. Updates banner controls visibility
+ * 6. Loads tab-specific data/UI
+ * 
+ * Tab-Specific Initialization:
+ * 
+ * **Chat Tab:**
+ * - Updates UI (mode, privacy state)
+ * - Ensures crew data loaded (for patient selector)
+ * - Loads context sidebar
+ * - Restores collapsible state
+ * - Prefetches prompt preview
+ * 
+ * **Settings Tab:**
+ * - Loads settings UI
+ * - Loads crew credentials
+ * - Loads workspace switcher
+ * - Loads context sidebar
+ * 
+ * **CrewMedical / VesselCrewInfo Tabs:**
+ * - Ensures crew data loaded
+ * - Loads vessel data (VesselCrewInfo only)
+ * - Loads context sidebar
+ * 
+ * **OnboardEquipment Tab:**
+ * - Loads equipment list
+ * - Loads medicine photo queue
+ * - Preloads pharmacy data
+ * - Loads context sidebar
+ * 
+ * @param {Event} e - Click event
+ * @param {string} n - Tab name/ID to show
+ */
 async function showTab(e, n) {
     console.log('[DEBUG] showTab ->', n);
     document.querySelectorAll('.content').forEach(c=>c.style.display='none');
@@ -213,7 +440,37 @@ async function showTab(e, n) {
     }
 }
 
-// Load crew data only
+/**
+ * Load crew, history, and settings data from server.
+ * 
+ * Loading Strategy:
+ * - Concurrent fetch of all 3 endpoints (Promise.all)
+ * - Patients: Hard requirement, fails if unavailable
+ * - History: Soft requirement, continues if fails (empty array)
+ * - Settings: Optional, uses defaults if unavailable
+ * 
+ * Error Handling:
+ * - History parse failure: Warns and continues with []
+ * - Settings parse failure: Warns and continues with {}
+ * - Patients failure: Throws error and shows graceful UI fallback
+ * 
+ * Race Condition Protection:
+ * If loadCrewData not yet available (script still loading), retries
+ * after 150ms to allow crew.js to finish initializing.
+ * 
+ * Side Effects:
+ * - Sets window.CACHED_SETTINGS for global access
+ * - Calls loadCrewData() to render crew UI
+ * - Sets crewDataLoaded flag
+ * - Updates patient selector dropdown
+ * 
+ * Fallback UI on Error:
+ * - Shows "Unable to load crew data" message
+ * - Provides "Unnamed Crew" option in selectors
+ * - Prevents cascading errors
+ * 
+ * @throws {Error} If patients data unavailable or malformed
+ */
 async function loadData() {
     console.log('[DEBUG] loadData: start');
     try {
@@ -282,6 +539,26 @@ async function loadData() {
     }
 }
 
+/**
+ * Show/hide tab-specific banner controls.
+ * 
+ * Banner Control Groups:
+ * 
+ * **Chat Tab:**
+ * - Mode selector (triage/inquiry)
+ * - Privacy toggle (logging on/off)
+ * - Patient selector
+ * 
+ * **Crew Health & Log Tab:**
+ * - Export all medical records button
+ * 
+ * **Vessel & Crew Info Tab:**
+ * - Export crew CSV button (for border crossings)
+ * 
+ * Other tabs: All banner controls hidden
+ * 
+ * @param {string} activeTab - Current active tab name
+ */
 function toggleBannerControls(activeTab) {
     const triageControls = document.getElementById('banner-controls-triage');
     const crewControls = document.getElementById('banner-controls-crew');
@@ -293,7 +570,34 @@ function toggleBannerControls(activeTab) {
     if (crewCsvBtn) crewCsvBtn.style.display = activeTab === 'VesselCrewInfo' ? 'inline-flex' : 'none';
 }
 
-// Initialize on page load
+/**
+ * Application initialization on page load.
+ * 
+ * Initialization Sequence:
+ * 1. **Crew Data**: Load immediately (used by multiple tabs)
+ * 2. **Medical Chest**: Preload for fast access
+ *    - preloadPharmacy(): Loads inventory
+ *    - loadWhoMedsFromServer(): Loads WHO reference list
+ *    - ensurePharmacyLabels(): Loads user labels
+ *    - loadPharmacy(): Pre-renders pharmacy UI
+ * 3. **Chat UI**: Initialize with updateUI()
+ * 4. **Banner Controls**: Show Chat tab controls
+ * 5. **Sidebar**: Initialize and restore state
+ * 6. **Query Form**: Restore collapsed state
+ * 7. **Last Chat**: Restore previous session view
+ * 
+ * Preloading Strategy:
+ * Medical Chest is preloaded because:
+ * - Frequently accessed (medications needed for consultations)
+ * - Large dataset (better to load early than wait on tab switch)
+ * - Improves perceived performance
+ * 
+ * Error Handling:
+ * All preload operations use .catch() to prevent blocking page load
+ * if individual components fail.
+ * 
+ * Called By: Browser on page load completion
+ */
 window.onload = () => { 
     console.log('[DEBUG] window.onload: start');
     ensureCrewData();
@@ -322,6 +626,29 @@ if (typeof window.loadCrewData !== 'function') {
     console.error('[DEBUG] window.loadCrewData is not defined at main.js load time.');
 }
 
+/**
+ * Restore collapsible section state from localStorage.
+ * 
+ * Restoration Process:
+ * 1. Looks for stored state in localStorage (by header ID or data-pref-key)
+ * 2. Applies stored state or uses default if not found
+ * 3. Updates icon (▸/▾)
+ * 4. Special handling for prompt preview (ARIA + refresh button)
+ * 
+ * Special Cases:
+ * 
+ * **Prompt Preview Header:**
+ * - Updates aria-expanded attribute
+ * - Shows/hides prompt refresh inline button
+ * 
+ * Use Cases:
+ * - Query form: Restore expanded/collapsed state
+ * - Prompt preview: Restore editor visibility
+ * - Settings sections: Restore user preferences
+ * 
+ * @param {string} headerId - ID of header element
+ * @param {boolean} defaultOpen - Default state if no stored preference
+ */
 function restoreCollapsibleState(headerId, defaultOpen = true) {
     const header = document.getElementById(headerId);
     if (!header) return;
@@ -345,13 +672,50 @@ function restoreCollapsibleState(headerId, defaultOpen = true) {
     }
 }
 
-// Context loader
+/**
+ * Load context sidebar content for tab.
+ * 
+ * Legacy Function:
+ * Previously loaded remote context content. Now sidebars are static HTML,
+ * so this is a no-op but kept for compatibility.
+ * 
+ * @param {string} tabName - Tab name (no longer used)
+ * @deprecated Sidebars are now static HTML
+ */
 async function loadContext(tabName) {
     // Sidebars are now fully static HTML; no remote context to fetch.
     return;
 }
 
-// Restore last chat so the triage page shows the most recent response on load
+/**
+ * Restore last chat session on page load.
+ * 
+ * Restoration Process:
+ * 1. Checks display element is empty (fresh load)
+ * 2. Checks skipLastChat flag (user may have cleared it)
+ * 3. Fetches history from server
+ * 4. Gets most recent entry
+ * 5. Renders query and response with markdown parsing
+ * 
+ * Display Format:
+ * - Title: "Last Session — [Patient] ([Date])"
+ * - Query section
+ * - Response section
+ * 
+ * Use Cases:
+ * - User returns to page: See previous consultation
+ * - Page refresh: Maintain context
+ * - Quick reference: Check recent advice
+ * 
+ * Skip Conditions:
+ * - User cleared display (skipLastChat=1)
+ * - Display already has content (manual chat run)
+ * - No history available
+ * - History fetch fails
+ * 
+ * Integration:
+ * Works with clearDisplay() in chat.js which sets skipLastChat flag.
+ */
 async function restoreLastChatView() {
     try {
         const display = document.getElementById('display');
@@ -382,7 +746,43 @@ async function restoreLastChatView() {
     }
 }
 
-// Medical Chest search across pharma/equipment/consumables
+/**
+ * Search across all medical inventories.
+ * 
+ * Search Scope:
+ * - **all**: Pharmaceuticals + Equipment + Consumables
+ * - **pharma**: Medications only
+ * - **equipment**: Durable medical equipment only
+ * - **consumables**: Single-use supplies only
+ * 
+ * Search Fields:
+ * 
+ * **Pharmaceuticals:**
+ * - Generic name, brand name
+ * - Indication, dosage
+ * - Storage location, notes
+ * 
+ * **Equipment/Consumables:**
+ * - Item name
+ * - Storage location
+ * - Notes, quantity
+ * 
+ * Results Display:
+ * - Grouped by category (Pharmaceuticals, Equipment, Consumables)
+ * - Collapsible result sections
+ * - Shows count per category
+ * - Item details (title, detail, storage location)
+ * 
+ * Use Cases:
+ * - "Where is the amoxicillin?"
+ * - "Do we have any splints?"
+ * - "What's in Medical Bag 3?"
+ * - "Find all antibiotics"
+ * 
+ * Performance:
+ * Concurrent fetch of inventory and tools data for fast results.
+ * Case-insensitive search for better UX.
+ */
 async function searchMedicalChest() {
     const input = document.getElementById('medchest-search-input');
     const scopeSel = document.getElementById('medchest-search-scope');
@@ -458,6 +858,14 @@ async function searchMedicalChest() {
     }
 }
 
+/**
+ * Toggle search result section visibility.
+ * 
+ * Each category (Pharmaceuticals, Equipment, Consumables) is a
+ * collapsible section. This toggles individual sections.
+ * 
+ * @param {HTMLElement} headerEl - Result category header element
+ */
 function toggleSearchResults(headerEl) {
     const body = headerEl.nextElementSibling;
     if (!body) return;

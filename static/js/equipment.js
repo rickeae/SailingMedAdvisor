@@ -1,5 +1,30 @@
-// Equipment management for onboard medical gear
+/*
+File: static/js/equipment.js
+Author notes: Equipment and medical supplies management.
 
+Key Responsibilities:
+- Medical equipment inventory (durable goods: AED, blood pressure cuff, etc.)
+- Consumables tracking (bandages, gauze, gloves, syringes, etc.)
+- Import/export functionality for equipment lists (TSV format)
+- Resource availability trackiang (in-stock vs unavailable)
+- Equipment classification and categorization
+
+Equipment Classification:
+- 'durable': Medical equipment (reusable, tracked equipment)
+- 'consumable': Single-use supplies (tracked by quantity)
+- 'medication': Medicines (redirects to pharmacy module)
+
+Data Flow:
+- Equipment: /api/data/tools (tools.json)
+- Medications: /api/data/inventory (inventory.json)
+- Import/Export: TSV files for bulk updates
+
+Integration Points:
+- pharmacy.js: Medication management
+- main.js: Tab navigation, initial data load
+*/
+
+// Utility function imports from utils.js (with fallbacks)
 const workspaceHeaders = (window.Utils && window.Utils.workspaceHeaders) ? window.Utils.workspaceHeaders : (extra = {}) => extra;
 const fetchJson = (window.Utils && window.Utils.fetchJson) ? window.Utils.fetchJson : async (url, options = {}) => {
     const res = await fetch(url, { credentials: 'same-origin', ...options });
@@ -8,18 +33,30 @@ const fetchJson = (window.Utils && window.Utils.fetchJson) ? window.Utils.fetchJ
     return data;
 };
 
-let equipmentCache = [];
-let phoneSelectedFiles = [];
-let desktopSelectedFiles = [];
-let medPhotoJobs = [];
-let medPhotoPollTimer = null;
-let syncedInventoryJobIds = new Set();
-const equipmentSaveTimers = {};
-let medPhotoDropBound = false;
-let medPhotoMode = 'single'; // 'single' or 'grouped'
+// ============================================================================
+// STATE MANAGEMENT
+// ============================================================================
+
+let equipmentCache = [];              // Cached equipment/consumables from server
+const equipmentSaveTimers = {};       // Debounce timers for auto-save
+let phoneSelectedFiles = [];          // Staged photos from mobile camera
+let desktopSelectedFiles = [];        // Staged photos from desktop (drag-drop or picker)
+let medPhotoJobs = [];                // Active photo processing jobs
+let medPhotoPollTimer = null;         // Polling interval for job status updates
+let syncedInventoryJobIds = new Set(); // Track which jobs already synced to pharmacy
+let medPhotoDropBound = false;        // Photo drop handler bound flag
+let medPhotoMode = 'single';          // Photo import mode
 
 const eqWorkspaceHeaders = workspaceHeaders;
 
+/**
+ * Update section header count badges.
+ * 
+ * Displays item counts in section headers (e.g., "Medical Equipment (12)").
+ * 
+ * @param {string} id - Element ID of the count badge
+ * @param {number} count - Number of items to display
+ */
 function updateSectionCount(id, count) {
     const el = document.getElementById(id);
     if (el) {
@@ -27,6 +64,18 @@ function updateSectionCount(id, count) {
     }
 }
 
+/**
+ * Open mobile photo import overlay.
+ * 
+ * Mobile-Optimized Flow:
+ * 1. Displays full-screen overlay with camera access
+ * 2. Shows file input (triggers camera on mobile devices)
+ * 3. Provides photo preview and staging area
+ * 4. Allows mode selection (single vs grouped)
+ * 5. Submits batch to processing queue
+ * 
+ * Called by phone-only buttons (hidden on desktop via CSS media queries).
+ */
 async function openPhoneImportView() {
     const overlay = document.getElementById('phone-import-overlay');
     if (!overlay) return;
@@ -39,12 +88,50 @@ async function openPhoneImportView() {
     renderPhonePreview();
 }
 
+/**
+ * Close mobile photo import overlay.
+ * Restores body scroll and hides overlay.
+ */
 function closePhoneImportView() {
     const overlay = document.getElementById('phone-import-overlay');
     if (overlay) overlay.style.display = 'none';
     document.body.style.overflow = '';
 }
 
+/**
+ * Normalize equipment item with default values.
+ * 
+ * Ensures all expected fields exist with appropriate defaults.
+ * Similar to pharmacy's ensurePharmacyDefaults but for equipment/consumables.
+ * 
+ * Equipment Structure:
+ * ```javascript
+ * {
+ *   id: string,                    // Unique ID (eq-timestamp-random)
+ *   name: string,                  // Equipment/consumable name
+ *   category: string,              // Category for grouping
+ *   type: string,                  // 'durable' | 'consumable' | 'medication'
+ *   storageLocation: string,       // Where it's stored
+ *   subLocation: string,           // Specific location details
+ *   status: string,                // 'In Stock' | 'Out of Stock' | 'Maintenance'
+ *   expiryDate: string,            // ISO date for consumables
+ *   lastInspection: string,        // ISO date of last inspection
+ *   batteryType: string,           // For powered equipment
+ *   batteryStatus: string,         // Battery condition
+ *   calibrationDue: string,        // ISO date for next calibration
+ *   totalQty: string,              // Current quantity
+ *   minPar: string,                // Minimum stock level
+ *   supplier: string,              // Supplier name
+ *   parentId: string,              // For nested equipment (e.g., kit contents)
+ *   requiresPower: boolean,        // Needs batteries/power
+ *   notes: string,                 // Additional information
+ *   excludeFromResources: boolean  // Hide from public resource lists
+ * }
+ * ```
+ * 
+ * @param {Object} item - Raw equipment data
+ * @returns {Object} Normalized equipment object with all fields
+ */
 function ensureEquipmentDefaults(item) {
     return {
         id: item.id || `eq-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
@@ -69,6 +156,18 @@ function ensureEquipmentDefaults(item) {
     };
 }
 
+/**
+ * Load and render all equipment from server.
+ * 
+ * Loading Process:
+ * 1. Fetches from /api/data/tools
+ * 2. Normalizes all items
+ * 3. Classifies into equipment/consumables/medications
+ * 4. Renders to appropriate lists
+ * 5. Updates section count badges
+ * 
+ * @param {string} expandId - Optional ID of item to auto-expand after render
+ */
 async function loadEquipment(expandId = null) {
     const list = document.getElementById('equipment-list');
     if (!list) return;
@@ -84,6 +183,19 @@ async function loadEquipment(expandId = null) {
     }
 }
 
+/**
+ * Classify equipment into category buckets.
+ * 
+ * Classification Rules:
+ * 1. type='medication' OR category contains 'medication' → 'medication'
+ * 2. type='consumable' → 'consumable'  
+ * 3. Otherwise → 'equipment' (durable goods)
+ * 
+ * Used to route items to correct display lists and apply appropriate styling.
+ * 
+ * @param {Object} item - Equipment item to classify
+ * @returns {string} 'medication' | 'consumable' | 'equipment'
+ */
 function classifyEquipment(item) {
     const type = (item.type || '').toLowerCase();
     const category = (item.category || '').toLowerCase();
@@ -92,6 +204,15 @@ function classifyEquipment(item) {
     return 'equipment';
 }
 
+/**
+ * Bind change handler to mobile photo input.
+ * 
+ * On mobile devices, file input with accept="image/*" automatically
+ * triggers the device camera. This handler stages captured photos
+ * in the preview area for batch submission.
+ * 
+ * Uses dataset flag to prevent duplicate binding.
+ */
 function bindPhoneInput() {
     const input = document.getElementById('phone-med-photo-input');
     if (!input || input.dataset.bound) return;
@@ -105,6 +226,17 @@ function bindPhoneInput() {
     });
 }
 
+/**
+ * Set medicine photo import mode.
+ * 
+ * Modes:
+ * - 'single': Each photo → separate medication (default)
+ * - 'grouped': All photos → one medication (multiple angles)
+ * 
+ * Updates UI labels to explain current mode behavior.
+ * 
+ * @param {string} mode - 'single' or 'grouped'
+ */
 function setMedPhotoMode(mode) {
     medPhotoMode = mode === 'grouped' ? 'grouped' : 'single';
     const labels = document.querySelectorAll('[data-med-photo-mode-label]');
@@ -117,6 +249,16 @@ function setMedPhotoMode(mode) {
     });
 }
 
+/**
+ * Render preview of staged mobile photos.
+ * 
+ * Creates thumbnail cards for each photo with:
+ * - Photo number label
+ * - Image preview (160px height)
+ * - Remove button
+ * 
+ * Updates count badge showing total photos ready for import.
+ */
 function renderPhonePreview() {
     const preview = document.getElementById('phone-photo-preview');
     const count = document.getElementById('phone-photo-count');
@@ -132,6 +274,12 @@ function renderPhonePreview() {
     });
 }
 
+/**
+ * Render preview of staged desktop photos.
+ * 
+ * Similar to renderPhonePreview but smaller cards (90px height) optimized
+ * for desktop layout where multiple photos appear side-by-side.
+ */
 function renderDesktopPreview() {
     const preview = document.getElementById('med-photo-preview');
     const sel = document.getElementById('med-photo-selected');
@@ -147,6 +295,29 @@ function renderDesktopPreview() {
     });
 }
 
+/**
+ * Render medicine photo processing job queue.
+ * 
+ * Displays all active jobs (queued, processing, completed, failed) with:
+ * - Status badge (color-coded by state)
+ * - Photo thumbnails
+ * - Extracted medication info (when available)
+ * - Model used for extraction
+ * - Retry button (for failed jobs)
+ * - Delete button (all jobs)
+ * 
+ * Renders to both desktop and mobile containers for consistent experience.
+ * 
+ * Job Status States:
+ * - queued: Yellow badge, awaiting processing
+ * - processing: Blue badge, AI model actively extracting
+ * - completed: Green badge, synced to inventory
+ * - failed: Red badge, extraction error (can retry)
+ * 
+ * Auto-sync Feature:
+ * Completed jobs with inventory_id automatically trigger pharmacy reload
+ * to show newly imported medications.
+ */
 function renderMedPhotoJobs() {
     const container = document.getElementById('med-photo-queue');
     const phoneContainer = document.getElementById('phone-import-queue');
@@ -216,6 +387,31 @@ function renderMedPhotoJobs() {
     renderTarget(phoneContainer);
 }
 
+/**
+ * Load and monitor medicine photo processing queue.
+ * 
+ * Initialization:
+ * 1. Binds drag-and-drop handlers (if not already bound)
+ * 2. Fetches current job list from server
+ * 3. Renders job status cards
+ * 4. Checks for newly completed jobs
+ * 5. Auto-syncs completed jobs to pharmacy inventory
+ * 6. Starts polling timer (5-second intervals)
+ * 
+ * Polling Strategy:
+ * Continuously polls /api/medicines/jobs every 5 seconds to update
+ * job statuses in real-time. Shows progress as AI model processes photos.
+ * 
+ * Auto-Sync Logic:
+ * Tracks which jobs have already been synced (syncedInventoryJobIds set).
+ * When a job completes and has inventory_id, triggers loadPharmacy() once
+ * to refresh medication list with newly imported items.
+ * 
+ * Called By:
+ * - Equipment tab initialization
+ * - After submitting new photo batch
+ * - Manual refresh requests
+ */
 async function loadMedPhotoQueue() {
     bindMedPhotoDrop();
     const fetchJobs = async () => {
@@ -245,6 +441,21 @@ async function loadMedPhotoQueue() {
     }
 }
 
+/**
+ * Check if file is an image based on MIME type or extension.
+ * 
+ * Detection Strategy:
+ * 1. Check MIME type starts with "image/"
+ * 2. Check filename extension (.png, .jpg, .jpeg, .webp, .bmp, .heic, .heif)
+ * 
+ * Handles edge cases:
+ * - Files without MIME type (some mobile browsers)
+ * - HEIC/HEIF formats (iOS camera default)
+ * - Missing file type metadata
+ * 
+ * @param {File} file - File object to check
+ * @returns {boolean} True if likely an image
+ */
 function isLikelyImage(file) {
     if (!file) return false;
     const type = (file.type || '').toLowerCase();
@@ -260,11 +471,48 @@ function clearDesktopPhotoSelection() {
     renderDesktopPreview();
 }
 
+/**
+ * Generate ASCII-safe filename for upload.
+ * 
+ * Some backend systems struggle with non-ASCII characters (Unicode, emojis)
+ * in filenames. This ensures safe transmission and storage.
+ * 
+ * Strategy:
+ * - If filename is pure ASCII (0x20-0x7E), use original
+ * - Otherwise, generate: phone-photo-[timestamp]-[index].jpg
+ * 
+ * Use Cases:
+ * - iOS photos with special characters
+ * - Filenames with non-Latin scripts
+ * - Files with emojis or symbols
+ * 
+ * @param {File} file - File to generate name for
+ * @param {number} idx - Index in batch (for uniqueness)
+ * @returns {string} ASCII-safe filename
+ */
 function safeAsciiName(file, idx) {
     const hasAsciiName = file && typeof file.name === 'string' && /^[\x20-\x7E]+$/.test(file.name);
     return hasAsciiName ? file.name : `phone-photo-${Date.now()}-${idx + 1}.jpg`;
 }
 
+/**
+ * Convert File object to base64 data URL.
+ * 
+ * Used as fallback when multipart/form-data upload fails (some proxies,
+ * firewalls, or network conditions). Allows sending images as JSON strings.
+ * 
+ * Process:
+ * 1. Creates FileReader
+ * 2. Reads file as data URL (base64)
+ * 3. Returns promise that resolves with data URL string
+ * 
+ * Format: "data:image/jpeg;base64,/9j/4AAQSkZJRg..."
+ * 
+ * Trade-off: ~33% larger than binary but more universally compatible.
+ * 
+ * @param {File} file - File to convert
+ * @returns {Promise<string>} Resolves with base64 data URL
+ */
 function fileToDataUrl(file) {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -274,6 +522,31 @@ function fileToDataUrl(file) {
     });
 }
 
+/**
+ * Queue photos using JSON/base64 fallback endpoint.
+ * 
+ * Fallback Strategy:
+ * When multipart/form-data upload fails (corporate proxies, restrictive
+ * firewalls, or API gateway limitations), this endpoint accepts photos
+ * as base64-encoded JSON payload.
+ * 
+ * Process:
+ * 1. Converts each File to base64 data URL
+ * 2. Builds JSON payload with file metadata
+ * 3. POSTs to /api/medicines/photos/base64
+ * 4. Returns job IDs for tracking
+ * 
+ * Trade-offs:
+ * ✓ Works through restrictive networks
+ * ✓ No multipart parsing issues
+ * ✗ ~33% larger payload
+ * ✗ Higher memory usage
+ * ✗ Slower for large batches
+ * 
+ * @param {Array<File>} images - Image files to queue
+ * @param {Object} opts - Options including mode ('single'|'grouped')
+ * @returns {Promise<Object>} API response with job IDs
+ */
 async function queuePhotosViaJson(images, opts = {}) {
     const payload = {
         files: await Promise.all(
@@ -301,6 +574,34 @@ async function queuePhotosViaJson(images, opts = {}) {
     return data;
 }
 
+/**
+ * Import medicine photos with automatic fallback handling.
+ * 
+ * Primary Import Path (Multipart Upload):
+ * 1. Filters to image files only
+ * 2. Generates safe ASCII filenames
+ * 3. Builds FormData with files
+ * 4. POSTs to /api/medicines/photos
+ * 5. Creates job entries in processing queue
+ * 
+ * Automatic Fallback (Base64/JSON):
+ * If multipart upload fails, automatically retries using queuePhotosViaJson()
+ * which sends photos as base64-encoded JSON. Most networks accept this.
+ * 
+ * Status Updates:
+ * If statusEl provided, shows progress messages:
+ * - "Importing photos…"
+ * - "Queued N job(s) from M photo(s)."
+ * - "Unable to import: [error]"
+ * 
+ * Side Effects:
+ * - Triggers loadMedPhotoQueue() to start polling
+ * - Triggers loadPharmacy() to prepare for new medications
+ * 
+ * @param {Array<File>} files - Files to import
+ * @param {Object} opts - Options: mode, statusEl, __triedJson
+ * @returns {Promise<Object>} {success: boolean, jobs: Array}
+ */
 async function importPhotosFromFiles(files, opts = {}) {
     const images = Array.from(files || []).filter(isLikelyImage);
     if (!images.length) {
@@ -396,11 +697,46 @@ async function ensureEquipmentCacheLoaded() {
     return equipmentCache;
 }
 
+/**
+ * Sanitize value for tab-delimited (TSV) export.
+ * 
+ * TSV Requirements:
+ * - No tab characters (field delimiter)
+ * - No newlines (row delimiter)
+ * - Consistent whitespace
+ * 
+ * Transformations:
+ * - Tabs → spaces
+ * - Newlines → spaces  
+ * - Trim leading/trailing whitespace
+ * - Null/undefined → empty string
+ * 
+ * @param {any} value - Value to sanitize
+ * @returns {string} TSV-safe string
+ */
 function sanitizeTSVField(value) {
     const text = value == null ? '' : value.toString();
     return text.replace(/\t/g, ' ').replace(/\r?\n/g, ' ').trim();
 }
 
+/**
+ * Build tab-delimited (TSV) content from equipment items.
+ * 
+ * TSV Format (3 columns):
+ * Name    Quantity    Comment
+ * 
+ * Features:
+ * - Alphabetically sorted by name
+ * - Sanitized fields (no tabs/newlines)
+ * - Customizable comment column via commentFn
+ * - Filters empty rows
+ * 
+ * Compatible with Excel, Google Sheets, Numbers, and text editors.
+ * 
+ * @param {Array<Object>} items - Equipment items to export
+ * @param {Function} commentFn - Function to extract comment from item
+ * @returns {string} TSV-formatted text
+ */
 function buildTabDelimitedContent(items, commentFn) {
     const rows = [...items]
         .sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }))
@@ -414,6 +750,21 @@ function buildTabDelimitedContent(items, commentFn) {
     return rows.join('\n');
 }
 
+/**
+ * Trigger browser download of TSV file.
+ * 
+ * Process:
+ * 1. Creates Blob with TSV MIME type
+ * 2. Generates object URL
+ * 3. Creates temporary <a> element
+ * 4. Triggers click to start download
+ * 5. Cleans up object URL after 1.5s
+ * 
+ * MIME Type: text/tab-separated-values
+ * 
+ * @param {string} filename - Suggested filename for download
+ * @param {string} content - TSV-formatted content
+ */
 function downloadTabDelimitedFile(filename, content) {
     const blob = new Blob([content], { type: 'text/tab-separated-values' });
     const url = URL.createObjectURL(blob);
@@ -730,6 +1081,25 @@ function bindMedPhotoDrop() {
     medPhotoDropBound = true;
 }
 
+/**
+ * Render all equipment items to appropriate lists.
+ * 
+ * Classification and Routing:
+ * 1. Classifies each item (equipment/consumable/medication)
+ * 2. Routes to correct list container:
+ *    - equipment → #equipment-list
+ *    - consumable → #consumables-list  
+ *    - medication → #medication-list
+ * 3. Sorts alphabetically within each category
+ * 4. Updates section count badges
+ * 
+ * Expansion Feature:
+ * If expandId provided, auto-expands that specific item's card
+ * (useful after adding new item to show it immediately).
+ * 
+ * @param {Array<Object>} items - All equipment/consumables to render
+ * @param {string} expandId - Optional ID of item to auto-expand
+ */
 function renderEquipment(items, expandId = null) {
     const storeList = document.getElementById('equipment-list');
     const medicationList = document.getElementById('medication-list');
@@ -879,11 +1249,46 @@ function renderEquipmentCard(item, expandId = null) {
     return equipmentDetail;
 }
 
+/**
+ * Schedule debounced auto-save for equipment item.
+ * 
+ * Debounce Period: 600ms
+ * 
+ * Allows rapid typing/editing without flooding the backend with saves.
+ * Each equipment item has independent timer.
+ * 
+ * Triggered by: Input/change events on equipment form fields
+ * 
+ * @param {string} id - Equipment item ID to save
+ */
 function scheduleSaveEquipment(id) {
     if (equipmentSaveTimers[id]) clearTimeout(equipmentSaveTimers[id]);
     equipmentSaveTimers[id] = setTimeout(() => saveEquipment(id), 600);
 }
 
+/**
+ * Save equipment item changes to server.
+ * 
+ * Save Process:
+ * 1. Loads full equipment list
+ * 2. Finds item by ID
+ * 3. Updates fields from form inputs
+ * 4. Writes entire list back to server
+ * 5. Updates cache and re-renders with item expanded
+ * 
+ * Fields Saved:
+ * - name, category, type, storage location
+ * - status, dates (expiry, inspection, calibration)
+ * - quantities (total, min PAR)
+ * - battery info, supplier, notes
+ * - excludeFromResources flag
+ * 
+ * Re-render Strategy:
+ * After save, re-renders with saved item expanded so user can verify
+ * changes persisted correctly.
+ * 
+ * @param {string} id - Equipment item ID to save
+ */
 async function saveEquipment(id) {
     const getVal = (elementId, fallback = '') => {
         const el = document.getElementById(elementId);
@@ -948,6 +1353,29 @@ function getNewEquipmentVal(id) {
     return el ? el.value.trim() : '';
 }
 
+/**
+ * Add new medical equipment item from form.
+ * 
+ * Validation:
+ * - Name is required (focuses field if missing)
+ * - All other fields optional
+ * 
+ * Process:
+ * 1. Collects form values
+ * 2. Creates new item with generated ID
+ * 3. Adds to equipment list
+ * 4. Saves to server
+ * 5. Clears form for next entry
+ * 6. Reloads with new item expanded
+ * 
+ * Item Type: 'durable' (reusable equipment)
+ * Category: 'Medical Equipment'
+ * 
+ * Use Cases:
+ * - AED, blood pressure cuff, thermometer
+ * - Stethoscope, pulse oximeter, glucometer
+ * - Trauma shears, splints, suction devices
+ */
 async function addMedicalStore() {
     const name = getNewEquipmentVal('eq-new-name');
     if (!name) {
@@ -1099,6 +1527,30 @@ async function addMedicationItem() {
     }
 }
 
+/**
+ * Add new consumable item from form.
+ * 
+ * Validation:
+ * - Name is required (focuses field if missing)
+ * - Quantity and notes optional
+ * 
+ * Process:
+ * 1. Collects form values  
+ * 2. Creates new item with generated ID
+ * 3. Adds to equipment list
+ * 4. Saves to server
+ * 5. Clears form for next entry
+ * 6. Reloads with new item expanded
+ * 
+ * Item Type: 'consumable' (single-use supplies)
+ * Category: 'Consumable'
+ * 
+ * Use Cases:
+ * - Bandages, gauze pads, tape
+ * - Gloves, masks, syringes
+ * - Alcohol wipes, antiseptic
+ * - Sutures, IV supplies
+ */
 async function addConsumableItem() {
     const name = getNewEquipmentVal('cons-new-name');
     if (!name) {
@@ -1142,6 +1594,24 @@ async function addConsumableItem() {
     loadEquipment(newId);
 }
 
+/**
+ * Delete equipment item with double confirmation.
+ * 
+ * Two-Step Safety:
+ * 1. Confirm dialog
+ * 2. Type "DELETE" prompt (exact match required)
+ * 
+ * Process:
+ * 1. Loads full equipment list
+ * 2. Filters out deleted item
+ * 3. Writes remaining items to server
+ * 4. Reloads equipment display
+ * 
+ * Permanent Action:
+ * No undo available. Data is permanently removed from tools.json.
+ * 
+ * @param {string} id - Equipment item ID to delete
+ */
 async function deleteEquipment(id) {
     if (!confirm('Delete this equipment item?')) return;
     const confirmText = prompt('Type DELETE to confirm:');
@@ -1162,6 +1632,26 @@ async function deleteEquipment(id) {
     loadEquipment();
 }
 
+/**
+ * Calculate days until a future date.
+ * 
+ * Used for:
+ * - Expiry warnings (items expiring soon)
+ * - Calibration due dates
+ * - Maintenance schedules
+ * 
+ * Returns:
+ * - Positive number: Days in future
+ * - Negative number: Days in past (expired)
+ * - 9999: Invalid date (parsing failed)
+ * 
+ * Thresholds:
+ * - ≤ 60 days: Show "Expiring Soon" warning
+ * - < 0 days: Show "Expired" warning
+ * 
+ * @param {string} dateStr - ISO date string (YYYY-MM-DD)
+ * @returns {number} Days until date (or 9999 if invalid)
+ */
 function daysUntil(dateStr) {
     const now = new Date();
     const target = new Date(dateStr);

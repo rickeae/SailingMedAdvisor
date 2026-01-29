@@ -1,8 +1,91 @@
 /*
 File: static/js/settings.js
-Author notes: Settings UI controller. I load/save config to the backend, manage
-lookup lists, offline readiness checks, and keep live status badges in the
-Settings headers so the operator always sees current state.
+Author notes: Application configuration management and settings UI controller.
+
+Key Responsibilities:
+- Application settings persistence (prompts, model parameters)
+- User mode management (user/advanced/developer visibility levels)
+- Offline mode configuration and model caching
+- Dynamic list management (vaccine types, pharmacy labels)
+- Crew login credentials management
+- Auto-save with debouncing
+- Live status indicators in section headers
+- Default dataset export/import
+
+Settings Architecture:
+---------------------
+Settings are stored in settings.json on the backend and cached in window.CACHED_SETTINGS
+on the frontend. Auto-save triggers 800ms after user input to minimize write operations.
+
+User Modes:
+1. USER MODE (Default): Simplified interface, hides advanced configuration
+   - Basic prompts visible
+   - Simple status indicators
+   - Essential functionality only
+
+2. ADVANCED MODE: Shows model parameters and detailed configuration
+   - Temperature, token limits, top-p visible
+   - Detailed status with metrics
+   - Import/export features
+   - Sample test cases
+
+3. DEVELOPER MODE: Full debugging and development features
+   - All dev-tag elements visible
+   - Raw data views
+   - Debug logging
+   - Developer-only sections
+
+Offline Mode System:
+-------------------
+Enables complete offline operation for remote sailing:
+
+1. Model Caching:
+   - medgemma-1.5-4b-it (primary triage/inquiry model)
+   - medgemma-27b-text-it (advanced model for complex cases)
+   - Qwen2.5-VL-7B-Instruct (OCR for medicine photo import)
+
+2. Environment Flags:
+   - HF_HUB_OFFLINE=1: Disables Hugging Face Hub connectivity checks
+   - TRANSFORMERS_OFFLINE=1: Prevents transformer model downloads
+
+3. Workflow:
+   - While online: Download all required models
+   - Before departure: Create cache backup
+   - At sea: Enable offline flags, verify cache status
+   - If corruption: Restore from backup
+
+4. Cache Management:
+   - Check cache status: Verifies all models present
+   - Download missing: Fetches any missing models (requires internet)
+   - Backup cache: Creates timestamped backup
+   - Restore backup: Recovers from latest backup
+
+Dynamic Lists:
+-------------
+Vaccine types and pharmacy labels are user-customizable lists that populate
+dropdowns throughout the application. Changes sync immediately across all modules.
+
+- Vaccine Types: Used in crew.js for vaccine record tracking
+- Pharmacy Labels: Used in pharmacy.js for medication categorization
+- Duplicate prevention and normalization on save
+- Reorderable with up/down buttons
+
+Crew Credentials:
+----------------
+Allows setting per-crew-member login credentials for future multi-user support.
+Currently informational, will enable authentication in future releases.
+
+Data Flow:
+- Settings: /api/data/settings (settings.json)
+- Crew Credentials: /api/crew/credentials
+- Offline Status: /api/offline/check, /api/offline/ensure
+- Default Export: /api/default/export
+
+Integration Points:
+- pharmacy.js: Pharmacy labels, medicine photo model/prompt
+- crew.js: Vaccine types
+- chat.js: Triage/inquiry prompts, model parameters
+- main.js: User mode visibility, initialization
 */
 
 const DEFAULT_SETTINGS = {
@@ -24,14 +107,41 @@ const DEFAULT_SETTINGS = {
     offline_force_flags: false
 };
 
-let settingsDirty = false;
-let settingsLoaded = false;
-let settingsAutoSaveTimer = null;
-let offlineStatusCache = null;
-let vaccineTypeList = [...DEFAULT_SETTINGS.vaccine_types];
-let pharmacyLabelList = [...DEFAULT_SETTINGS.pharmacy_labels];
-let offlineInitialized = false;
+// ============================================================================
+// STATE MANAGEMENT
+// ============================================================================
 
+let settingsDirty = false;           // Track unsaved changes
+let settingsLoaded = false;          // Prevent premature saves during init
+let settingsAutoSaveTimer = null;    // Debounce timer for auto-save
+let offlineStatusCache = null;       // Cached offline status for UI updates
+let vaccineTypeList = [...DEFAULT_SETTINGS.vaccine_types];   // Active vaccine types
+let pharmacyLabelList = [...DEFAULT_SETTINGS.pharmacy_labels]; // Active pharmacy labels
+let offlineInitialized = false;     // Prevent duplicate offline checks
+
+/**
+ * Set application user mode and update visibility.
+ * 
+ * User Mode Behaviors:
+ * - USER: Simple interface, essential features only
+ * - ADVANCED: Model parameters, detailed metrics, import/export
+ * - DEVELOPER: Full debugging, all dev-tag elements, raw data views
+ * 
+ * UI Changes:
+ * 1. Adds/removes mode-specific classes to body and html
+ * 2. Shows/hides .developer-only elements
+ * 3. Shows/hides .dev-tag elements
+ * 4. Updates triage sample inline visibility
+ * 5. Refreshes settings meta badges
+ * 6. Persists to localStorage
+ * 
+ * Triggered By:
+ * - Settings form user_mode select change
+ * - Page load (from localStorage or server)
+ * - Reset section
+ * 
+ * @param {string} mode - 'user', 'advanced', or 'developer'
+ */
 function setUserMode(mode) {
     const body = document.body;
     const normalized = ['advanced', 'developer'].includes((mode || '').toLowerCase()) ? mode.toLowerCase() : 'user';
@@ -68,6 +178,28 @@ function setUserMode(mode) {
     } catch (err) { /* ignore */ }
 }
 
+/**
+ * Update live status badges in settings section headers.
+ * 
+ * Status Badges Display:
+ * - Offline meta: Cached model count or online/offline mode
+ * - Vaccine meta: Number of vaccine types configured
+ * - Pharmacy meta: Number of user labels defined
+ * - User mode meta: Current visibility mode
+ * - Model meta: Token limits (advanced mode only)
+ * 
+ * Advanced Mode Differences:
+ * Shows detailed technical info (token counts, model names) instead
+ * of simplified summaries.
+ * 
+ * Called After:
+ * - Settings load/save
+ * - User mode change
+ * - List modifications (vaccine types, pharmacy labels)
+ * - Offline status updates
+ * 
+ * @param {Object} settings - Current settings object
+ */
 function updateSettingsMeta(settings = {}) {
     const isAdvanced = document.body.classList.contains('mode-advanced') || document.body.classList.contains('mode-developer');
     // Offline meta
@@ -105,11 +237,42 @@ function updateSettingsMeta(settings = {}) {
     }
 }
 
+/**
+ * Update crew credentials count badge.
+ * 
+ * Shows how many crew members have configured login credentials.
+ * 
+ * @param {number} count - Number of crew with credentials
+ */
 function updateCrewCredMeta(count) {
     const el = document.getElementById('crew-creds-meta');
     if (el) el.textContent = `${count} credentialed`;
 }
 
+/**
+ * Apply settings data to UI form fields.
+ * 
+ * Application Process:
+ * 1. Merges with defaults (fills missing fields)
+ * 2. Normalizes vaccine types and pharmacy labels
+ * 3. Renders dynamic lists
+ * 4. Populates form inputs (text, number, checkbox, select)
+ * 5. Sets user mode and updates visibility
+ * 6. Caches in window.CACHED_SETTINGS
+ * 7. Updates status badges
+ * 8. Clears dirty flag
+ * 
+ * Field Type Handling:
+ * - Checkbox: Sets checked property
+ * - Others: Sets value property
+ * 
+ * Called By:
+ * - loadSettingsUI (on page load)
+ * - saveSettings (after successful save)
+ * - Reset functions
+ * 
+ * @param {Object} data - Settings object from server or defaults
+ */
 function applySettingsToUI(data = {}) {
     const merged = { ...DEFAULT_SETTINGS, ...(data || {}) };
     vaccineTypeList = normalizeVaccineTypes(merged.vaccine_types);
@@ -146,6 +309,26 @@ if (document.readyState !== 'loading') {
     }, { once: true });
 }
 
+/**
+ * Bind change/input handlers to all settings form fields.
+ * 
+ * Tracking Strategy:
+ * - Listens to both 'input' (typing) and 'change' (select, checkbox)
+ * - Sets settingsDirty flag immediately
+ * - Schedules auto-save (800ms debounce)
+ * - Special handling for user_mode (immediate save)
+ * - Updates status badges on change
+ * 
+ * Uses dataset flag to prevent duplicate binding.
+ * 
+ * Special Cases:
+ * - user_mode: Immediate save + visibility update
+ * - developer-only fields: Trigger mode refresh
+ * 
+ * Called On:
+ * - DOMContentLoaded
+ * - After dynamic content updates
+ */
 function bindSettingsDirtyTracking() {
     const fields = document.querySelectorAll('#Settings input, #Settings textarea, #Settings select');
     fields.forEach(el => {
@@ -180,6 +363,31 @@ function bindSettingsDirtyTracking() {
     });
 }
 
+/**
+ * Load settings from server and apply to UI.
+ * 
+ * Loading Flow:
+ * 1. Fetches from /api/data/settings
+ * 2. Applies to UI form fields
+ * 3. Persists user_mode to localStorage
+ * 4. Initializes offline check (first load only)
+ * 5. Updates all status badges
+ * 
+ * Fallback Behavior:
+ * If server load fails:
+ * - Applies DEFAULT_SETTINGS
+ * - Restores user_mode from localStorage
+ * - Shows error alert
+ * 
+ * Offline Check:
+ * On first load (offlineInitialized=false), automatically runs offline
+ * status check to populate cache status. Subsequent loads skip this.
+ * 
+ * Called On:
+ * - DOMContentLoaded
+ * - Page initialization
+ * - After applying stored user mode
+ */
 async function loadSettingsUI() {
     console.log('[settings] loadSettingsUI called');
     try {
@@ -208,6 +416,17 @@ async function loadSettingsUI() {
     }
 }
 
+/**
+ * Update settings save status indicator.
+ * 
+ * Shows:
+ * - "Saving…" during save operation
+ * - "Saved at [time]" on success
+ * - "Save error: [message]" on failure
+ * 
+ * @param {string} message - Status message to display
+ * @param {boolean} isError - If true, shows in red
+ */
 function updateSettingsStatus(message, isError = false) {
     const el = document.getElementById('settings-save-status');
     if (!el) return;
@@ -215,6 +434,12 @@ function updateSettingsStatus(message, isError = false) {
     el.style.color = isError ? 'var(--red)' : '#2c3e50';
 }
 
+/**
+ * Apply user mode from localStorage on page load.
+ * 
+ * Ensures user mode persists across sessions before settings fully load.
+ * Falls back to 'user' if localStorage unavailable or empty.
+ */
 function applyStoredUserMode() {
     try {
         const stored = localStorage.getItem('user_mode') || 'user';
@@ -222,11 +447,52 @@ function applyStoredUserMode() {
     } catch (err) { /* ignore */ }
 }
 
+/**
+ * Schedule debounced auto-save of settings.
+ * 
+ * Debounce Period: 800ms
+ * 
+ * Prevents excessive save requests during rapid user input (typing,
+ * slider adjustments). Each new input resets the timer.
+ * 
+ * @param {string} reason - Reason for save (for logging)
+ */
 function scheduleAutoSave(reason = 'auto') {
     if (settingsAutoSaveTimer) clearTimeout(settingsAutoSaveTimer);
     settingsAutoSaveTimer = setTimeout(() => saveSettings(false, reason), 800);
 }
 
+/**
+ * Save settings to server with validation and side effects.
+ * 
+ * Save Process:
+ * 1. Collects form values
+ * 2. Validates and normalizes numeric fields
+ * 3. Includes vaccine types and pharmacy labels
+ * 4. POSTs to /api/data/settings
+ * 5. Applies returned settings to UI
+ * 6. Persists user_mode to localStorage
+ * 7. Clears dirty flag
+ * 8. Updates status indicator
+ * 9. Triggers prompt preview refresh (if applicable)
+ * 
+ * Numeric Fields:
+ * Validated and coerced to numbers. Falls back to defaults if invalid.
+ * Includes: tr_temp, tr_tok, tr_p, in_temp, in_tok, in_p, rep_penalty
+ * 
+ * Side Effects:
+ * - Updates window.CACHED_SETTINGS
+ * - Triggers refreshPromptPreview() in chat.js (if prompt not manually edited)
+ * - Updates all status meta badges
+ * - Shows success/error in status indicator
+ * 
+ * User Mode Preservation:
+ * Preserves locally selected user_mode over server echo to prevent flicker
+ * if server has stale data.
+ * 
+ * @param {boolean} showAlert - Show success/error alert dialog
+ * @param {string} reason - Reason for save (for logging and debugging)
+ */
 async function saveSettings(showAlert = true, reason = 'manual') {
     try {
         const s = {};
@@ -292,6 +558,19 @@ async function saveSettings(showAlert = true, reason = 'manual') {
     }
 }
 
+/**
+ * Reset a settings section to default values.
+ * 
+ * Sections:
+ * - 'triage': Triage prompt and parameters (temp, tokens, top-p)
+ * - 'inquiry': Inquiry prompt and parameters
+ * - 'mission': Mission context description
+ * - 'med_photo': Medicine photo import prompt
+ * 
+ * Immediately saves after reset to persist changes.
+ * 
+ * @param {string} section - Section identifier
+ */
 function resetSection(section) {
     if (section === 'triage') {
         document.getElementById('triage_instruction').value = DEFAULT_SETTINGS.triage_instruction;
@@ -312,6 +591,24 @@ function resetSection(section) {
     saveSettings();
 }
 
+/**
+ * Normalize and deduplicate vaccine types list.
+ * 
+ * Normalization:
+ * 1. Ensures array (falls back to defaults if not)
+ * 2. Converts all items to trimmed strings
+ * 3. Filters empty strings
+ * 4. Removes case-insensitive duplicates
+ * 5. Preserves original case of first occurrence
+ * 
+ * Use Cases:
+ * - After loading from server
+ * - After user adds/removes types
+ * - Before saving to server
+ * 
+ * @param {Array} list - Raw vaccine types array
+ * @returns {Array<string>} Normalized unique vaccine types
+ */
 function normalizeVaccineTypes(list) {
     if (!Array.isArray(list)) return [...DEFAULT_SETTINGS.vaccine_types];
     const seen = new Set();
@@ -326,6 +623,24 @@ function normalizeVaccineTypes(list) {
         });
 }
 
+/**
+ * Render vaccine types list with management controls.
+ * 
+ * Displays:
+ * - Numbered list of vaccine types
+ * - Up/Down buttons for reordering (disabled at boundaries)
+ * - Remove button for each type
+ * - Empty state message if no types
+ * 
+ * Button States:
+ * - First item: Up button disabled
+ * - Last item: Down button disabled
+ * - Remove always enabled
+ * 
+ * Called After:
+ * - Settings load
+ * - Add/remove/reorder operations
+ */
 function renderVaccineTypes() {
     const container = document.getElementById('vaccine-types-list');
     if (!container) return;
@@ -347,6 +662,26 @@ function renderVaccineTypes() {
         `).join('');
 }
 
+/**
+ * Add new vaccine type from input field.
+ * 
+ * Validation:
+ * - Requires non-empty trimmed value
+ * - Duplicate prevention via normalization
+ * 
+ * Process:
+ * 1. Gets value from input
+ * 2. Validates non-empty
+ * 3. Appends to list
+ * 4. Normalizes (deduplicates)
+ * 5. Clears input
+ * 6. Re-renders list
+ * 7. Marks dirty + schedules auto-save
+ * 
+ * Side Effects:
+ * - Updates crew.js vaccine dropdowns (via settings sync)
+ * - Auto-saves after 800ms
+ */
 function addVaccineType() {
     const input = document.getElementById('vaccine-type-input');
     if (!input) return;
@@ -362,6 +697,18 @@ function addVaccineType() {
     scheduleAutoSave('vaccine-type-add');
 }
 
+/**
+ * Remove vaccine type by index.
+ * 
+ * Process:
+ * 1. Validates index bounds
+ * 2. Splices from array
+ * 3. Normalizes remaining types
+ * 4. Re-renders list
+ * 5. Marks dirty + schedules auto-save
+ * 
+ * @param {number} idx - Index to remove
+ */
 function removeVaccineType(idx) {
     if (idx < 0 || idx >= vaccineTypeList.length) return;
     vaccineTypeList.splice(idx, 1);
@@ -371,6 +718,26 @@ function removeVaccineType(idx) {
     scheduleAutoSave('vaccine-type-remove');
 }
 
+/**
+ * Reorder vaccine type (move up or down).
+ * 
+ * Reordering Logic:
+ * - delta=-1: Move up (earlier in list)
+ * - delta=+1: Move down (later in list)
+ * - Validates destination index is in bounds
+ * 
+ * Process:
+ * 1. Calculates new index
+ * 2. Validates bounds
+ * 3. Removes item from old position
+ * 4. Inserts at new position
+ * 5. Normalizes list
+ * 6. Re-renders
+ * 7. Marks dirty + schedules auto-save
+ * 
+ * @param {number} idx - Current index
+ * @param {number} delta - Direction (-1=up, +1=down)
+ */
 function moveVaccineType(idx, delta) {
     const newIndex = idx + delta;
     if (newIndex < 0 || newIndex >= vaccineTypeList.length) return;
@@ -383,6 +750,16 @@ function moveVaccineType(idx, delta) {
     scheduleAutoSave('vaccine-type-reorder');
 }
 
+/**
+ * Normalize and deduplicate pharmacy labels list.
+ * 
+ * Identical logic to normalizeVaccineTypes but for pharmacy labels.
+ * Ensures unique, non-empty, trimmed labels with case-insensitive
+ * duplicate detection.
+ * 
+ * @param {Array} list - Raw pharmacy labels array
+ * @returns {Array<string>} Normalized unique labels
+ */
 function normalizePharmacyLabels(list) {
     if (!Array.isArray(list)) return [...DEFAULT_SETTINGS.pharmacy_labels];
     const seen = new Set();
@@ -397,6 +774,26 @@ function normalizePharmacyLabels(list) {
         });
 }
 
+/**
+ * Render pharmacy labels list with management controls.
+ * 
+ * Displays:
+ * - Numbered list of labels
+ * - Up/Down reorder buttons
+ * - Remove button
+ * - Empty state if no labels
+ * 
+ * Side Effects:
+ * - Updates window.CACHED_SETTINGS.pharmacy_labels
+ * - Triggers refreshPharmacyLabelsFromSettings() in pharmacy.js
+ *   to sync label dropdowns across medication forms
+ * 
+ * Integration:
+ * Any changes immediately propagate to:
+ * - New medication form label dropdown
+ * - Existing medication label fields
+ * - Pharmacy filter/sort options
+ */
 function renderPharmacyLabels() {
     const container = document.getElementById('pharmacy-labels-list');
     if (!container) return;
@@ -423,6 +820,12 @@ function renderPharmacyLabels() {
     }
 }
 
+/**
+ * Add new pharmacy label from input field.
+ * 
+ * Identical flow to addVaccineType but for pharmacy labels.
+ * Validates, normalizes, renders, and auto-saves.
+ */
 function addPharmacyLabel() {
     const input = document.getElementById('pharmacy-label-input');
     if (!input) return;
@@ -438,6 +841,11 @@ function addPharmacyLabel() {
     scheduleAutoSave('pharmacy-label-add');
 }
 
+/**
+ * Remove pharmacy label by index.
+ * 
+ * @param {number} idx - Index to remove
+ */
 function removePharmacyLabel(idx) {
     if (idx < 0 || idx >= pharmacyLabelList.length) return;
     pharmacyLabelList.splice(idx, 1);
@@ -447,6 +855,12 @@ function removePharmacyLabel(idx) {
     scheduleAutoSave('pharmacy-label-remove');
 }
 
+/**
+ * Reorder pharmacy label (move up or down).
+ * 
+ * @param {number} idx - Current index
+ * @param {number} delta - Direction (-1=up, +1=down)
+ */
 function movePharmacyLabel(idx, delta) {
     const newIndex = idx + delta;
     if (newIndex < 0 || newIndex >= pharmacyLabelList.length) return;
@@ -459,6 +873,18 @@ function movePharmacyLabel(idx, delta) {
     scheduleAutoSave('pharmacy-label-reorder');
 }
 
+/**
+ * Render offline status message in settings UI.
+ * 
+ * Shows:
+ * - Check progress messages
+ * - Download status with elapsed time
+ * - Cache status summary
+ * - Error messages
+ * 
+ * @param {string} msg - HTML message to display
+ * @param {boolean} isError - If true, shows in red
+ */
 function renderOfflineStatus(msg, isError = false) {
     const box = document.getElementById('offline-status');
     if (!box) return;
@@ -466,6 +892,21 @@ function renderOfflineStatus(msg, isError = false) {
     box.innerHTML = msg;
 }
 
+/**
+ * Enable/disable offline operation buttons.
+ * 
+ * Disables during async operations (checking, downloading, backing up)
+ * to prevent concurrent operations that could corrupt cache.
+ * 
+ * Affected Buttons:
+ * - offline-flag-btn: Toggle offline flags
+ * - offline-download-btn: Download missing models
+ * - offline-check-btn: Check cache status
+ * - offline-backup-btn: Create backup
+ * - offline-restore-btn: Restore from backup
+ * 
+ * @param {boolean} enabled - True to enable, false to disable
+ */
 function setOfflineControlsEnabled(enabled) {
     ['offline-flag-btn', 'offline-download-btn', 'offline-check-btn', 'offline-backup-btn', 'offline-restore-btn'].forEach(id => {
         const btn = document.getElementById(id);
@@ -477,6 +918,23 @@ function setOfflineControlsEnabled(enabled) {
     });
 }
 
+/**
+ * Create timestamped backup of model cache.
+ * 
+ * Backup Process:
+ * 1. Calls /api/offline/backup (POST)
+ * 2. Backend creates tar.gz of cache directory
+ * 3. Stores with timestamp in filename
+ * 4. Returns backup filename
+ * 
+ * Use Cases:
+ * - Before going offline (insurance against corruption)
+ * - After successful model downloads
+ * - Before major updates
+ * 
+ * Recovery:
+ * Use restoreOfflineBackup() to restore from latest backup.
+ */
 async function createOfflineBackup() {
     renderOfflineStatus('Creating offline backup…');
     try {
@@ -489,6 +947,22 @@ async function createOfflineBackup() {
     }
 }
 
+/**
+ * Restore model cache from latest backup.
+ * 
+ * Restoration Process:
+ * 1. Calls /api/offline/restore (POST)
+ * 2. Backend finds latest .tar.gz backup
+ * 3. Extracts to cache directory (overwrites existing)
+ * 4. Returns restored backup filename
+ * 
+ * Alerts user to reload app after restoration to clear in-memory caches.
+ * 
+ * Use Cases:
+ * - Cache corruption detected
+ * - Models mysteriously missing after system update
+ * - Rollback after failed manual modifications
+ */
 async function restoreOfflineBackup() {
     renderOfflineStatus('Restoring latest backup…');
     try {
@@ -502,6 +976,26 @@ async function restoreOfflineBackup() {
     }
 }
 
+/**
+ * Format offline status data into HTML display.
+ * 
+ * Display Sections:
+ * 1. Models: List with cache status (Cached ✅ / Missing ❌)
+ * 2. Environment: HF_HUB_OFFLINE, TRANSFORMERS_OFFLINE flags
+ * 3. Cache: Cache directory path
+ * 4. Status Note: Missing models count or success message
+ * 5. Offline Flags: Warning if not set for offline operation
+ * 6. Disk Space: Free/total space for cache directory
+ * 7. How-To: Step-by-step offline preparation instructions
+ * 
+ * Required Models:
+ * - medgemma-1.5-4b-it: Primary chat model
+ * - medgemma-27b-text-it: Advanced model (optional but recommended)
+ * - Qwen2.5-VL-7B-Instruct: Medicine photo OCR
+ * 
+ * @param {Object} data - Offline status from /api/offline/check
+ * @returns {string} Formatted HTML
+ */
 function formatOfflineStatus(data) {
     const models = data.models || [];
     const missing = data.missing || models.filter((m) => !m.cached);
@@ -540,6 +1034,15 @@ function formatOfflineStatus(data) {
     );
 }
 
+/**
+ * Update offline flag toggle button text and style.
+ * 
+ * Button States:
+ * - Offline mode ON: "Disable offline flags" (gray background)
+ * - Offline mode OFF: "Enable offline flags" (orange/warning background)
+ * 
+ * Also syncs checkbox state with cache status.
+ */
 function updateOfflineFlagButton() {
     const btn = document.getElementById('offline-flag-btn');
     const chk = document.getElementById('offline-force-flags');
@@ -550,6 +1053,41 @@ function updateOfflineFlagButton() {
     if (chk) chk.checked = offlineStatusCache ? !!(offlineStatusCache.env?.HF_HUB_OFFLINE === '1' || offlineStatusCache.offline_mode || DEFAULT_SETTINGS.offline_force_flags) : !!DEFAULT_SETTINGS.offline_force_flags;
 }
 
+/**
+ * Check offline readiness or download missing models.
+ * 
+ * Two Modes:
+ * 1. downloadMissing=false: Check only (GET /api/offline/check)
+ *    - Verifies model presence
+ *    - Checks environment flags
+ *    - Reports disk space
+ *    - Fast operation
+ * 
+ * 2. downloadMissing=true: Download + Check (POST /api/offline/ensure)
+ *    - Downloads any missing models from Hugging Face
+ *    - Shows progress spinner with elapsed time
+ *    - Can take minutes for large models (Qwen 7B ~15GB)
+ *    - Requires internet connection
+ * 
+ * Download Behavior:
+ * - Skips download if offline flags enabled (shows warning)
+ * - Downloads to HF_HOME cache directory
+ * - Verifies integrity after download
+ * - Updates status with completion message
+ * 
+ * UI Updates:
+ * - Disables buttons during operation
+ * - Shows spinner for downloads
+ * - Updates cache status display
+ * - Refreshes meta badges
+ * 
+ * Called By:
+ * - Settings page load (check only, first time)
+ * - "Check cache status" button (check only)
+ * - "Download missing models" button (download mode)
+ * 
+ * @param {boolean} downloadMissing - If true, downloads missing models
+ */
 async function runOfflineCheck(downloadMissing = false) {
     renderOfflineStatus(downloadMissing ? 'Checking and downloading missing models…' : 'Checking offline requirements…');
     setOfflineControlsEnabled(false);
@@ -589,6 +1127,27 @@ async function runOfflineCheck(downloadMissing = false) {
     }
 }
 
+/**
+ * Toggle offline environment flags.
+ * 
+ * Flags Controlled:
+ * - HF_HUB_OFFLINE: Prevents Hugging Face Hub connectivity checks
+ * - TRANSFORMERS_OFFLINE: Blocks transformer library from downloading
+ * 
+ * Toggle Logic:
+ * - If forceEnable specified: Sets to that value
+ * - Otherwise: Toggles opposite of current state
+ * 
+ * Backend Implementation:
+ * Sets environment variables in app process. May require app restart
+ * in some deployment scenarios.
+ * 
+ * Use Cases:
+ * - Enable before going offline (after downloads complete)
+ * - Disable when returning to port (to allow updates)
+ * 
+ * @param {boolean} forceEnable - Optional explicit enable/disable
+ */
 async function toggleOfflineFlags(forceEnable) {
     const desired = typeof forceEnable === 'boolean'
         ? forceEnable
@@ -612,6 +1171,24 @@ async function toggleOfflineFlags(forceEnable) {
     }
 }
 
+/**
+ * Export default demo dataset to workspace.
+ * 
+ * Exports:
+ * - Sample crew members with medical histories
+ * - Example medications with photos
+ * - Triage test cases
+ * - Sample chat history
+ * 
+ * Use Cases:
+ * - New workspace initialization
+ * - Testing after database corruption
+ * - Demo/training scenarios
+ * - Reference data restoration
+ * 
+ * Warns Before Overwrite:
+ * Existing data may be overwritten. Backup first if needed.
+ */
 async function exportDefaultDataset() {
     const status = document.getElementById('default-export-status');
     if (status) {
@@ -643,7 +1220,27 @@ async function exportDefaultDataset() {
     }
 }
 
-// Load crew credentials list
+/**
+ * Load and render crew credentials management UI.
+ * 
+ * Display:
+ * - Lists all crew members
+ * - Shows username/password inputs for each
+ * - Auto-saves on input (400ms debounce)
+ * - Shows save status per crew member
+ * 
+ * Credentials Purpose:
+ * Future feature for per-crew-member authentication. Currently stored
+ * but not enforced for login.
+ * 
+ * Integration:
+ * Loads crew from /api/data/patients (same as crew.js)
+ * Saves credentials to /api/crew/credentials
+ * 
+ * Called By:
+ * - Settings page load
+ * - Crew credentials section expansion
+ */
 async function loadCrewCredentials() {
     const container = document.getElementById('crew-credentials');
     if (!container) return;
@@ -671,7 +1268,20 @@ async function loadCrewCredentials() {
     }
 }
 
-// Save a single crew credential
+/**
+ * Save login credentials for a single crew member.
+ * 
+ * Save Process:
+ * 1. Collects username and password from inputs
+ * 2. POSTs to /api/crew/credentials
+ * 3. Updates status indicator
+ * 4. Clears status after 1.5s
+ * 
+ * Debounced via debouncedSaveCred (400ms) to prevent save spam
+ * during typing.
+ * 
+ * @param {string} id - Crew member ID
+ */
 const credSaveTimers = {};
 async function saveCrewCredential(id) {
     const userEl = document.getElementById(`cred-user-${id}`);
@@ -698,6 +1308,16 @@ async function saveCrewCredential(id) {
     }
 }
 
+/**
+ * Debounce wrapper for crew credential saves.
+ * 
+ * Debounce Period: 400ms
+ * 
+ * Each crew member has independent timer to allow editing multiple
+ * crew credentials simultaneously without interference.
+ * 
+ * @param {string} id - Crew member ID
+ */
 function debouncedSaveCred(id) {
     clearTimeout(credSaveTimers[id]);
     credSaveTimers[id] = setTimeout(() => saveCrewCredential(id), 400);

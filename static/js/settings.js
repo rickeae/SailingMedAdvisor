@@ -42,7 +42,7 @@ Enables complete offline operation for remote sailing:
 1. Model Caching:
    - medgemma-1.5-4b-it (primary triage/inquiry model)
    - medgemma-27b-text-it (advanced model for complex cases)
-   - Qwen2.5-VL-7B-Instruct (OCR for medicine photo import)
+   - (No photo/OCR models required)
 
 2. Environment Flags:
    - HF_HUB_OFFLINE=1: Disables Hugging Face Hub connectivity checks
@@ -82,7 +82,7 @@ Data Flow:
 - Default Export: /api/default/export
 
 Integration Points:
-- pharmacy.js: Pharmacy labels, medicine photo model/prompt
+- pharmacy.js: Pharmacy labels
 - crew.js: Vaccine types
 - chat.js: Triage/inquiry prompts, model parameters
 - main.js: User mode visibility, initialization
@@ -100,10 +100,31 @@ const DEFAULT_SETTINGS = {
     mission_context: "Isolated Medical Station offshore.",
     rep_penalty: 1.1,
     user_mode: "user",
-    med_photo_model: "qwen",
-    med_photo_prompt: "You are a pharmacy intake assistant on a sailing vessel. Look at the medication photo and return JSON only with keys: generic_name, brand_name, form, strength, expiry_date, batch_lot, storage_location, manufacturer, indication, allergy_warnings, dosage, notes.",
+    resource_injection_mode: "category_counts",
+    last_prompt_verbatim: "",
     vaccine_types: ["MMR", "DTaP", "HepB", "HepA", "Td/Tdap", "Influenza", "COVID-19"],
     pharmacy_labels: ["Antibiotic", "Analgesic", "Cardiac", "Respiratory", "Gastrointestinal", "Endocrine", "Emergency"],
+    equipment_categories: [
+        "Diagnostics & monitoring",
+        "Instruments & tools",
+        "Airway & breathing",
+        "Splints & supports",
+        "Eye care",
+        "Dental",
+        "PPE",
+        "Survival & utility",
+        "Other"
+    ],
+    consumable_categories: [
+        "Wound care & dressings",
+        "Burn care",
+        "Antiseptics & hygiene",
+        "Irrigation & syringes",
+        "Splints & supports",
+        "PPE",
+        "Survival & utility",
+        "Other"
+    ],
     offline_force_flags: false
 };
 
@@ -117,6 +138,8 @@ let settingsAutoSaveTimer = null;    // Debounce timer for auto-save
 let offlineStatusCache = null;       // Cached offline status for UI updates
 let vaccineTypeList = [...DEFAULT_SETTINGS.vaccine_types];   // Active vaccine types
 let pharmacyLabelList = [...DEFAULT_SETTINGS.pharmacy_labels]; // Active pharmacy labels
+let equipmentCategoryList = [...DEFAULT_SETTINGS.equipment_categories];
+let consumableCategoryList = [...DEFAULT_SETTINGS.consumable_categories];
 let offlineInitialized = false;     // Prevent duplicate offline checks
 
 /**
@@ -220,6 +243,12 @@ function updateSettingsMeta(settings = {}) {
     // Pharmacy labels
     const pharmEl = document.getElementById('pharm-meta');
     if (pharmEl) pharmEl.textContent = `${pharmacyLabelList.length} labels`;
+    // Equipment categories
+    const equipCatEl = document.getElementById('equipment-cat-meta');
+    if (equipCatEl) equipCatEl.textContent = `${equipmentCategoryList.length} categories`;
+    // Consumable categories
+    const consCatEl = document.getElementById('consumable-cat-meta');
+    if (consCatEl) consCatEl.textContent = `${consumableCategoryList.length} categories`;
     // User mode
     const modeEl = document.getElementById('user-mode-meta');
     if (modeEl) modeEl.textContent = `Mode: ${settings.user_mode || 'user'}`;
@@ -277,8 +306,12 @@ function applySettingsToUI(data = {}) {
     const merged = { ...DEFAULT_SETTINGS, ...(data || {}) };
     vaccineTypeList = normalizeVaccineTypes(merged.vaccine_types);
     pharmacyLabelList = normalizePharmacyLabels(merged.pharmacy_labels);
+    equipmentCategoryList = normalizeEquipmentCategories(merged.equipment_categories);
+    consumableCategoryList = normalizeConsumableCategories(merged.consumable_categories);
     renderVaccineTypes();
     renderPharmacyLabels();
+    renderEquipmentCategories();
+    renderConsumableCategories();
     Object.keys(merged).forEach(k => {
         const el = document.getElementById(k);
         if (el) {
@@ -497,7 +530,7 @@ async function saveSettings(showAlert = true, reason = 'manual') {
     try {
         const s = {};
         const numeric = new Set(['tr_temp','tr_tok','tr_p','in_temp','in_tok','in_p','rep_penalty']);
-        ['triage_instruction','inquiry_instruction','tr_temp','tr_tok','tr_p','in_temp','in_tok','in_p','mission_context','rep_penalty','user_mode','med_photo_model','med_photo_prompt'].forEach(k => {
+        ['triage_instruction','inquiry_instruction','tr_temp','tr_tok','tr_p','in_temp','in_tok','in_p','mission_context','rep_penalty','user_mode','resource_injection_mode'].forEach(k => {
             const el = document.getElementById(k);
             if (!el) return;
             const val = el.type === 'checkbox' ? el.checked : el.value;
@@ -512,6 +545,8 @@ async function saveSettings(showAlert = true, reason = 'manual') {
         if (offlineToggle) s.offline_force_flags = !!offlineToggle.checked;
         s.vaccine_types = normalizeVaccineTypes(vaccineTypeList);
         s.pharmacy_labels = normalizePharmacyLabels(pharmacyLabelList);
+        s.equipment_categories = normalizeEquipmentCategories(equipmentCategoryList);
+        s.consumable_categories = normalizeConsumableCategories(consumableCategoryList);
         console.log('[settings] saving', { reason, payload: s });
         updateSettingsStatus('Saving…', false);
         const headers = { 'Content-Type': 'application/json' };
@@ -533,7 +568,14 @@ async function saveSettings(showAlert = true, reason = 'manual') {
         const updated = await res.json();
         console.log('[settings] save response', updated);
         // Preserve the locally selected user_mode to avoid flicker if the server echoes stale data
-        const merged = { ...updated, user_mode: s.user_mode || updated.user_mode, vaccine_types: s.vaccine_types || updated.vaccine_types };
+        const merged = {
+            ...updated,
+            user_mode: s.user_mode || updated.user_mode,
+            vaccine_types: s.vaccine_types || updated.vaccine_types,
+            pharmacy_labels: s.pharmacy_labels || updated.pharmacy_labels,
+            equipment_categories: s.equipment_categories || updated.equipment_categories,
+            consumable_categories: s.consumable_categories || updated.consumable_categories
+        };
         applySettingsToUI(merged);
         try { localStorage.setItem('user_mode', updated.user_mode || 'user'); } catch (err) { /* ignore */ }
         settingsDirty = false;
@@ -542,11 +584,7 @@ async function saveSettings(showAlert = true, reason = 'manual') {
             alert("Configuration synchronized.");
         }
         if (typeof refreshPromptPreview === 'function') {
-            const promptBox = document.getElementById('prompt-preview');
-            // Only refresh if the user has not manually edited the prompt box
-            if (!promptBox || promptBox.dataset.autofilled !== 'false') {
-                refreshPromptPreview(true);
-            }
+            refreshPromptPreview();
         }
         updateSettingsMeta(updated);
     } catch (err) {
@@ -565,7 +603,6 @@ async function saveSettings(showAlert = true, reason = 'manual') {
  * - 'triage': Triage prompt and parameters (temp, tokens, top-p)
  * - 'inquiry': Inquiry prompt and parameters
  * - 'mission': Mission context description
- * - 'med_photo': Medicine photo import prompt
  * 
  * Immediately saves after reset to persist changes.
  * 
@@ -584,9 +621,6 @@ function resetSection(section) {
         document.getElementById('in_p').value = DEFAULT_SETTINGS.in_p;
     } else if (section === 'mission') {
         document.getElementById('mission_context').value = DEFAULT_SETTINGS.mission_context;
-    } else if (section === 'med_photo') {
-        const el = document.getElementById('med_photo_prompt');
-        if (el) el.value = DEFAULT_SETTINGS.med_photo_prompt;
     }
     saveSettings();
 }
@@ -873,6 +907,170 @@ function movePharmacyLabel(idx, delta) {
     scheduleAutoSave('pharmacy-label-reorder');
 }
 
+// ============================================================================
+// Equipment category settings
+// ============================================================================
+
+function normalizeEquipmentCategories(list) {
+    if (!Array.isArray(list)) return [...DEFAULT_SETTINGS.equipment_categories];
+    const seen = new Set();
+    return list
+        .map((v) => (typeof v === 'string' ? v.trim() : ''))
+        .filter((v) => !!v)
+        .filter((v) => {
+            const key = v.toLowerCase();
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+}
+
+function renderEquipmentCategories() {
+    const container = document.getElementById('equipment-categories-list');
+    if (!container) return;
+    if (!equipmentCategoryList.length) {
+        container.innerHTML = '<div style="color:#666; font-size:12px;">No equipment categories defined.</div>';
+        updateSettingsMeta(window.CACHED_SETTINGS || {});
+        return;
+    }
+    container.innerHTML = equipmentCategoryList
+        .map((v, idx) => `
+            <div style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid #eee;">
+                <div style="width:28px; text-align:right; font-weight:700; color:#666;">${idx + 1}.</div>
+                <div style="flex:1; font-weight:600;">${v}</div>
+                <div style="display:flex; gap:6px; align-items:center;">
+                    <button class="btn btn-sm" style="background:#607d8b;" ${idx === 0 ? 'disabled' : ''} onclick="moveEquipmentCategory(${idx}, -1)">Up</button>
+                    <button class="btn btn-sm" style="background:#607d8b;" ${idx === equipmentCategoryList.length - 1 ? 'disabled' : ''} onclick="moveEquipmentCategory(${idx}, 1)">Down</button>
+                    <button class="btn btn-sm" style="background:var(--red);" onclick="removeEquipmentCategory(${idx})">Remove</button>
+                </div>
+            </div>
+        `).join('');
+    window.CACHED_SETTINGS = window.CACHED_SETTINGS || {};
+    window.CACHED_SETTINGS.equipment_categories = [...equipmentCategoryList];
+    if (typeof window.refreshEquipmentCategoriesFromSettings === 'function') {
+        window.refreshEquipmentCategoriesFromSettings(equipmentCategoryList, consumableCategoryList);
+    }
+    updateSettingsMeta(window.CACHED_SETTINGS || {});
+}
+
+function addEquipmentCategory() {
+    const input = document.getElementById('equipment-category-input');
+    if (!input) return;
+    const val = input.value.trim();
+    if (!val) {
+        alert('Enter a category before adding.');
+        return;
+    }
+    equipmentCategoryList = normalizeEquipmentCategories([...equipmentCategoryList, val]);
+    input.value = '';
+    renderEquipmentCategories();
+    settingsDirty = true;
+    scheduleAutoSave('equipment-category-add');
+}
+
+function removeEquipmentCategory(idx) {
+    if (idx < 0 || idx >= equipmentCategoryList.length) return;
+    equipmentCategoryList.splice(idx, 1);
+    equipmentCategoryList = normalizeEquipmentCategories(equipmentCategoryList);
+    renderEquipmentCategories();
+    settingsDirty = true;
+    scheduleAutoSave('equipment-category-remove');
+}
+
+function moveEquipmentCategory(idx, delta) {
+    const newIndex = idx + delta;
+    if (newIndex < 0 || newIndex >= equipmentCategoryList.length) return;
+    const nextList = [...equipmentCategoryList];
+    const [item] = nextList.splice(idx, 1);
+    nextList.splice(newIndex, 0, item);
+    equipmentCategoryList = normalizeEquipmentCategories(nextList);
+    renderEquipmentCategories();
+    settingsDirty = true;
+    scheduleAutoSave('equipment-category-reorder');
+}
+
+// ============================================================================
+// Consumable category settings
+// ============================================================================
+
+function normalizeConsumableCategories(list) {
+    if (!Array.isArray(list)) return [...DEFAULT_SETTINGS.consumable_categories];
+    const seen = new Set();
+    return list
+        .map((v) => (typeof v === 'string' ? v.trim() : ''))
+        .filter((v) => !!v)
+        .filter((v) => {
+            const key = v.toLowerCase();
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+}
+
+function renderConsumableCategories() {
+    const container = document.getElementById('consumable-categories-list');
+    if (!container) return;
+    if (!consumableCategoryList.length) {
+        container.innerHTML = '<div style="color:#666; font-size:12px;">No consumable categories defined.</div>';
+        updateSettingsMeta(window.CACHED_SETTINGS || {});
+        return;
+    }
+    container.innerHTML = consumableCategoryList
+        .map((v, idx) => `
+            <div style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid #eee;">
+                <div style="width:28px; text-align:right; font-weight:700; color:#666;">${idx + 1}.</div>
+                <div style="flex:1; font-weight:600;">${v}</div>
+                <div style="display:flex; gap:6px; align-items:center;">
+                    <button class="btn btn-sm" style="background:#607d8b;" ${idx === 0 ? 'disabled' : ''} onclick="moveConsumableCategory(${idx}, -1)">Up</button>
+                    <button class="btn btn-sm" style="background:#607d8b;" ${idx === consumableCategoryList.length - 1 ? 'disabled' : ''} onclick="moveConsumableCategory(${idx}, 1)">Down</button>
+                    <button class="btn btn-sm" style="background:var(--red);" onclick="removeConsumableCategory(${idx})">Remove</button>
+                </div>
+            </div>
+        `).join('');
+    window.CACHED_SETTINGS = window.CACHED_SETTINGS || {};
+    window.CACHED_SETTINGS.consumable_categories = [...consumableCategoryList];
+    if (typeof window.refreshEquipmentCategoriesFromSettings === 'function') {
+        window.refreshEquipmentCategoriesFromSettings(equipmentCategoryList, consumableCategoryList);
+    }
+    updateSettingsMeta(window.CACHED_SETTINGS || {});
+}
+
+function addConsumableCategory() {
+    const input = document.getElementById('consumable-category-input');
+    if (!input) return;
+    const val = input.value.trim();
+    if (!val) {
+        alert('Enter a category before adding.');
+        return;
+    }
+    consumableCategoryList = normalizeConsumableCategories([...consumableCategoryList, val]);
+    input.value = '';
+    renderConsumableCategories();
+    settingsDirty = true;
+    scheduleAutoSave('consumable-category-add');
+}
+
+function removeConsumableCategory(idx) {
+    if (idx < 0 || idx >= consumableCategoryList.length) return;
+    consumableCategoryList.splice(idx, 1);
+    consumableCategoryList = normalizeConsumableCategories(consumableCategoryList);
+    renderConsumableCategories();
+    settingsDirty = true;
+    scheduleAutoSave('consumable-category-remove');
+}
+
+function moveConsumableCategory(idx, delta) {
+    const newIndex = idx + delta;
+    if (newIndex < 0 || newIndex >= consumableCategoryList.length) return;
+    const nextList = [...consumableCategoryList];
+    const [item] = nextList.splice(idx, 1);
+    nextList.splice(newIndex, 0, item);
+    consumableCategoryList = normalizeConsumableCategories(nextList);
+    renderConsumableCategories();
+    settingsDirty = true;
+    scheduleAutoSave('consumable-category-reorder');
+}
+
 /**
  * Render offline status message in settings UI.
  * 
@@ -991,7 +1189,7 @@ async function restoreOfflineBackup() {
  * Required Models:
  * - medgemma-1.5-4b-it: Primary chat model
  * - medgemma-27b-text-it: Advanced model (optional but recommended)
- * - Qwen2.5-VL-7B-Instruct: Medicine photo OCR
+ * - (No photo/OCR model required)
  * 
  * @param {Object} data - Offline status from /api/offline/check
  * @returns {string} Formatted HTML
@@ -1022,7 +1220,7 @@ function formatOfflineStatus(data) {
     const diskLine = disk.total_gb ? `<div style="margin-top:6px; font-size:12px;">Cache disk (${disk.path || ''}): ${disk.free_gb || '?'}GB free / ${disk.total_gb || '?'}GB total.</div>` : '';
     const howTo = `<div style="margin-top:8px; font-size:12px; color:#333;">
 <strong>Steps:</strong> 1) While online, click "Download missing models". 2) Then click "Backup cache". 3) Before sailing, set offline env flags and rerun "Check cache status".<br>
-<strong>Required models:</strong> medgemma-1.5-4b-it, medgemma-27b-text-it, Qwen2.5-VL-7B-Instruct.
+<strong>Required models:</strong> medgemma-1.5-4b-it, medgemma-27b-text-it.
 </div>`;
     return (
         `<strong>Models</strong><br>${modelLines || 'None'}<br><br>` +
@@ -1066,7 +1264,7 @@ function updateOfflineFlagButton() {
  * 2. downloadMissing=true: Download + Check (POST /api/offline/ensure)
  *    - Downloads any missing models from Hugging Face
  *    - Shows progress spinner with elapsed time
- *    - Can take minutes for large models (Qwen 7B ~15GB)
+ *    - Can take minutes for large models
  *    - Requires internet connection
  * 
  * Download Behavior:
@@ -1176,7 +1374,7 @@ async function toggleOfflineFlags(forceEnable) {
  * 
  * Exports:
  * - Sample crew members with medical histories
- * - Example medications with photos
+ * - Example medications
  * - Triage test cases
  * - Sample chat history
  * 
@@ -1338,3 +1536,9 @@ window.moveVaccineType = moveVaccineType;
 window.addPharmacyLabel = addPharmacyLabel;
 window.removePharmacyLabel = removePharmacyLabel;
 window.movePharmacyLabel = movePharmacyLabel;
+window.addEquipmentCategory = addEquipmentCategory;
+window.removeEquipmentCategory = removeEquipmentCategory;
+window.moveEquipmentCategory = moveEquipmentCategory;
+window.addConsumableCategory = addConsumableCategory;
+window.removeConsumableCategory = removeConsumableCategory;
+window.moveConsumableCategory = moveConsumableCategory;

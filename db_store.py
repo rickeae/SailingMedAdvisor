@@ -6,6 +6,7 @@ here so every API handler can stay focused on business logic instead of SQL.
 """
 
 import json
+import math
 import shutil
 import sqlite3
 import logging
@@ -171,6 +172,24 @@ def _init_db():
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS equipment_categories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                position INTEGER NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS consumable_categories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                position INTEGER NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS model_params (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 triage_instruction TEXT,
@@ -183,8 +202,6 @@ def _init_db():
                 in_p REAL,
                 mission_context TEXT,
                 rep_penalty REAL,
-                med_photo_model TEXT,
-                med_photo_prompt TEXT,
                 updated_at TEXT NOT NULL
             );
             """
@@ -195,6 +212,8 @@ def _init_db():
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 user_mode TEXT,
                 offline_force_flags INTEGER DEFAULT 0,
+                resource_injection_mode TEXT,
+                last_prompt_verbatim TEXT,
                 updated_at TEXT NOT NULL
             );
             """
@@ -487,8 +506,6 @@ def _maybe_migrate_model_params(conn, now):
             in_p REAL,
             mission_context TEXT,
             rep_penalty REAL,
-            med_photo_model TEXT,
-            med_photo_prompt TEXT,
             updated_at TEXT NOT NULL
         );
         """
@@ -506,12 +523,10 @@ def _maybe_migrate_model_params(conn, now):
                 """
                 INSERT INTO model_params(
                     id, triage_instruction, inquiry_instruction, tr_temp, tr_tok, tr_p,
-                    in_temp, in_tok, in_p, mission_context, rep_penalty,
-                    med_photo_model, med_photo_prompt, updated_at
+                    in_temp, in_tok, in_p, mission_context, rep_penalty, updated_at
                 ) VALUES (
                     1, :triage_instruction, :inquiry_instruction, :tr_temp, :tr_tok, :tr_p,
-                    :in_temp, :in_tok, :in_p, :mission_context, :rep_penalty,
-                    :med_photo_model, :med_photo_prompt, :updated_at
+                    :in_temp, :in_tok, :in_p, :mission_context, :rep_penalty, :updated_at
                 )
                 ON CONFLICT(id) DO UPDATE SET
                     triage_instruction=excluded.triage_instruction,
@@ -524,8 +539,6 @@ def _maybe_migrate_model_params(conn, now):
                     in_p=excluded.in_p,
                     mission_context=excluded.mission_context,
                     rep_penalty=excluded.rep_penalty,
-                    med_photo_model=excluded.med_photo_model,
-                    med_photo_prompt=excluded.med_photo_prompt,
                     updated_at=excluded.updated_at;
                 """,
                 {
@@ -539,8 +552,6 @@ def _maybe_migrate_model_params(conn, now):
                     "in_p": data.get("in_p"),
                     "mission_context": data.get("mission_context"),
                     "rep_penalty": data.get("rep_penalty"),
-                    "med_photo_model": data.get("med_photo_model"),
-                    "med_photo_prompt": data.get("med_photo_prompt"),
                     "updated_at": now,
                 },
             )
@@ -801,16 +812,27 @@ def _maybe_migrate_settings_meta(conn, now):
         data = {}
     user_mode = data.get("user_mode")
     offline_force_flags = 1 if data.get("offline_force_flags") else 0
+    resource_injection_mode = data.get("resource_injection_mode")
+    last_prompt_verbatim = data.get("last_prompt_verbatim")
+    _ensure_settings_meta_columns(conn)
     conn.execute(
         """
-        INSERT INTO settings_meta(id, user_mode, offline_force_flags, updated_at)
-        VALUES(1, :user_mode, :offline_force_flags, :updated_at)
+        INSERT INTO settings_meta(id, user_mode, offline_force_flags, resource_injection_mode, last_prompt_verbatim, updated_at)
+        VALUES(1, :user_mode, :offline_force_flags, :resource_injection_mode, :last_prompt_verbatim, :updated_at)
         ON CONFLICT(id) DO UPDATE SET
             user_mode=excluded.user_mode,
             offline_force_flags=excluded.offline_force_flags,
+            resource_injection_mode=excluded.resource_injection_mode,
+            last_prompt_verbatim=excluded.last_prompt_verbatim,
             updated_at=excluded.updated_at;
         """,
-        {"user_mode": user_mode, "offline_force_flags": offline_force_flags, "updated_at": now},
+        {
+            "user_mode": user_mode,
+            "offline_force_flags": offline_force_flags,
+            "resource_injection_mode": resource_injection_mode,
+            "last_prompt_verbatim": last_prompt_verbatim,
+            "updated_at": now,
+        },
     )
     conn.commit()
 
@@ -1047,8 +1069,6 @@ def _maybe_migrate_model_params(conn, now):
             in_p REAL,
             mission_context TEXT,
             rep_penalty REAL,
-            med_photo_model TEXT,
-            med_photo_prompt TEXT,
             updated_at TEXT NOT NULL
         );
         """
@@ -1066,12 +1086,10 @@ def _maybe_migrate_model_params(conn, now):
                 """
                 INSERT INTO model_params(
                     id, triage_instruction, inquiry_instruction, tr_temp, tr_tok, tr_p,
-                    in_temp, in_tok, in_p, mission_context, rep_penalty,
-                    med_photo_model, med_photo_prompt, updated_at
+                    in_temp, in_tok, in_p, mission_context, rep_penalty, updated_at
                 ) VALUES (
                     1, :triage_instruction, :inquiry_instruction, :tr_temp, :tr_tok, :tr_p,
-                    :in_temp, :in_tok, :in_p, :mission_context, :rep_penalty,
-                    :med_photo_model, :med_photo_prompt, :updated_at
+                    :in_temp, :in_tok, :in_p, :mission_context, :rep_penalty, :updated_at
                 )
                 ON CONFLICT(id) DO UPDATE SET
                     triage_instruction=excluded.triage_instruction,
@@ -1084,8 +1102,6 @@ def _maybe_migrate_model_params(conn, now):
                     in_p=excluded.in_p,
                     mission_context=excluded.mission_context,
                     rep_penalty=excluded.rep_penalty,
-                    med_photo_model=excluded.med_photo_model,
-                    med_photo_prompt=excluded.med_photo_prompt,
                     updated_at=excluded.updated_at;
                 """,
                 {
@@ -1099,8 +1115,6 @@ def _maybe_migrate_model_params(conn, now):
                     "in_p": data.get("in_p"),
                     "mission_context": data.get("mission_context"),
                     "rep_penalty": data.get("rep_penalty"),
-                    "med_photo_model": data.get("med_photo_model"),
-                    "med_photo_prompt": data.get("med_photo_prompt"),
                     "updated_at": now,
                 },
             )
@@ -1113,6 +1127,7 @@ def _upgrade_schema():
         with _conn() as conn:
             now = datetime.utcnow().isoformat()
             _ensure_items_verified_column(conn)
+            _ensure_settings_meta_columns(conn)
             _backfill_expiries_from_items(conn, now)
             _maybe_seed_triage(conn, now)
             _maybe_import_who_meds(conn, now)
@@ -1134,6 +1149,19 @@ def _ensure_items_verified_column(conn):
             conn.execute("UPDATE items SET verified=0 WHERE verified IS NULL;")
     except Exception as exc:
         logger.warning("Unable to add verified column: %s", exc)
+
+
+def _ensure_settings_meta_columns(conn):
+    """Add new settings_meta columns when upgrading older DBs."""
+    try:
+        cols = conn.execute("PRAGMA table_info(settings_meta)").fetchall()
+        names = {c["name"] for c in cols}
+        if "resource_injection_mode" not in names:
+            conn.execute("ALTER TABLE settings_meta ADD COLUMN resource_injection_mode TEXT;")
+        if "last_prompt_verbatim" not in names:
+            conn.execute("ALTER TABLE settings_meta ADD COLUMN last_prompt_verbatim TEXT;")
+    except Exception as exc:
+        logger.warning("Unable to add settings_meta columns: %s", exc)
 
 
 def _backfill_expiries_from_items(conn, now: str):
@@ -1449,13 +1477,52 @@ def load_pharmacy_labels():
     return [r["name"] for r in rows]
 
 
+def replace_equipment_categories(names: list):
+    if not isinstance(names, list):
+        return
+    rows = [(idx, str(n).strip()) for idx, n in enumerate(names) if str(n).strip()]
+    with _conn() as conn:
+        conn.execute("DELETE FROM equipment_categories")
+        for pos, name in rows:
+            conn.execute(
+                "INSERT INTO equipment_categories(name, position) VALUES(?, ?)",
+                (name, pos),
+            )
+        conn.commit()
+
+
+def load_equipment_categories():
+    with _conn() as conn:
+        rows = conn.execute("SELECT name FROM equipment_categories ORDER BY position ASC").fetchall()
+    return [r["name"] for r in rows]
+
+
+def replace_consumable_categories(names: list):
+    if not isinstance(names, list):
+        return
+    rows = [(idx, str(n).strip()) for idx, n in enumerate(names) if str(n).strip()]
+    with _conn() as conn:
+        conn.execute("DELETE FROM consumable_categories")
+        for pos, name in rows:
+            conn.execute(
+                "INSERT INTO consumable_categories(name, position) VALUES(?, ?)",
+                (name, pos),
+            )
+        conn.commit()
+
+
+def load_consumable_categories():
+    with _conn() as conn:
+        rows = conn.execute("SELECT name FROM consumable_categories ORDER BY position ASC").fetchall()
+    return [r["name"] for r in rows]
+
+
 def get_model_params():
     with _conn() as conn:
         row = conn.execute(
             """
             SELECT triage_instruction, inquiry_instruction, tr_temp, tr_tok, tr_p,
-                   in_temp, in_tok, in_p, mission_context, rep_penalty,
-                   med_photo_model, med_photo_prompt
+                   in_temp, in_tok, in_p, mission_context, rep_penalty
             FROM model_params WHERE id=1
             """
         ).fetchone()
@@ -1472,8 +1539,6 @@ def get_model_params():
         "in_p",
         "mission_context",
         "rep_penalty",
-        "med_photo_model",
-        "med_photo_prompt",
     ]
     return {k: row[idx] for idx, k in enumerate(keys)}
 
@@ -1486,12 +1551,10 @@ def set_model_params(data: dict):
             """
             INSERT INTO model_params(
                 id, triage_instruction, inquiry_instruction, tr_temp, tr_tok, tr_p,
-                in_temp, in_tok, in_p, mission_context, rep_penalty,
-                med_photo_model, med_photo_prompt, updated_at
+                in_temp, in_tok, in_p, mission_context, rep_penalty, updated_at
             ) VALUES (
                 1, :triage_instruction, :inquiry_instruction, :tr_temp, :tr_tok, :tr_p,
-                :in_temp, :in_tok, :in_p, :mission_context, :rep_penalty,
-                :med_photo_model, :med_photo_prompt, :updated_at
+                :in_temp, :in_tok, :in_p, :mission_context, :rep_penalty, :updated_at
             )
             ON CONFLICT(id) DO UPDATE SET
                 triage_instruction=excluded.triage_instruction,
@@ -1504,8 +1567,6 @@ def set_model_params(data: dict):
                 in_p=excluded.in_p,
                 mission_context=excluded.mission_context,
                 rep_penalty=excluded.rep_penalty,
-                med_photo_model=excluded.med_photo_model,
-                med_photo_prompt=excluded.med_photo_prompt,
                 updated_at=excluded.updated_at;
             """,
             {
@@ -1519,8 +1580,6 @@ def set_model_params(data: dict):
                 "in_p": params.get("in_p"),
                 "mission_context": params.get("mission_context"),
                 "rep_penalty": params.get("rep_penalty"),
-                "med_photo_model": params.get("med_photo_model"),
-                "med_photo_prompt": params.get("med_photo_prompt"),
                 "updated_at": now,
             },
         )
@@ -1889,7 +1948,7 @@ def update_item_verified(item_id: str, verified: bool) -> bool:
 
 
 def upsert_inventory_item(item: dict) -> dict:
-    """Upsert a single pharma item and fully replace its expiry rows."""
+    """Upsert a single pharma item and fully replace its expiry rows when provided."""
     now = datetime.utcnow().isoformat()
     normalized = ensure_item_schema(item, "pharma", now)
 
@@ -1910,45 +1969,61 @@ def upsert_inventory_item(item: dict) -> dict:
                 ph["quantity"] = ""
 
     exp_rows = []
-    for ph in item.get("purchaseHistory") or []:
-        _validate_expiry(ph)
-        exp_rows.append(
-            {
-                "id": ph.get("id") or f"ph-{uuid.uuid4()}",
-                "item_id": normalized["id"],
-                "date": ph.get("date"),
-                "quantity": ph.get("quantity"),
-                "notes": ph.get("notes"),
-                "manufacturer": ph.get("manufacturer"),
-                "batchLot": ph.get("batchLot"),
-                "updated_at": now,
-            }
-        )
+    has_purchase_history = "purchaseHistory" in item or "purchase_history" in item
+    if has_purchase_history:
+        ph_list = item.get("purchaseHistory") or item.get("purchase_history") or []
+        # If empty but a single expiryDate is provided, synthesize one row
+        if not ph_list and item.get("expiryDate"):
+            ph_list = [
+                {
+                    "id": f"ph-{uuid.uuid4()}",
+                    "date": item.get("expiryDate") or "",
+                    "quantity": item.get("currentQuantity") or item.get("totalQty") or "",
+                    "notes": item.get("notes") or "",
+                    "manufacturer": item.get("manufacturer") or "",
+                    "batchLot": item.get("batchLot") or "",
+                }
+            ]
+        for ph in ph_list:
+            _validate_expiry(ph)
+            exp_rows.append(
+                {
+                    "id": ph.get("id") or f"ph-{uuid.uuid4()}",
+                    "item_id": normalized["id"],
+                    "date": ph.get("date"),
+                    "quantity": ph.get("quantity"),
+                    "notes": ph.get("notes"),
+                    "manufacturer": ph.get("manufacturer"),
+                    "batchLot": ph.get("batchLot"),
+                    "updated_at": now,
+                }
+            )
 
     with _conn() as conn:
         conn.execute("BEGIN")
         _ensure_items_verified_column(conn)
         _insert_item(conn, normalized, "pharma", now)
-        conn.execute("DELETE FROM med_expiries WHERE item_id=?", (normalized["id"],))
-        for ph in exp_rows:
-            conn.execute(
-                """
-                INSERT INTO med_expiries(
-                    id, item_id, date, quantity, notes, manufacturer, batchLot, updated_at
-                ) VALUES (
-                    :id, :item_id, :date, :quantity, :notes, :manufacturer, :batchLot, :updated_at
+        if has_purchase_history:
+            conn.execute("DELETE FROM med_expiries WHERE item_id=?", (normalized["id"],))
+            for ph in exp_rows:
+                conn.execute(
+                    """
+                    INSERT INTO med_expiries(
+                        id, item_id, date, quantity, notes, manufacturer, batchLot, updated_at
+                    ) VALUES (
+                        :id, :item_id, :date, :quantity, :notes, :manufacturer, :batchLot, :updated_at
+                    )
+                    ON CONFLICT(id) DO UPDATE SET
+                        item_id=excluded.item_id,
+                        date=excluded.date,
+                        quantity=excluded.quantity,
+                        notes=excluded.notes,
+                        manufacturer=excluded.manufacturer,
+                        batchLot=excluded.batchLot,
+                        updated_at=excluded.updated_at;
+                    """,
+                    ph,
                 )
-                ON CONFLICT(id) DO UPDATE SET
-                    item_id=excluded.item_id,
-                    date=excluded.date,
-                    quantity=excluded.quantity,
-                    notes=excluded.notes,
-                    manufacturer=excluded.manufacturer,
-                    batchLot=excluded.batchLot,
-                    updated_at=excluded.updated_at;
-                """,
-                ph,
-            )
         conn.commit()
     return normalized
 
@@ -2077,19 +2152,40 @@ def get_history_latency_metrics():
     with _conn() as conn:
         rows = conn.execute(
             """
-            SELECT model, COUNT(*) AS count, AVG(duration_ms) AS avg_ms
+            SELECT model, duration_ms
             FROM history_entries
             WHERE duration_ms IS NOT NULL
-            GROUP BY model
             """
         ).fetchall()
-    metrics = {}
+    durations_by_model = {}
     for r in rows:
-        avg_ms = r["avg_ms"] or 0
-        count = r["count"] or 0
-        metrics[r["model"]] = {
-            "count": count,
-            "total_ms": avg_ms * count,
+        model = r["model"]
+        try:
+            val = float(r["duration_ms"])
+        except Exception:
+            continue
+        durations_by_model.setdefault(model, []).append(val)
+
+    metrics = {}
+    for model, values in durations_by_model.items():
+        if not values:
+            continue
+        mean = sum(values) / len(values)
+        if len(values) > 1:
+            var = sum((v - mean) ** 2 for v in values) / len(values)
+            std = math.sqrt(var)
+        else:
+            std = 0.0
+        if std > 0:
+            filtered = [v for v in values if abs(v - mean) <= 3 * std]
+        else:
+            filtered = list(values)
+        if not filtered:
+            filtered = list(values)
+        avg_ms = sum(filtered) / len(filtered)
+        metrics[model] = {
+            "count": len(filtered),
+            "total_ms": avg_ms * len(filtered),
             "avg_ms": avg_ms,
         }
     return metrics
@@ -2188,39 +2284,64 @@ def set_chat_metrics(metrics: dict):
 
 def get_settings_meta():
     with _conn() as conn:
+        _ensure_settings_meta_columns(conn)
         row = conn.execute(
-            "SELECT user_mode, offline_force_flags FROM settings_meta WHERE id=1"
+            "SELECT user_mode, offline_force_flags, resource_injection_mode, last_prompt_verbatim FROM settings_meta WHERE id=1"
         ).fetchone()
     if not row:
         return {}
     return {
         "user_mode": row["user_mode"],
         "offline_force_flags": bool(row["offline_force_flags"]),
+        "resource_injection_mode": row["resource_injection_mode"],
+        "last_prompt_verbatim": row["last_prompt_verbatim"],
     }
 
 
-def set_settings_meta(user_mode: str = None, offline_force_flags: bool = None):
+def set_settings_meta(
+    user_mode: str = None,
+    offline_force_flags: bool = None,
+    resource_injection_mode: str = None,
+    last_prompt_verbatim: str = None,
+):
     now = datetime.utcnow().isoformat()
     with _conn() as conn:
-        existing = conn.execute("SELECT user_mode, offline_force_flags FROM settings_meta WHERE id=1").fetchone()
+        _ensure_settings_meta_columns(conn)
+        existing = conn.execute(
+            "SELECT user_mode, offline_force_flags, resource_injection_mode, last_prompt_verbatim FROM settings_meta WHERE id=1"
+        ).fetchone()
         if existing is None:
             conn.execute(
                 """
-                INSERT INTO settings_meta(id, user_mode, offline_force_flags, updated_at)
-                VALUES(1, :user_mode, :offline_force_flags, :updated_at)
+                INSERT INTO settings_meta(id, user_mode, offline_force_flags, resource_injection_mode, last_prompt_verbatim, updated_at)
+                VALUES(1, :user_mode, :offline_force_flags, :resource_injection_mode, :last_prompt_verbatim, :updated_at)
                 """,
-                {"user_mode": user_mode, "offline_force_flags": 1 if offline_force_flags else 0, "updated_at": now},
+                {
+                    "user_mode": user_mode,
+                    "offline_force_flags": 1 if offline_force_flags else 0,
+                    "resource_injection_mode": resource_injection_mode,
+                    "last_prompt_verbatim": last_prompt_verbatim,
+                    "updated_at": now,
+                },
             )
         else:
             conn.execute(
                 """
                 UPDATE settings_meta
-                SET user_mode=:user_mode,
-                    offline_force_flags=:offline_force_flags,
+                SET user_mode=COALESCE(:user_mode, user_mode),
+                    offline_force_flags=COALESCE(:offline_force_flags, offline_force_flags),
+                    resource_injection_mode=COALESCE(:resource_injection_mode, resource_injection_mode),
+                    last_prompt_verbatim=COALESCE(:last_prompt_verbatim, last_prompt_verbatim),
                     updated_at=:updated_at
                 WHERE id=1
                 """,
-                {"user_mode": user_mode, "offline_force_flags": 1 if offline_force_flags else 0, "updated_at": now},
+                {
+                    "user_mode": user_mode,
+                    "offline_force_flags": None if offline_force_flags is None else (1 if offline_force_flags else 0),
+                    "resource_injection_mode": resource_injection_mode,
+                    "last_prompt_verbatim": last_prompt_verbatim,
+                    "updated_at": now,
+                },
             )
         conn.commit()
 

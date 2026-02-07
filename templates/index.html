@@ -570,6 +570,12 @@
                                                 <input id="eq-new-name" type="text" style="width:100%; padding:8px;" placeholder="e.g., Oxygen Concentrator">
                                             </div>
                                             <div>
+                                                <label style="font-weight:700; font-size:12px;">Category</label>
+                                                <select id="eq-new-category" style="width:100%; padding:8px;">
+                                                    <option value="">Uncategorized</option>
+                                                </select>
+                                            </div>
+                                            <div>
                                                 <label style="font-weight:700; font-size:12px;">Quantity</label>
                                                 <input id="eq-new-qty" type="text" style="width:100%; padding:8px;" placeholder="e.g., 2 units">
                                             </div>
@@ -621,6 +627,12 @@
                                                 <div class="dev-tag">dev:consumable-qty-field</div>
                                                 <label style="font-weight:700; font-size:12px;">Quantity</label>
                                                 <input id="cons-new-qty" type="text" style="width:100%; padding:8px;" placeholder="e.g., 12 boxes or 50 strips">
+                                            </div>
+                                            <div style="grid-column: span 2;">
+                                                <label style="font-weight:700; font-size:12px;">Category</label>
+                                                <select id="cons-new-category" style="width:100%; padding:8px;">
+                                                    <option value="">Uncategorized</option>
+                                                </select>
                                             </div>
                                             <div>
                                                 <div class="dev-tag">dev:consumable-notes-field</div>
@@ -883,6 +895,60 @@
                             <div id="pharmacy-labels-status" style="margin-top:8px; font-size:12px; color:#555;">Saved with app settings.</div>
                         </div>
                     </div>
+                    <div class="collapsible" style="margin-bottom:12px;">
+                        <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                            <span class="dev-tag">dev:settings-equipment-categories</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Medical Equipment Categories</span>
+                            <span id="equipment-cat-meta" style="margin-left:auto; font-size:12px; color:#4a5568;"></span>
+                        </div>
+                        <div class="col-body" style="padding:12px; background:#f8f9fa; display:none;">
+                            <div style="margin-bottom:8px; font-size:12px; color:#2c3e50;">Manage the category list used for Medical Equipment dropdowns and prompt summaries.</div>
+                            <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
+                                <input id="equipment-category-input" type="text" style="padding:8px; min-width:220px; flex:1;" placeholder="e.g., Diagnostics & monitoring">
+                                <button class="btn btn-sm" style="background:var(--inquiry);" onclick="addEquipmentCategory()">Add Category</button>
+                            </div>
+                            <div class="dev-tag" style="margin-bottom:6px;">dev:settings-equipment-category-list</div>
+                            <div id="equipment-categories-list"></div>
+                            <div id="equipment-categories-status" style="margin-top:8px; font-size:12px; color:#555;">Saved with app settings.</div>
+                        </div>
+                    </div>
+                    <div class="collapsible" style="margin-bottom:12px;">
+                        <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                            <span class="dev-tag">dev:settings-consumable-categories</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Consumable Categories</span>
+                            <span id="consumable-cat-meta" style="margin-left:auto; font-size:12px; color:#4a5568;"></span>
+                        </div>
+                        <div class="col-body" style="padding:12px; background:#f8f9fa; display:none;">
+                            <div style="margin-bottom:8px; font-size:12px; color:#2c3e50;">Manage the category list used for Consumable dropdowns and prompt summaries.</div>
+                            <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
+                                <input id="consumable-category-input" type="text" style="padding:8px; min-width:220px; flex:1;" placeholder="e.g., Wound care & dressings">
+                                <button class="btn btn-sm" style="background:var(--inquiry);" onclick="addConsumableCategory()">Add Category</button>
+                            </div>
+                            <div class="dev-tag" style="margin-bottom:6px;">dev:settings-consumable-category-list</div>
+                            <div id="consumable-categories-list"></div>
+                            <div id="consumable-categories-status" style="margin-top:8px; font-size:12px; color:#555;">Saved with app settings.</div>
+                        </div>
+                    </div>
+                    <div class="collapsible" style="margin-bottom:12px;">
+                        <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                            <span class="dev-tag">dev:settings-resource-injection</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Medical Chest Prompt Injection</span>
+                        </div>
+                        <div class="col-body" style="padding:12px; background:#f8f9fa; display:none;">
+                            <div style="margin-bottom:8px; font-size:12px; color:#2c3e50;">Choose whether the prompt includes full equipment/consumable lists or just category counts.</div>
+                            <label for="resource_injection_mode" style="font-weight:700; font-size:12px;">Injection Mode</label>
+                            <select id="resource_injection_mode" style="padding:10px; min-width:260px;">
+                                <option value="category_counts">Categories with counts (short)</option>
+                                <option value="full">Full item lists (long)</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="collapsible" style="margin-bottom:12px;">
+                        <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                            <span class="dev-tag">dev:settings-last-prompt</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Last Prompt Verbatim (Debug)</span>
+                        </div>
+                        <div class="col-body" style="padding:12px; background:#f8f9fa; display:none;">
+                            <div style="margin-bottom:8px; font-size:12px; color:#2c3e50;">Shows the exact prompt submitted to MedGemma for the most recent chat.</div>
+                            <textarea id="last_prompt_verbatim" readonly style="width:100%; min-height:160px;"></textarea>
+                        </div>
+                    </div>
                     <div class="collapsible developer-only" style="margin-bottom:12px; display:none;">
                         <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
                             <span class="dev-tag">dev:settings-default-export</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Export Default Dataset (Dev)</span>
@@ -928,20 +994,6 @@
                             <span id="model-meta" style="margin-left:auto; font-size:12px; color:#4a5568;"></span>
                         </div>
                         <div class="col-body" style="padding:12px; background:#f8f9fa;">
-                            <div class="collapsible" style="margin-bottom:12px;">
-                                <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                                    <span class="dev-tag">dev:settings-medphoto-prompt</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Photo Import Prompt</span>
-                                </div>
-                                <div class="col-body" style="padding:12px; background:#f8f9fa;">
-                                    <label for="med_photo_prompt">Default prompt used when extracting data from medicine photos</label>
-                                    <textarea id="med_photo_prompt" style="width:100%; min-height:100px; padding:10px; border:1px solid #ccc; border-radius:4px;"></textarea>
-                                    <div style="margin-top:8px; display:flex; gap:10px; flex-wrap:wrap;">
-                                        <button class="btn btn-sm" style="background:var(--inquiry);" onclick="saveSettings(false)">Save Photo Prompt</button>
-                                        <button class="btn btn-sm" style="background:#b23b00;" onclick="resetSection('med_photo')">Restore Default</button>
-                                    </div>
-                                    <div style="margin-top:6px; font-size:12px; color:#555;">This prompt guides the vision model when importing medicines from photos.</div>
-                                </div>
-                            </div>
                             <div class="collapsible" style="margin-bottom:12px;">
                                 <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
                                     <span class="dev-tag">dev:settings-triage</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Triage Mode (Clinical Response)</span>

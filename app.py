@@ -53,8 +53,12 @@ from db_store import (
     verify_password,
     replace_vaccine_types,
     replace_pharmacy_labels,
+    replace_equipment_categories,
+    replace_consumable_categories,
     load_vaccine_types,
     load_pharmacy_labels,
+    load_equipment_categories,
+    load_consumable_categories,
     get_model_params,
     set_model_params,
     get_inventory_items,
@@ -118,6 +122,49 @@ IS_HF_SPACE = bool(
 )
 DISABLE_LOCAL_INFERENCE = os.environ.get("DISABLE_LOCAL_INFERENCE") == "1" or IS_HF_SPACE
 
+# Gemma3 masking patch for torch<2.6 (required when token_type_ids are present).
+def _torch_version_ge(major: int, minor: int) -> bool:
+    try:
+        base = torch.__version__.split("+", 1)[0]
+        parts = base.split(".")
+        return (int(parts[0]), int(parts[1])) >= (major, minor)
+    except Exception:
+        return False
+
+def _patch_gemma3_mask_for_torch():
+    if _torch_version_ge(2, 6):
+        return
+    try:
+        import transformers.models.gemma3.modeling_gemma3 as gemma_model
+        _orig_create_causal_mask_mapping = gemma_model.create_causal_mask_mapping
+
+        def _create_causal_mask_mapping_no_or(*args, **kwargs):
+            # torch<2.6 can't use or_mask_function; ignore token_type_ids for text-only.
+            if len(args) >= 7:
+                args = list(args)
+                args[6] = None
+            if "token_type_ids" in kwargs:
+                kwargs = dict(kwargs)
+                kwargs["token_type_ids"] = None
+            return _orig_create_causal_mask_mapping(*args, **kwargs)
+
+        gemma_model.create_causal_mask_mapping = _create_causal_mask_mapping_no_or
+        print("[startup] patched Gemma3 mask for torch<2.6", flush=True)
+    except Exception as exc:
+        print(f"[startup] Gemma3 mask patch skipped: {exc}", flush=True)
+
+_patch_gemma3_mask_for_torch()
+
+# Local inference debug logging (enabled by default outside HF Spaces)
+DEBUG_LOCAL_INFERENCE = os.environ.get("DEBUG_LOCAL_INFERENCE", "1" if not IS_HF_SPACE else "0") == "1"
+_DEBUG_START = time.perf_counter()
+
+def _dbg(msg: str):
+    if DEBUG_LOCAL_INFERENCE:
+        wall = time.strftime("%Y-%m-%d %H:%M:%S")
+        elapsed = time.perf_counter() - _DEBUG_START
+        print(f"[debug {wall} +{elapsed:.2f}s] {msg}", flush=True)
+
 # Remote inference (used when local is disabled, e.g., on HF Space)
 HF_REMOTE_TOKEN = (
     os.environ.get("HF_REMOTE_TOKEN")
@@ -127,6 +174,22 @@ HF_REMOTE_TOKEN = (
 )
 # Default remote text model; when MedGemma 4B/27B is selected we pass that through instead.
 REMOTE_MODEL = os.environ.get("REMOTE_MODEL") or "google/medgemma-1.5-4b-it"
+
+_dbg(
+    "env flags: "
+    + ", ".join(
+        [
+            f"IS_HF_SPACE={IS_HF_SPACE}",
+            f"DISABLE_LOCAL_INFERENCE={DISABLE_LOCAL_INFERENCE}",
+            f"AUTO_DOWNLOAD_MODELS={AUTO_DOWNLOAD_MODELS}",
+            f"VERIFY_MODELS_ON_START={VERIFY_MODELS_ON_START}",
+            f"AUTO_VERIFY_ONLINE={AUTO_VERIFY_ONLINE}",
+            f"HF_HUB_OFFLINE={os.environ.get('HF_HUB_OFFLINE')}",
+            f"TRANSFORMERS_OFFLINE={os.environ.get('TRANSFORMERS_OFFLINE')}",
+            f"HF_REMOTE_TOKEN_SET={bool(HF_REMOTE_TOKEN)}",
+        ]
+    )
+)
 
 import torch
 
@@ -249,14 +312,10 @@ def _bootstrap_db(force: bool = False):
     and intentionally skip remote seeding unless explicitly enabled.
     """
     if DB_PATH.exists():
-        if (
-            not force
-            and DB_PATH.stat().st_size > 0
-            and _is_valid_sqlite(DB_PATH)
-            and _db_is_populated(DB_PATH)
-        ):
+        if not force and DB_PATH.stat().st_size > 0 and _is_valid_sqlite(DB_PATH):
+            # Never overwrite a valid DB unless explicitly forced.
             return
-        # drop the stale/empty DB before seeding
+        # drop the stale/invalid DB before seeding
         try:
             DB_PATH.unlink()
         except Exception:
@@ -311,11 +370,14 @@ def _list_stores():
 REQUIRED_MODELS = [
     "google/medgemma-1.5-4b-it",
     "google/medgemma-27b-text-it",
-    "Qwen/Qwen2.5-VL-7B-Instruct",
 ]
-# Photo job worker is currently disabled; keep flags to avoid accidental startup.
-PHOTO_JOB_WORKER_STARTED = False
-PHOTO_JOB_LOCK = threading.Lock()
+
+# Explicit model type mapping to avoid misclassifying text-only models as vision.
+TEXT_MODELS = {
+    "google/medgemma-1.5-4b-it",
+    "google/medgemma-27b-text-it",
+}
+VISION_MODELS = set()
 
 
 def _update_chat_metrics(store, model_name: str):
@@ -325,15 +387,6 @@ def _update_chat_metrics(store, model_name: str):
     db_op("chat_metrics", metrics, store=store)
     return metrics.get(model_name, {"count": 0, "total_ms": 0, "avg_ms": 0})
 
-
-def _strip_inventory_photos(stores=None):
-    """No-op placeholder; photo retention is disabled."""
-    return []
-
-
-def log_job(msg: str):
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[PHOTO-JOB] {ts} | {msg}", flush=True)
 
 # FastAPI app
 app = FastAPI(title="SailingMedAdvisor")
@@ -378,16 +431,19 @@ if device == "cuda":
     except Exception:
         pass
 
-# BitsAndBytes (4-bit) is optional; disable cleanly if backend not available.
+# BitsAndBytes (4-bit) is optional; enable selectively for large models.
 quant_config = None
 if device == "cuda" and os.environ.get("DISABLE_BNB", "").strip() != "1":
     try:
         _ = __import__("bitsandbytes")
+        bnb_compute_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         quant_config = BitsAndBytesConfig(
             load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_compute_dtype=bnb_compute_dtype,
             bnb_4bit_use_double_quant=True,
             bnb_4bit_quant_type="nf4",
+            # Allow CPU offload when device_map="auto" needs it.
+            llm_int8_enable_fp32_cpu_offload=True,
         )
     except Exception as exc:
         print(f"[quant] bitsandbytes unavailable; running without 4-bit quantization ({exc})", flush=True)
@@ -413,7 +469,6 @@ def _migrate_existing_to_default(store):
         legacy_root = BASE_STORE / slug  # e.g., data/default
         new_data_dir = store.get("data") or (DATA_ROOT / slug)
         new_uploads_dir = store.get("uploads") or (UPLOAD_ROOT / slug)
-        new_med_dir = store.get("med_uploads") or (new_uploads_dir / "medicines")
         legacy_uploads_dir = legacy_root / "uploads"
 
         # Copy JSON payloads (patients, inventory, etc.) into data/<slug> if missing there
@@ -427,7 +482,7 @@ def _migrate_existing_to_default(store):
                     except Exception:
                         pass
 
-        # Copy legacy uploads (e.g., medicine photos) into uploads/<slug>/*
+        # Copy legacy uploads into uploads/<slug>/*
         if legacy_uploads_dir.exists():
             for item in legacy_uploads_dir.iterdir():
                 dest = new_uploads_dir / item.name
@@ -441,20 +496,6 @@ def _migrate_existing_to_default(store):
                 except Exception:
                     pass
 
-        # Handle very old layout where medicines lived directly under uploads/medicines
-        legacy_med = UPLOAD_ROOT / "medicines"
-        if legacy_med.exists():
-            for item in legacy_med.iterdir():
-                dest = new_med_dir / item.name
-                try:
-                    if item.is_dir():
-                        shutil.copytree(item, dest, dirs_exist_ok=True)
-                    else:
-                        dest.parent.mkdir(parents=True, exist_ok=True)
-                        if not dest.exists():
-                            shutil.copy2(item, dest)
-                except Exception:
-                    pass
     except Exception:
         # Silent failure to avoid blocking startup on migration issues
         pass
@@ -465,16 +506,14 @@ def _store_dirs(store_label: str):
     ws_rec = ensure_store(store_label, slug)
     data_dir = DATA_ROOT / slug
     uploads_dir = UPLOAD_ROOT / slug
-    med_dir = uploads_dir / "medicines"
     backup_dir = BACKUP_ROOT / slug
-    for path in [data_dir, uploads_dir, med_dir, backup_dir]:
+    for path in [data_dir, uploads_dir, backup_dir]:
         path.mkdir(parents=True, exist_ok=True)
     return {
         "label": store_label,
         "slug": slug,
         "data": data_dir,
         "uploads": uploads_dir,
-        "med_uploads": med_dir,
         "backup": backup_dir,
         "db_id": ws_rec["id"],
     }
@@ -553,6 +592,7 @@ def unload_model():
     models["is_text"] = False
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+    _dbg("model unloaded and CUDA cache cleared")
 
 
 def _same_med(a, b):
@@ -560,7 +600,7 @@ def _same_med(a, b):
     Determine if two medication records represent the same pharmaceutical item.
     
     This function is critical for duplicate detection during imports (e.g., WHO list,
-    photo OCR, CSV uploads) to prevent creating multiple inventory entries for the
+    CSV uploads) to prevent creating multiple inventory entries for the
     same medication.
     
     Matching Logic:
@@ -601,7 +641,7 @@ def _same_med(a, b):
         - Brand names are NOT considered in matching (intentional - same generic
           from different brands should merge)
         - Form (tablet, capsule, etc.) is NOT considered in matching
-        - This is used by photo import merge logic and WHO list imports
+        - This is used by WHO list imports
     """
 
     def norm(val):
@@ -652,12 +692,18 @@ def load_model(model_name: str, allow_cpu_large: bool = False):
     if DISABLE_LOCAL_INFERENCE:
         raise RuntimeError("LOCAL_INFERENCE_DISABLED")
     if models["active_name"] == model_name:
+        _dbg(f"load_model: model already active ({model_name})")
         return
     force_cuda = os.environ.get("FORCE_CUDA", "").strip() == "1"
     runtime_device = "cuda" if torch.cuda.is_available() else "cpu"
+    _dbg(
+        f"load_model: name={model_name} runtime_device={runtime_device} force_cuda={force_cuda} allow_cpu_large={allow_cpu_large}"
+    )
+    t0 = time.perf_counter()
     if force_cuda and runtime_device != "cuda":
         raise RuntimeError("CUDA_NOT_AVAILABLE")
     local_dir = _resolve_local_model_dir(model_name)
+    _dbg(f"load_model: resolved local snapshot dir: {local_dir}")
     # Free previous model to avoid VRAM exhaustion when switching
     unload_model()
     # Warn on CPU usage for large model unless explicitly allowed
@@ -666,8 +712,10 @@ def load_model(model_name: str, allow_cpu_large: bool = False):
 
     # Ensure cache exists (attempt download if allowed and online)
     cached, cache_err = model_cache_status(model_name)
+    _dbg(f"load_model: cache status cached={cached} err={cache_err}")
     if not cached and AUTO_DOWNLOAD_MODELS and not is_offline_mode():
         downloaded, err = download_model_cache(model_name)
+        _dbg(f"load_model: auto-download attempted downloaded={downloaded} err={err}")
         if downloaded:
             cached, cache_err = model_cache_status(model_name)
         elif err:
@@ -678,34 +726,61 @@ def load_model(model_name: str, allow_cpu_large: bool = False):
             f"{cache_err or 'Open Settings → Offline Readiness to download and back up models.'}"
         )
 
-    is_text_only = "text" in model_name.lower()
+    model_name = (model_name or "").strip()
+    model_name_l = model_name.lower()
+    is_text_only = model_name not in VISION_MODELS
+    is_medgemma = "medgemma" in model_name_l
+    is_large_medgemma = "27b" in model_name_l or "28b" in model_name_l
     # Prefer keeping as much on GPU as possible; allow env override
-    if runtime_device == "cuda" and force_cuda:
+    if runtime_device == "cuda" and force_cuda and not is_large_medgemma:
         device_map = "cuda"
     else:
         device_map = "auto" if runtime_device == "cuda" else "cpu"
     max_mem_gpu = os.environ.get("MODEL_MAX_GPU_MEM", "15GiB")
+    if runtime_device == "cuda" and is_large_medgemma and "MODEL_MAX_GPU_MEM" not in os.environ:
+        # Default to a safer GPU cap for 27B/28B on 16GB cards.
+        max_mem_gpu = os.environ.get("MODEL_MAX_GPU_MEM_27B", "8GiB")
     max_mem_cpu = os.environ.get("MODEL_MAX_CPU_MEM", "64GiB")
     max_memory = {0: max_mem_gpu, "cpu": max_mem_cpu} if runtime_device == "cuda" else None
+    # Enforce expected GPU for local MedGemma runs.
+    if runtime_device == "cuda" and is_medgemma and not IS_HF_SPACE:
+        enforce_rtx = os.environ.get("ENFORCE_RTX5000", "1").strip() == "1"
+        if enforce_rtx:
+            gpu_name = torch.cuda.get_device_name(0)
+            if "RTX 5000" not in gpu_name.upper():
+                raise RuntimeError(f"Unexpected GPU detected: '{gpu_name}'. Expected RTX 5000.")
+        if not torch.cuda.is_bf16_supported():
+            raise RuntimeError("MedGemma requires bfloat16 for stable inference on this GPU.")
+
     # On CPU, use float32; on CUDA pick a safe GPU dtype
     if runtime_device == "cuda":
         load_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     else:
         load_dtype = torch.float32
+    _dbg(
+        f"load_model: device_map={device_map} dtype={load_dtype} max_memory={max_memory} quantized={quant_config is not None}"
+    )
     model_kwargs = {
         "torch_dtype": load_dtype,
         "device_map": device_map,
         "low_cpu_mem_usage": True,
         "local_files_only": True,
     }
+    if runtime_device == "cuda" and is_medgemma:
+        # Avoid flash/SDPA instability on older RTX cards.
+        model_kwargs["attn_implementation"] = "eager"
     if runtime_device == "cuda":
+        use_quant = quant_config is not None and ("27b" in model_name.lower() or "28b" in model_name.lower())
+        if is_large_medgemma and quant_config is None:
+            raise RuntimeError("27B/28B requires bitsandbytes 4-bit quantization for this GPU.")
         model_kwargs.update(
             {
                 "max_memory": max_memory,
                 "offload_folder": str(OFFLOAD_DIR),
-                "quantization_config": quant_config,
+                "quantization_config": quant_config if use_quant else None,
             }
         )
+        _dbg(f"load_model: use_quant={use_quant}")
     if force_cuda or os.environ.get("DEBUG_DEVICE", "").strip() == "1":
         print(
             f"[model] runtime_device={runtime_device} device_map={device_map} dtype={load_dtype} force_cuda={force_cuda}",
@@ -713,19 +788,34 @@ def load_model(model_name: str, allow_cpu_large: bool = False):
         )
     load_path = local_dir or model_name
     if is_text_only:
+        _dbg("load_model: loading text model")
+        t_tok = time.perf_counter()
         models["tokenizer"] = AutoTokenizer.from_pretrained(load_path, use_fast=True, local_files_only=True)
-        models["processor"] = None
+        _dbg(f"load_model: tokenizer loaded in {time.perf_counter() - t_tok:.2f}s")
+        if is_medgemma:
+            t_proc = time.perf_counter()
+            models["processor"] = AutoProcessor.from_pretrained(load_path, use_fast=True, local_files_only=True)
+            _dbg(f"load_model: text processor loaded in {time.perf_counter() - t_proc:.2f}s")
+        else:
+            models["processor"] = None
+        t_model = time.perf_counter()
         models["model"] = AutoModelForCausalLM.from_pretrained(
             load_path,
             **model_kwargs,
         )
+        _dbg(f"load_model: text model loaded in {time.perf_counter() - t_model:.2f}s")
     else:
+        _dbg("load_model: loading vision model")
+        t_proc = time.perf_counter()
         models["processor"] = AutoProcessor.from_pretrained(load_path, use_fast=True, local_files_only=True)
+        _dbg(f"load_model: processor loaded in {time.perf_counter() - t_proc:.2f}s")
         models["tokenizer"] = None
+        t_model = time.perf_counter()
         models["model"] = AutoModelForImageTextToText.from_pretrained(
             load_path,
             **model_kwargs,
         )
+        _dbg(f"load_model: vision model loaded in {time.perf_counter() - t_model:.2f}s")
     # Force GPU placement for smaller models when requested; fail fast on errors.
     if (
         force_cuda
@@ -734,7 +824,10 @@ def load_model(model_name: str, allow_cpu_large: bool = False):
         and "28b" not in model_name.lower()
     ):
         try:
+            _dbg("load_model: forcing model.to('cuda')")
+            t_move = time.perf_counter()
             models["model"] = models["model"].to("cuda")
+            _dbg(f"load_model: model.to('cuda') in {time.perf_counter() - t_move:.2f}s")
         except Exception as exc:
             raise RuntimeError(f"CUDA_MOVE_FAILED: {exc}")
     if force_cuda or os.environ.get("DEBUG_DEVICE", "").strip() == "1":
@@ -748,6 +841,7 @@ def load_model(model_name: str, allow_cpu_large: bool = False):
         print(f"[model] loaded device={model_dev} hf_device_map={model_map} cuda_mem={mem_alloc}", flush=True)
     models["is_text"] = is_text_only
     models["active_name"] = model_name
+    _dbg(f"load_model: load complete in {time.perf_counter() - t0:.2f}s")
 
 
 def get_defaults():
@@ -763,13 +857,8 @@ def get_defaults():
         "rep_penalty": 1.1,
         "mission_context": "Isolated Medical Station offshore.",
         "user_mode": "user",
-        "med_photo_model": "qwen",
-        "med_photo_prompt": (
-            "You are a pharmacy intake assistant on a sailing vessel. "
-            "Look at the medication photo and return JSON only with keys: "
-            "generic_name, brand_name, form, strength, expiry_date, batch_lot, "
-            "storage_location, manufacturer, indication, allergy_warnings, dosage, notes."
-        ),
+        "resource_injection_mode": "category_counts",
+        "last_prompt_verbatim": "",
         "vaccine_types": [
             "Diphtheria, Tetanus, and Pertussis (DTaP/Tdap)",
             "Polio (IPV/OPV)",
@@ -788,6 +877,27 @@ def get_defaults():
             "Japanese Encephalitis",
             "Rabies",
             "Cholera",
+        ],
+        "equipment_categories": [
+            "Diagnostics & monitoring",
+            "Instruments & tools",
+            "Airway & breathing",
+            "Splints & supports",
+            "Eye care",
+            "Dental",
+            "PPE",
+            "Survival & utility",
+            "Other",
+        ],
+        "consumable_categories": [
+            "Wound care & dressings",
+            "Burn care",
+            "Antiseptics & hygiene",
+            "Irrigation & syringes",
+            "Splints & supports",
+            "PPE",
+            "Survival & utility",
+            "Other",
         ],
     }
 
@@ -890,12 +1000,17 @@ def db_op(cat, data=None, store=None):
                 replace_vaccine_types(data.get("vaccine_types") or [])
             if "pharmacy_labels" in data:
                 replace_pharmacy_labels(data.get("pharmacy_labels") or [])
+            if "equipment_categories" in data:
+                replace_equipment_categories(data.get("equipment_categories") or [])
+            if "consumable_categories" in data:
+                replace_consumable_categories(data.get("consumable_categories") or [])
             # Persist model params to table
             set_model_params(data)
             # Persist meta settings to table
             set_settings_meta(
                 user_mode=data.get("user_mode"),
                 offline_force_flags=data.get("offline_force_flags"),
+                resource_injection_mode=data.get("resource_injection_mode"),
             )
             return {**get_defaults(), **data}
         if cat == "inventory":
@@ -957,6 +1072,18 @@ def db_op(cat, data=None, store=None):
         except Exception:
             pass
         try:
+            eq = load_equipment_categories()
+            if eq:
+                loaded["equipment_categories"] = eq
+        except Exception:
+            pass
+        try:
+            cc = load_consumable_categories()
+            if cc:
+                loaded["consumable_categories"] = cc
+        except Exception:
+            pass
+        try:
             mp = get_model_params()
             loaded.update({k: v for k, v in mp.items() if v is not None})
         except Exception:
@@ -1011,6 +1138,77 @@ def _is_resource_excluded(item):
     return bool(val)
 
 
+def _categorize_supply_name(name: str) -> str:
+    if not name:
+        return "Other"
+    n = name.strip().lower()
+    if any(k in n for k in ["burn", "water-jel", "water jel", "sunburn", "aloe"]):
+        return "Burn care"
+    if any(k in n for k in ["bandage", "gauze", "pad", "dressing", "tegaderm", "steri", "strip", "sponge", "wound"]):
+        return "Wound care & dressings"
+    if any(k in n for k in ["splint", "elastic bandage", "moleskin", "padding", "support"]):
+        return "Splints & supports"
+    if any(k in n for k in ["betadine", "antiseptic", "alcohol", "sanitizer", "wipe", "brush"]):
+        return "Antiseptics & hygiene"
+    if any(k in n for k in ["cpr", "respir", "airway", "nasopharyngeal", "rescue mask"]):
+        return "Airway & breathing"
+    if any(k in n for k in ["stethoscope", "thermometer", "blood pressure", "bp"]):
+        return "Diagnostics & monitoring"
+    if any(k in n for k in ["forceps", "hemostat", "scissors", "tweezers", "needle holder", "scalpel", "spatula", "snips", "pliers"]):
+        return "Instruments & tools"
+    if any(k in n for k in ["eye", "eyewash", "eye wash"]):
+        return "Eye care"
+    if any(k in n for k in ["dent", "dental"]):
+        return "Dental"
+    if any(k in n for k in ["glove", "ppe"]):
+        return "PPE"
+    if any(k in n for k in ["lubricat", "surgilube", "jelly", "gel"]):
+        return "Lubricants & gels"
+    if any(k in n for k in ["blanket", "bivvy", "matches", "duct tape", "safety pin", "toe protector"]):
+        return "Survival & utility"
+    if "enema" in n or "syringe" in n:
+        return "Irrigation & syringes"
+    return "Other"
+
+
+def _normalize_category_label(label: str) -> str:
+    return (label or "").strip().lower()
+
+
+def _summarize_supply_categories(items: list[dict], allowed_categories: list[str] | None) -> tuple[str, dict]:
+    allowed_categories = allowed_categories or []
+    allowed_map = {_normalize_category_label(c): c for c in allowed_categories if c}
+    counts = {c: 0 for c in allowed_categories if c}
+    fallback_label = None
+    for c in allowed_categories:
+        if _normalize_category_label(c) in {"other", "misc", "uncategorized"}:
+            fallback_label = c
+            break
+    if not fallback_label:
+        fallback_label = "Other"
+
+    for item in items or []:
+        if _is_resource_excluded(item):
+            continue
+        name = item.get("name") or item.get("genericName") or item.get("brandName") or ""
+        raw_cat = item.get("category") or ""
+        cat = raw_cat if raw_cat.strip() else _categorize_supply_name(name)
+        key = _normalize_category_label(cat)
+        if key in allowed_map:
+            counts[allowed_map[key]] = counts.get(allowed_map[key], 0) + 1
+        else:
+            counts[fallback_label] = counts.get(fallback_label, 0) + 1
+
+    if not counts:
+        return "", {}
+    ordered = [(k, v) for k, v in counts.items() if v]
+    if not ordered:
+        return "", {}
+    ordered.sort(key=lambda kv: (-kv[1], kv[0].lower()))
+    summary = ", ".join(f"{cat} ({cnt})" for cat, cnt in ordered)
+    return summary, counts
+
+
 def _patient_display_name(record, fallback):
     if not record:
         return fallback
@@ -1056,6 +1254,12 @@ def build_prompt(settings, mode, msg, p_name, store):
             f"INQUIRY INSTRUCTION:\n{instruction}",
             f"QUERY:\n{msg}",
         ]
+        _dbg(
+            "prompt_breakdown[inquiry]: "
+            + f"mission_chars={len(mission_context or '')} "
+            + f"instruction_chars={len(instruction or '')} "
+            + f"query_chars={len(msg or '')}"
+        )
         prompt = "\n\n".join(section for section in prompt_sections if section.strip())
         cfg = {
             "t": safe_float(settings.get("in_temp", 0.6), 0.6),
@@ -1064,6 +1268,8 @@ def build_prompt(settings, mode, msg, p_name, store):
             "rep_penalty": rep_penalty,
         }
     else:
+        resource_mode = (settings.get("resource_injection_mode") or "category_counts").strip().lower()
+        inject_full_lists = resource_mode in {"full", "full_list", "items"}
         pharma_items = {}
         equip_items = {}
         consumable_items = {}
@@ -1093,13 +1299,24 @@ def build_prompt(settings, mode, msg, p_name, store):
         equip_str = ", ".join(equip_list)
         consumable_str = ", ".join(consumable_list)
 
-        tool_items = []
-        for t in db_op("tools", store=store):
-            tool_name = t.get("name")
-            if tool_name:
-                tool_items.append(tool_name)
-        tool_items.sort(key=lambda s: (s or "").lower())
-        equipment_extra = ", ".join(tool_items)
+        tool_items = list(db_op("tools", store=store))
+        equipment_items = []
+        consumable_tools = []
+        for t in tool_items:
+            t_type = (t.get("type") or "").strip().lower()
+            if t_type == "consumable":
+                consumable_tools.append(t)
+            else:
+                equipment_items.append(t)
+        equipment_items.sort(key=lambda t: (t.get("name") or "").lower())
+        consumable_tools.sort(key=lambda t: (t.get("name") or "").lower())
+
+        equipment_categories = settings.get("equipment_categories") or []
+        consumable_categories = settings.get("consumable_categories") or []
+        equipment_summary, equipment_counts = _summarize_supply_categories(equipment_items, equipment_categories)
+        consumable_summary, consumable_counts = _summarize_supply_categories(consumable_tools, consumable_categories)
+        equipment_total = sum(equipment_counts.values()) if equipment_counts else 0
+        consumable_total = sum(consumable_counts.values()) if consumable_counts else 0
 
         patient_record = next(
             (
@@ -1166,8 +1383,13 @@ def build_prompt(settings, mode, msg, p_name, store):
             f"TRIAGE INSTRUCTION:\n{settings.get('triage_instruction')}",
             "RESOURCES:\n"
             f"- Pharmaceuticals: {pharma_str or 'None listed'}\n"
-            f"- Medical Equipment: {equip_str or equipment_extra or 'None listed'}\n"
-            f"- Consumables: {consumable_str or 'None listed'}",
+            + (
+                f"- Medical Equipment: {', '.join([t.get('name') for t in equipment_items if t.get('name')]) or 'None listed'}\n"
+                f"- Consumables: {', '.join([t.get('name') for t in consumable_tools if t.get('name')]) or 'None listed'}"
+                if inject_full_lists
+                else f"- Equipment Categories (counts): {equipment_summary or 'None listed'}\n"
+                f"- Consumable Categories (counts): {consumable_summary or 'None listed'}"
+            ),
             "PATIENT:\n"
             f"- Name: {display_name}\n"
             f"- Sex: {p_sex}\n"
@@ -1176,6 +1398,20 @@ def build_prompt(settings, mode, msg, p_name, store):
             f"- Vaccines: {_format_vaccines(vaccines)}",
             f"SITUATION:\n{msg}",
         ]
+        _dbg(
+            "prompt_breakdown[triage]: "
+            + f"mission_chars={len(mission_context or '')} "
+            + f"instruction_chars={len(settings.get('triage_instruction') or '')} "
+            + f"pharma_count={len(pharma_list)} pharma_chars={len(pharma_str)} "
+            + f"equip_count={len(equip_list)} equip_chars={len(equip_str)} "
+            + f"consumable_count={len(consumable_list)} consumable_chars={len(consumable_str)} "
+            + f"equipment_total={equipment_total} equipment_summary_chars={len(equipment_summary or '')} "
+            + f"consumable_total={consumable_total} consumable_summary_chars={len(consumable_summary or '')} "
+            + f"resource_mode={resource_mode} "
+            + f"patient_hist_chars={len(p_hist or '')} "
+            + f"vaccines_count={len(vaccines) if isinstance(vaccines, list) else 0} "
+            + f"situation_chars={len(msg or '')}"
+        )
         prompt = "\n\n".join(section for section in prompt_sections if section.strip())
         cfg = {
             "t": safe_float(settings.get("tr_temp", 0.1), 0.1),
@@ -1195,683 +1431,6 @@ def get_credentials(store):
 def load_context(store):
     """Return static/inline sidebar context; external context.json no longer used."""
     return {}
-
-
-MED_PHOTO_QUEUE_MEM: List[dict] = []
-MED_PHOTO_JOBS_MEM: List[dict] = []
-
-
-def get_med_photo_queue(store):
-    # Legacy compatibility: return in-memory queue (table removed)
-    return list(MED_PHOTO_QUEUE_MEM)
-
-
-def _resolve_med_model(store):
-    """Pick a preferred vision model for medicine photo parsing; fall back if cache missing."""
-    settings = db_op("settings", store=store)
-    model_pref = (settings.get("med_photo_model") or "qwen").lower()
-    primary = "Qwen/Qwen2.5-VL-7B-Instruct"
-    has_cache, _ = model_cache_status(primary)
-    if not has_cache:
-        logger.warning("Preferred medicine photo model cache missing; continuing with %s", primary)
-    return primary
-
-
-def _merge_inventory_record(med_record: dict, photo_urls: List[str], store):
-    """
-    Merge a medication record from photo OCR into existing inventory.
-    
-    This function is called during the medicine photo import workflow. When a user
-    photographs medication packaging and the OCR extracts details, we need to decide:
-    1. Is this a completely new medication? → Add it to inventory
-    2. Is this a duplicate of existing medication? → Merge/update the existing record
-    
-    Merge Strategy:
-    ---------------
-    - Uses _same_med() to detect duplicates (generic name + strength matching)
-    - If duplicate found:
-      * Append new expiry entries (purchaseHistory) to existing medication
-      * Fill in any BLANK fields in existing record with OCR data
-      * Preserve existing data - never overwrite populated fields
-    - If new medication:
-      * Add as brand new inventory item with fresh ID
-    
-    Args:
-        med_record (dict): Medication data extracted from photo OCR with structure:
-            - genericName, brandName, form, strength (identification)
-            - purchaseHistory (list): Expiry entries from this photo
-            - manufacturer, batchLot, etc. (metadata from packaging)
-        photo_urls (List[str]): URLs to uploaded medication photos for reference
-        store (dict): Store context containing data directory paths
-    
-    Returns:
-        dict: Entry status with keys:
-            - status (str): Always "completed" after merge
-            - inventory_id (str): ID of the medication record (existing or new)
-            - urls (list): Photo URLs associated with this import
-    
-    Side Effects:
-        - Modifies inventory in database (adds or updates medication record)
-        - Preserves all existing expiry entries and adds new ones
-        - Updates medication fields only when they were previously blank
-    
-    Example Scenarios:
-        
-        Scenario 1 - New Medication:
-        >>> _merge_inventory_record(
-        ...     {"genericName": "Aspirin", "strength": "500mg", "purchaseHistory": [...]},
-        ...     ["/uploads/med-photo-1.jpg"],
-        ...     store
-        ... )
-        {"status": "completed", "inventory_id": "med-12345...", "urls": []}
-        # Result: New medication added to inventory
-        
-        Scenario 2 - Duplicate Found (merge):
-        >>> # Existing: Ibuprofen 200mg with manufacturer=""
-        >>> _merge_inventory_record(
-        ...     {"genericName": "Ibuprofen", "strength": "200mg", 
-        ...      "manufacturer": "Pfizer", "purchaseHistory": [...]},
-        ...     ["/uploads/med-photo-2.jpg"],
-        ...     store
-        ... )
-        {"status": "completed", "inventory_id": "med-existing-id", "urls": []}
-        # Result: Existing Ibuprofen updated with:
-        #   - Manufacturer field filled in (was blank)
-        #   - New expiry entry appended to purchaseHistory
-        #   - Original expiry entries preserved
-    
-    Business Logic Notes:
-        - This allows users to photograph the same medication multiple times
-          (e.g., different batches arriving at different dates) without creating
-          duplicate inventory entries
-        - Expiry tracking grows over time as new batches are photographed
-        - OCR data enriches existing records by filling missing details
-    """
-    # Load current inventory from database
-    inventory = db_op("inventory", store=store)
-    
-    # Check if this medication already exists (duplicate detection)
-    existing = next((m for m in inventory if _same_med(m, med_record)), None)
-    
-    # Prepare return entry
-    entry = {"status": "completed", "urls": []}
-    
-    if existing:
-        # DUPLICATE FOUND - Merge into existing record
-        
-        # Ensure purchaseHistory array exists (legacy records may not have it)
-        existing.setdefault("purchaseHistory", [])
-        
-        # Extract expiry entries from the photo OCR result
-        med_record_ph = med_record.get("purchaseHistory") or []
-        
-        # Append new expiry entries to existing medication's history
-        # This allows tracking multiple batches of the same medication
-        if med_record_ph:
-            existing["purchaseHistory"].extend(med_record_ph)
-        
-        # Fill in any blank fields from OCR data (enrich existing record)
-        for key, val in med_record.items():
-            # Skip ID and purchaseHistory (already handled above)
-            if key in {"id", "purchaseHistory"}:
-                continue
-            
-            # Only fill in fields that are currently blank/empty
-            # This preserves manually-entered data and prevents OCR from
-            # overwriting good data with extraction errors
-            if _is_blank(existing.get(key)) and not _is_blank(val):
-                existing[key] = val
-        
-        # Return the existing medication's ID
-        entry["inventory_id"] = existing.get("id")
-    else:
-        # NEW MEDICATION - Add to inventory
-        inventory.append(med_record)
-        entry["inventory_id"] = med_record["id"]
-    
-    # Save updated inventory back to database
-    db_op("inventory", inventory, store=store)
-    
-    return entry
-
-
-def _load_photo_jobs(store):
-    return list(MED_PHOTO_JOBS_MEM)
-
-
-def _save_photo_jobs(store, jobs):
-    global MED_PHOTO_JOBS_MEM
-    MED_PHOTO_JOBS_MEM = list(jobs or [])
-    log_job(f"[{store['label']}] saved {len(jobs)} job(s)")
-
-
-def _update_job(store, job_id, updater):
-    jobs = _load_photo_jobs(store)
-    updated = None
-    for job in jobs:
-        if job.get("id") == job_id:
-            updated = updater(job)
-            break
-    _save_photo_jobs(store, jobs)
-    return updated, jobs
-
-
-def _process_photo_job(job, store):
-    paths = [Path(p) for p in job.get("paths") or [] if p]
-    urls = job.get("urls") or []
-    if not paths:
-        raise RuntimeError("No image paths found for job")
-    log_job(f"[{store['label']}] processing job {job.get('id')} ({len(paths)} photo(s), mode={job.get('mode')})")
-    entry = asyncio.run(_process_photo_group(paths, urls, store))
-    for path in paths:
-        try:
-            if path.exists():
-                path.unlink()
-        except Exception:
-            continue
-    job.update(
-        {
-            "status": "completed",
-            "completed_at": datetime.now().isoformat(),
-            "result": entry.get("result") or {},
-            "inventory_id": entry.get("inventory_id"),
-            "used_model": entry.get("used_model"),
-            "paths": [],
-            "urls": [],
-            "error": "",
-        }
-    )
-    log_job(f"[{store['label']}] job {job.get('id')} completed; inventory_id={job.get('inventory_id')}")
-
-
-def _photo_job_worker():
-    while True:
-        processed = False
-        try:
-            ws = DEFAULT_store
-            jobs = _load_photo_jobs(ws)
-            job = next((j for j in jobs if j.get("status") == "queued"), None)
-            if not job:
-                # prune old completed jobs to keep file small
-                now = datetime.now()
-                filtered = []
-                for j in jobs:
-                    if j.get("status") != "completed":
-                        filtered.append(j)
-                        continue
-                    try:
-                        ts = datetime.fromisoformat(j.get("completed_at", ""))
-                        # keep recent completions for UI refresh (approx 2 minutes)
-                        if (now - ts).total_seconds() < 120:
-                            filtered.append(j)
-                    except Exception:
-                        # if timestamp missing, keep it so UI can see it once
-                        filtered.append(j)
-                if len(filtered) != len(jobs):
-                    _save_photo_jobs(ws, filtered)
-                continue
-            processed = True
-            job["status"] = "processing"
-            job["started_at"] = datetime.now().isoformat()
-            _save_photo_jobs(ws, jobs)
-            try:
-                _process_photo_job(job, ws)
-            except Exception as e:
-                job["status"] = "failed"
-                job["error"] = str(e)
-                log_job(f"[{ws['label']}] job {job.get('id')} failed: {e}")
-            _save_photo_jobs(ws, jobs)
-        except Exception:
-            # Avoid worker crash; sleep briefly then retry
-            pass
-        if not processed:
-            time.sleep(2)
-
-
-def _start_photo_worker():
-    global PHOTO_JOB_WORKER_STARTED
-    if PHOTO_JOB_WORKER_STARTED:
-        return
-    PHOTO_JOB_WORKER_STARTED = True
-    t = threading.Thread(target=_photo_job_worker, daemon=True)
-    t.start()
-
-
-def _safe_suffix(name: str, mime: str = "") -> str:
-    suffix = ""
-    try:
-        suffix = Path(name or "").suffix.lower()
-    except Exception:
-        suffix = ""
-    mime = (mime or "").lower()
-    if suffix in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}:
-        return suffix
-    if "jpeg" in mime or "jpg" in mime:
-        return ".jpg"
-    if "png" in mime:
-        return ".png"
-    if "webp" in mime:
-        return ".webp"
-    if "bmp" in mime:
-        return ".bmp"
-    return ".png"
-
-
-def extract_json_payload(text: str):
-    if not text:
-        return {}
-    try:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            return json.loads(text[start : end + 1])
-    except Exception:
-        return {}
-    return {}
-
-
-def normalize_medicine_fields(raw: dict, fallback_notes: str):
-    """
-    Normalize medication field names from various sources into standard schema.
-    
-    This function is the **field name translation layer** between external data sources
-    (photo OCR, CSV imports, WHO list, manual entry) and our internal inventory schema.
-    Different sources use different field names, so we normalize them here.
-    
-    Purpose:
-    --------
-    - Photo OCR may return "generic_name", "brand_name", "batch_lot", etc.
-    - Internal inventory uses camelCase: "genericName", "brandName", "batchLot"
-    - This function maps all variants to our standard schema
-    
-    Field Mapping Strategy:
-    -----------------------
-    For each field, we check multiple possible source field names:
-    - genericName: Tries "generic_name", "generic", "name"
-    - brandName: Tries "brand_name", "brand"
-    - batchLot: Tries "batch_lot", "lot"
-    - storageLocation: Tries "storage_location", "storage"
-    - primaryIndication: Tries "indication", "use_case"
-    - allergyWarnings: Tries "allergy_warnings", "allergy", "warnings"
-    - standardDosage: Tries "dosage", "dose", then falls back to notes
-    
-    Args:
-        raw (dict): Medication data from external source (OCR, import, etc.)
-                   Field names may be snake_case or abbreviated
-        fallback_notes (str): Text to use as notes if no notes field present
-                             Typically contains raw OCR output or import context
-    
-    Returns:
-        dict: Medication record with standardized field names matching inventory schema:
-            - genericName (str): Generic/chemical name (e.g., "Ibuprofen")
-            - brandName (str): Trade/brand name (e.g., "Advil")
-            - form (str): Dosage form (tablet, capsule, liquid, etc.)
-            - strength (str): Dosage strength (e.g., "200mg", "5mg/ml")
-            - currentQuantity (str): Current stock quantity
-            - minThreshold (str): Reorder threshold
-            - unit (str): Unit of measure (tablets, ml, boxes, etc.)
-            - storageLocation (str): Where medication is stored on vessel
-            - expiryDate (str): Expiry date (legacy single-date field)
-            - batchLot (str): Batch or lot number from manufacturer
-            - controlled (bool): Whether this is a controlled substance
-            - manufacturer (str): Manufacturer name
-            - primaryIndication (str): Main medical use
-            - allergyWarnings (str): Allergy/contraindication warnings
-            - standardDosage (str): Standard dosing instructions
-            - notes (str): Additional notes or raw OCR text
-    
-    Example Transformations:
-        
-        >>> normalize_medicine_fields(
-        ...     {
-        ...         "generic_name": "Paracetamol",
-        ...         "brand_name": "Tylenol",
-        ...         "batch_lot": "AB12345",
-        ...         "storage_location": "Medical Locker A"
-        ...     },
-        ...     fallback_notes="Imported from photo"
-        ... )
-        {
-            "genericName": "Paracetamol",
-            "brandName": "Tylenol",
-            "batchLot": "AB12345",
-            "storageLocation": "Medical Locker A",
-            "notes": "Imported from photo",
-            # ... (other fields empty)
-        }
-    
-    Business Rules:
-        - Empty strings are preserved (not converted to None) for consistency
-        - Boolean fields (controlled) are explicitly cast to avoid string "false"
-        - Fallback notes ensure we don't lose OCR output even if parsing fails
-        - Multiple field name variants allow flexible import from different sources
-    
-    Related Functions:
-        - Called by: build_inventory_record() after OCR extraction
-        - Used by: Photo import workflow, CSV imports, API imports
-        - Output consumed by: _merge_inventory_record(), inventory display
-    """
-    # Ensure we have a dict to work with (defensive coding)
-    raw = raw or {}
-    
-    return {
-        # === IDENTIFICATION FIELDS ===
-        # Generic/chemical name - primary identifier for duplicate detection
-        "genericName": raw.get("generic_name") or raw.get("generic") or raw.get("name") or "",
-        
-        # Brand/trade name - secondary identifier
-        "brandName": raw.get("brand_name") or raw.get("brand") or "",
-        
-        # Dosage form (tablet, capsule, syrup, etc.)
-        "form": raw.get("form") or "",
-        
-        # Strength/concentration (200mg, 5%, etc.)
-        "strength": raw.get("strength") or "",
-        
-        # === QUANTITY TRACKING ===
-        # Current quantity in stock
-        "currentQuantity": raw.get("quantity") or "",
-        
-        # Minimum threshold for reorder alerts
-        "minThreshold": raw.get("min_threshold") or "",
-        
-        # Unit of measure (tablets, ml, boxes, etc.)
-        "unit": raw.get("unit") or "",
-        
-        # === STORAGE & TRACEABILITY ===
-        # Physical storage location on vessel
-        "storageLocation": raw.get("storage_location") or raw.get("storage") or "",
-        
-        # Legacy single expiry date field (now using purchaseHistory)
-        "expiryDate": raw.get("expiry_date") or "",
-        
-        # Batch/lot number for traceability
-        "batchLot": raw.get("batch_lot") or raw.get("lot") or "",
-        
-        # Controlled substance flag (requires special tracking)
-        "controlled": bool(raw.get("controlled") or False),
-        
-        # Manufacturer name
-        "manufacturer": raw.get("manufacturer") or "",
-        
-        # === CLINICAL INFORMATION ===
-        # Primary medical indication/use
-        "primaryIndication": raw.get("indication") or raw.get("use_case") or "",
-        
-        # Allergy and contraindication warnings
-        "allergyWarnings": raw.get("allergy_warnings") or raw.get("allergy") or raw.get("warnings") or "",
-        
-        # Standard dosing instructions
-        "standardDosage": raw.get("dosage") or raw.get("dose") or fallback_notes or "",
-        
-        # General notes (often contains raw OCR text as backup)
-        "notes": raw.get("notes") or fallback_notes or "",
-    }
-
-
-def build_inventory_record(extracted: dict, photo_urls: List[str]):
-    """
-    Construct a complete inventory record from extracted photo OCR data.
-    
-    This function is the final step in the photo import pipeline. After OCR extraction
-    and field normalization, we build a full inventory record ready to be merged into
-    the database.
-    
-    Photo Import Pipeline:
-    ----------------------
-    1. User uploads medication photo(s)
-    2. OCR model extracts text → raw JSON (snake_case field names)
-    3. normalize_medicine_fields() → standardized field names (camelCase)
-    4. **build_inventory_record()** → complete inventory record with metadata
-    5. _merge_inventory_record() → save to database (merge or create new)
-    
-    Key Responsibilities:
-    ---------------------
-    - Generate unique ID for new medication record
-    - Create initial expiry entry in purchaseHistory array
-    - Set metadata flags (source="photo_import", photoImported=True)
-    - Provide fallback values for missing critical fields
-    - Preserve photo URLs for reference/audit trail
-    
-    Args:
-        extracted (dict): Normalized medication data from normalize_medicine_fields()
-                         Contains standardized field names (genericName, brandName, etc.)
-        photo_urls (List[str]): URLs to uploaded medication photos
-                                Currently not stored in record but available for future use
-    
-    Returns:
-        dict: Complete medication inventory record with structure:
-            - id (str): Unique medication identifier (med-<timestamp>)
-            - genericName (str): Generic/chemical name (required, defaults to "Medication")
-            - brandName (str): Trade/brand name
-            - form, strength, currentQuantity, minThreshold, unit
-            - storageLocation, expiryDate, batchLot, controlled
-            - manufacturer, primaryIndication, allergyWarnings, standardDosage
-            - purchaseHistory (list): Array of expiry entries (starts with one entry)
-            - source (str): Always "photo_import" for traceability
-            - photoImported (bool): Always True to flag photo-sourced records
-    
-    Purchase History Structure:
-    ---------------------------
-    Each medication has a purchaseHistory array containing expiry entries.
-    This allows tracking multiple batches of the same medication with different
-    expiration dates.
-    
-    Initial entry created here:
-        {
-            "id": "ph-<uuid>",           # Unique purchase/expiry entry ID
-            "date": "2026-01-29",        # Date added (today)
-            "quantity": "",              # Initially empty (user can fill later)
-            "notes": "Imported from..."  # Import context note
-        }
-    
-    When additional batches arrive, new entries are appended to this array.
-    
-    ID Generation Strategy:
-    -----------------------
-    - Medication ID: "med-<millisecond-timestamp>"
-      * Uses timestamp to ensure uniqueness
-      * Sortable by creation time
-      * Example: "med-1706476800123"
-    
-    - Purchase Entry ID: "ph-<uuid>"
-      * Uses UUID for globally unique identifiers
-      * "ph" prefix = "purchase history"
-      * Example: "ph-a1b2c3d4e5f6..."
-    
-    Fallback Logic:
-    ---------------
-    - If genericName is empty, uses brandName
-    - If both are empty, uses placeholder "Medication"
-    - This ensures every record has a displayable name
-    
-    Example:
-        >>> extracted = {
-        ...     "genericName": "Aspirin",
-        ...     "strength": "500mg",
-        ...     "manufacturer": "Bayer",
-        ...     "notes": "Tablets, 100 count"
-        ... }
-        >>> build_inventory_record(extracted, ["/uploads/med123.jpg"])
-        {
-            "id": "med-1706476800123",
-            "genericName": "Aspirin",
-            "strength": "500mg",
-            "manufacturer": "Bayer",
-            "purchaseHistory": [{
-                "id": "ph-abc123...",
-                "date": "2026-01-29",
-                "quantity": "",
-                "notes": "Tablets, 100 count"
-            }],
-            "source": "photo_import",
-            "photoImported": True,
-            # ... other fields ...
-        }
-    
-    Metadata Fields:
-    ----------------
-    - source: "photo_import" 
-      * Tags where this record came from (photo vs manual vs CSV import)
-      * Used for filtering and audit trails
-      * Never displayed to user directly
-    
-    - photoImported: True
-      * Boolean flag indicating OCR origin
-      * Used to highlight potentially inaccurate data
-      * Allows bulk review of photo-imported medications
-    
-    Related Functions:
-        - Called by: _process_photo_group() after OCR extraction
-        - Consumes: normalize_medicine_fields() output
-        - Feeds into: _merge_inventory_record() for database save
-        - Interacts with: Photo job queue system
-    
-    Business Context:
-        This function bridges the gap between raw OCR output and the structured
-        inventory database. It's part of the "medication intake workflow" that
-        allows crew to quickly add medications by photographing packaging rather
-        than manual data entry.
-    """
-    # Generate unique medication ID using millisecond timestamp
-    # This ensures sortable, unique IDs without database round-trip
-    now_id = f"med-{int(datetime.now().timestamp() * 1000)}"
-    
-    # Prepare note for the initial purchase entry
-    # Preserve OCR notes if present, otherwise use generic import message
-    note = extracted.get("notes") or "Imported from medication photo."
-    
-    # Create the initial purchase/expiry entry
-    # This is the first entry in the purchaseHistory array
-    purchase_row = {
-        "id": f"ph-{uuid.uuid4().hex}",              # Unique purchase entry ID
-        "date": datetime.now().strftime("%Y-%m-%d"), # Date added (today)
-        "quantity": "",                               # Empty - user can fill later
-        "notes": note,                                # Import context or OCR notes
-    }
-    
-    # Tag source for traceability without polluting the display name
-    source = "photo_import"
-    
-    # Build complete medication record
-    return {
-        # === CORE IDENTIFICATION ===
-        "id": now_id,
-        
-        # Generic name is required - use brandName or placeholder as fallback
-        "genericName": extracted.get("genericName") or extracted.get("brandName") or "Medication",
-        
-        "brandName": extracted.get("brandName") or "",
-        
-        # === PHYSICAL PROPERTIES ===
-        "form": extracted.get("form") or "",                    # Tablet, capsule, liquid, etc.
-        "strength": extracted.get("strength") or "",            # Dosage strength
-        "currentQuantity": extracted.get("currentQuantity") or "", # Current stock level
-        "minThreshold": extracted.get("minThreshold") or "",    # Reorder threshold
-        "unit": extracted.get("unit") or "",                    # Unit of measure
-        
-        # === STORAGE & TRACKING ===
-        "storageLocation": extracted.get("storageLocation") or "",
-        "expiryDate": extracted.get("expiryDate") or "",        # Legacy single-date field
-        "batchLot": extracted.get("batchLot") or "",           # Batch/lot number
-        "controlled": bool(extracted.get("controlled") or False), # Controlled substance flag
-        "manufacturer": extracted.get("manufacturer") or "",
-        
-        # === CLINICAL INFORMATION ===
-        "primaryIndication": extracted.get("primaryIndication") or "",
-        "allergyWarnings": extracted.get("allergyWarnings") or "",
-        "standardDosage": extracted.get("standardDosage") or "",
-        
-        # === EXPIRY TRACKING ===
-        # purchaseHistory array allows tracking multiple batches with different expiry dates
-        "purchaseHistory": [purchase_row],
-        
-        # === METADATA ===
-        # These fields provide traceability and flag photo-sourced data
-        "source": source,              # "photo_import" for audit trail
-        "photoImported": True,         # Flag for UI highlighting/filtering
-    }
-
-
-def decode_generated_text(out, inputs, processor):
-    try:
-        prompt_len = inputs["input_ids"].shape[-1]
-        trimmed = out[0][prompt_len:]
-        # Prefer processor.decode when available
-        if hasattr(processor, "decode"):
-            return processor.decode(trimmed, skip_special_tokens=True).strip()
-        decoded = processor.batch_decode(trimmed.unsqueeze(0), skip_special_tokens=True)
-        return decoded[0].strip() if decoded else ""
-    except Exception:
-        try:
-            decoded = processor.batch_decode(out, skip_special_tokens=True)
-            return decoded[0].strip() if decoded else ""
-        except Exception:
-            return ""
-
-
-def run_medicine_photo_inference(image_path: Path, model_name: str, prompt_text: str = ""):
-    if not image_path.exists():
-        raise FileNotFoundError("Image not found on disk")
-    with MODEL_MUTEX:
-        load_model(model_name, allow_cpu_large=True)
-        image = Image.open(image_path).convert("RGB")
-        # Limit resolution to reduce VRAM/KV cache size
-        image.thumbnail((1024, 1024))
-        base_prompt = prompt_text.strip() or get_defaults().get("med_photo_prompt", "")
-        strict_prompt = (
-            "Extract medicine/package info. Respond with ONLY JSON like "
-            '{"generic_name":"","brand_name":"","form":"","strength":"","expiry_date":"","batch_lot":"","storage_location":"",'
-            '"manufacturer":"","indication":"","allergy_warnings":"","dosage":"","notes":""}. '
-            'Fill what you can from the image text; leave others "". Translate any non-English text to English before returning. '
-            "No prose, markdown, or apologies.\n"
-            + base_prompt
-        )
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": image},
-                    {"type": "text", "text": strict_prompt},
-                ],
-            }
-        ]
-        processor = models["processor"]
-        if processor is None:
-            raise RuntimeError("Vision processor not initialized")
-        device_target = models["model"].device
-
-        def generate_once(text_prompt: str, strict: bool = False):
-            try:
-                if hasattr(processor, "apply_chat_template"):
-                    chat = processor.apply_chat_template(messages, add_generation_prompt=True)
-                    inputs = processor(text=[chat], images=[image], return_tensors="pt").to(device_target)
-                else:
-                    raise AttributeError("apply_chat_template missing")
-            except Exception:
-                # Fallback for processors without usable chat templates
-                inputs = processor(images=[image], text=[text_prompt], return_tensors="pt").to(device_target)
-            gen_kwargs = {
-                "max_new_tokens": 160,
-                "temperature": 0.1 if not strict else 0.0,
-                "top_p": 0.9 if not strict else 1.0,
-                "do_sample": False,
-                "use_cache": True,
-            }
-            with torch.no_grad():
-                out = models["model"].generate(**inputs, **gen_kwargs)
-            return decode_generated_text(out, inputs, processor)
-
-        decoded = generate_once(strict_prompt, strict=True)
-    payload = extract_json_payload(decoded)
-    refusal_markers = ["sorry", "not trained", "as a base vlm", "cannot"]
-    if (not payload) and any(marker in decoded.lower() for marker in refusal_markers):
-        raise RuntimeError("PHOTO_MODEL_REFUSAL")
-    if not payload:
-        payload = {"notes": decoded}
-    normalized = normalize_medicine_fields(payload, decoded)
-    normalized["raw"] = decoded
-    return normalized
 
 
 def _has_creds(store):
@@ -2230,26 +1789,6 @@ async def get_context(request: Request, _=Depends(require_auth)):
     return {}
 
 
-@app.get("/api/medicines/queue")
-async def get_medicine_queue(request: Request, _=Depends(require_auth)):
-    # Queue is deprecated; return empty for compatibility
-    try:
-        return {"queue": []}
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-@app.get("/api/medicines/jobs")
-async def list_photo_jobs(request: Request, _=Depends(require_auth)):
-    """Legacy endpoint for medicine photo jobs; returns queue from table (may be empty)."""
-    try:
-        store = request.state.store
-        jobs = _load_photo_jobs(store)
-        return {"jobs": jobs}
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
 @app.post("/api/crew/photo")
 async def update_crew_photo(request: Request, _=Depends(require_auth)):
     try:
@@ -2316,280 +1855,72 @@ async def delete_crew_vaccine(crew_id: str, vaccine_id: str, _=Depends(require_a
         return JSONResponse({"error": "Server error"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-@app.delete("/api/medicines/jobs/{job_id}")
-async def delete_photo_job(job_id: str, request: Request, _=Depends(require_auth)):
-    store = request.state.store
-    jobs = _load_photo_jobs(store)
-    jobs = [j for j in jobs if j.get("id") != job_id]
-    _save_photo_jobs(store, jobs)
-    return {"jobs": jobs}
+def _safe_pad_token_id(tok):
+    pad = getattr(tok, "pad_token_id", None)
+    if pad is not None:
+        return pad
+    eos = getattr(tok, "eos_token_id", None)
+    if isinstance(eos, (list, tuple)):
+        return eos[0] if eos else None
+    return eos
 
 
-@app.post("/api/medicines/jobs/{job_id}/retry")
-async def retry_photo_job(job_id: str, request: Request, _=Depends(require_auth)):
-    store = request.state.store
-    updated, jobs = _update_job(
-        store,
-        job_id,
-        lambda j: j.update(
-            {
-                "status": "queued",
-                "error": "",
-                "started_at": "",
-                "completed_at": "",
-            }
-        ),
-    )
-    if updated is None:
-        return JSONResponse({"error": "Job not found"}, status_code=status.HTTP_404_NOT_FOUND)
-    return {"jobs": jobs}
+def _resolve_model_max_length(model, tok=None):
+    cfg = getattr(model, "config", None)
+    candidates = []
+    if cfg is not None:
+        for attr in ("max_position_embeddings", "max_seq_len", "max_sequence_length", "n_positions"):
+            val = getattr(cfg, attr, None)
+            if isinstance(val, int) and val > 0:
+                candidates.append(val)
+        text_cfg = getattr(cfg, "text_config", None)
+        if text_cfg is not None:
+            for attr in ("max_position_embeddings", "max_seq_len", "max_sequence_length", "n_positions"):
+                val = getattr(text_cfg, attr, None)
+                if isinstance(val, int) and val > 0:
+                    candidates.append(val)
+    if tok is not None:
+        tok_max = getattr(tok, "model_max_length", None)
+        # Ignore sentinel "very large" values used by tokenizers
+        if isinstance(tok_max, int) and 0 < tok_max < 1_000_000_000:
+            candidates.append(tok_max)
+    return min(candidates) if candidates else None
 
 
-async def _process_photo_group(photo_paths: List[Path], photo_urls: List[str], store):
-    primary_model = _resolve_med_model(store)
-    image_path = Path(photo_paths[0])
-    settings = db_op("settings", store=store)
-    photo_prompt = settings.get("med_photo_prompt") or get_defaults().get("med_photo_prompt", "")
-
-    try:
-        result = await asyncio.to_thread(run_medicine_photo_inference, image_path, primary_model, photo_prompt)
-        used_model = primary_model
-    except Exception as e:
-        raise RuntimeError(f"Photo inference failed for {primary_model}: {e}") from e
-
-    med_record = build_inventory_record(result, photo_urls)
-    entry = _merge_inventory_record(med_record, photo_urls, store)
-    entry.update({"result": result, "used_model": used_model})
-    return entry
-
-
-@app.post("/api/medicines/photos")
-async def enqueue_medicine_photos(request: Request, files: List[UploadFile] = File(...), group: bool = False, _=Depends(require_auth)):
-    try:
-        store = request.state.store
-        med_dir = store["med_uploads"]
-        if not files:
-            return JSONResponse({"error": "No files uploaded"}, status_code=status.HTTP_400_BAD_REQUEST)
-
-        mode = request.query_params.get("mode") or ("grouped" if group else "single")
-        grouped = mode.lower().startswith("group")
-        new_jobs = []
-        selected_model = _resolve_med_model(store)
-        if grouped:
-            filenames = []
-            paths = []
-            urls = []
-            for idx, file in enumerate(files):
-                content_type = (file.content_type or "").lower()
-                if not content_type.startswith("image/"):
-                    continue
-                suffix = _safe_suffix(file.filename, content_type)
-                new_id = f"medimg-{uuid.uuid4().hex}"
-                filename = f"{new_id}{suffix}"
-                raw = await file.read()
-                if not raw:
-                    continue
-                save_path = med_dir / filename
-                save_path.write_bytes(raw)
-                filenames.append(filename)
-                paths.append(str(save_path))
-                urls.append(f"/uploads/{store['slug']}/medicines/{filename}")
-            if not urls:
-                return JSONResponse({"error": "No valid image files were uploaded"}, status_code=status.HTTP_400_BAD_REQUEST)
-            job_id = f"job-{uuid.uuid4().hex}"
-            new_jobs.append(
-                {
-                    "id": job_id,
-                    "mode": "grouped",
-                    "paths": paths,
-                    "urls": urls,
-                    "created_at": datetime.now().isoformat(),
-                    "status": "queued",
-                    "preferred_model": selected_model,
-                    "error": "",
-                    "result": {},
-                }
-            )
-            log_job(f"[{store['label']}] queued grouped job {job_id} with {len(paths)} photo(s)")
-        else:
-            for idx, file in enumerate(files):
-                content_type = (file.content_type or "").lower()
-                if not content_type.startswith("image/"):
-                    continue
-                suffix = _safe_suffix(file.filename, content_type)
-                new_id = f"medimg-{uuid.uuid4().hex}"
-                filename = f"{new_id}{suffix}"
-                raw = await file.read()
-                if not raw:
-                    continue
-                save_path = med_dir / filename
-                save_path.write_bytes(raw)
-                url = f"/uploads/{store['slug']}/medicines/{filename}"
-                job_id = f"job-{uuid.uuid4().hex}"
-                new_jobs.append(
-                    {
-                        "id": job_id,
-                        "mode": "single",
-                        "paths": [str(save_path)],
-                        "urls": [url],
-                        "created_at": datetime.now().isoformat(),
-                        "status": "queued",
-                        "preferred_model": selected_model,
-                        "error": "",
-                        "result": {},
-                    }
-                )
-                log_job(f"[{store['label']}] queued single job {job_id} for photo {filename}")
-            if not new_jobs:
-                return JSONResponse({"error": "No valid image files were uploaded"}, status_code=status.HTTP_400_BAD_REQUEST)
-        jobs = _load_photo_jobs(store)
-        jobs.extend(new_jobs)
-        _save_photo_jobs(store, jobs)
-        log_job(f"[{store['label']}] total jobs queued: {len(jobs)}")
-        return {"jobs": new_jobs}
-    except Exception as e:
-        # Return the underlying error so the client can surface a useful message
-        return JSONResponse({"error": f"Unable to queue photos: {e}"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-def _decode_data_url(data_str: str, fallback_mime: str = "image/png"):
-    if not data_str:
-        return b"", fallback_mime
-    text = data_str.strip()
-    if text.startswith("data:") and "," in text:
-        try:
-            header, b64 = text.split(",", 1)
-            mime = fallback_mime
-            parts = header.split(";")[0].split(":")
-            if len(parts) == 2 and parts[1]:
-                mime = parts[1]
-            raw = base64.b64decode(b64)
-            return raw, mime or fallback_mime
-        except Exception:
-            pass
-    try:
-        return base64.b64decode(text), fallback_mime
-    except Exception:
-        return b"", fallback_mime
-
-
-@app.post("/api/medicines/photos/base64")
-async def enqueue_medicine_photos_base64(request: Request, payload: dict = Body(...), group: bool = False, _=Depends(require_auth)):
-    try:
-        store = request.state.store
-        med_dir = store["med_uploads"]
-        selected_model = _resolve_med_model(store)
-        files = payload.get("files") if isinstance(payload, dict) else None
-        if not files or not isinstance(files, list):
-            return JSONResponse({"error": "No files uploaded"}, status_code=status.HTTP_400_BAD_REQUEST)
-        mode = request.query_params.get("mode") or ("grouped" if group else "single")
-        grouped = mode.lower().startswith("group")
-        jobs_to_add = []
-        if grouped:
-            filenames = []
-            paths = []
-            urls = []
-            for idx, file in enumerate(files):
-                name = ""
-                mime = ""
-                data = ""
-                if isinstance(file, dict):
-                    name = file.get("name") or ""
-                    mime = file.get("type") or ""
-                    data = file.get("data") or ""
-                elif isinstance(file, str):
-                    data = file
-                raw, detected_mime = _decode_data_url(data, mime or "image/png")
-                if not raw:
-                    continue
-                suffix = _safe_suffix(name, detected_mime)
-                new_id = f"medimg-{uuid.uuid4().hex}"
-                filename = f"{new_id}{suffix}"
-                save_path = med_dir / filename
-                save_path.write_bytes(raw)
-                filenames.append(filename)
-                paths.append(str(save_path))
-                urls.append(f"/uploads/{store['slug']}/medicines/{filename}")
-            if not urls:
-                return JSONResponse({"error": "No valid image files were uploaded"}, status_code=status.HTTP_400_BAD_REQUEST)
-            job_id = f"job-{uuid.uuid4().hex}"
-            jobs_to_add = [
-                {
-                    "id": job_id,
-                    "mode": "grouped",
-                    "paths": paths,
-                    "urls": urls,
-                    "created_at": datetime.now().isoformat(),
-                    "status": "queued",
-                    "preferred_model": selected_model,
-                    "error": "",
-                    "result": {},
-                }
-            ]
-            log_job(f"[{store['label']}] queued grouped job {job_id} with {len(paths)} photo(s)")
-        else:
-            for idx, file in enumerate(files):
-                name = ""
-                mime = ""
-                data = ""
-                if isinstance(file, dict):
-                    name = file.get("name") or ""
-                    mime = file.get("type") or ""
-                    data = file.get("data") or ""
-                elif isinstance(file, str):
-                    data = file
-                raw, detected_mime = _decode_data_url(data, mime or "image/png")
-                if not raw:
-                    continue
-                suffix = _safe_suffix(name, detected_mime)
-                new_id = f"medimg-{uuid.uuid4().hex}"
-                filename = f"{new_id}{suffix}"
-                save_path = med_dir / filename
-                save_path.write_bytes(raw)
-                url = f"/uploads/{store['slug']}/medicines/{filename}"
-                jobs_to_add.append(
-                    {
-                        "id": f"job-{uuid.uuid4().hex}",
-                        "mode": "single",
-                        "paths": [str(save_path)],
-                        "urls": [url],
-                        "created_at": datetime.now().isoformat(),
-                        "status": "queued",
-                        "preferred_model": selected_model,
-                        "error": "",
-                        "result": {},
-                    }
-                )
-                log_job(f"[{store['label']}] queued single job for photo {filename}")
-            if not jobs_to_add:
-                return JSONResponse({"error": "No valid image files were uploaded"}, status_code=status.HTTP_400_BAD_REQUEST)
-        jobs = _load_photo_jobs(store)
-        jobs.extend(jobs_to_add)
-        _save_photo_jobs(store, jobs)
-        log_job(f"[{store['label']}] total jobs queued: {len(jobs)}")
-        return {"jobs": jobs_to_add}
-    except Exception as e:
-        return JSONResponse({"error": f"Unable to queue photos: {e}"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-@app.post("/api/medicines/photos/{item_id}/process")
-async def process_medicine_photo(item_id: str, request: Request, _=Depends(require_auth)):
-    return JSONResponse({"error": "Manual queue processing is disabled; photos are processed automatically."}, status_code=status.HTTP_400_BAD_REQUEST)
-
-
-@app.delete("/api/medicines/queue/{item_id}")
-async def delete_medicine_queue_item(item_id: str, request: Request, _=Depends(require_auth)):
-    return {"queue": []}
+def _cap_new_tokens(max_new_tokens, input_len, model_max_len):
+    if not isinstance(max_new_tokens, int):
+        return max_new_tokens
+    if model_max_len is None:
+        return max_new_tokens
+    if input_len >= model_max_len:
+        _dbg(f"generate_response: input_len {input_len} >= model_max_len {model_max_len}; forcing 1 new token")
+        return 1
+    max_allowed = max(model_max_len - input_len - 1, 1)
+    if max_new_tokens > max_allowed:
+        _dbg(
+            f"generate_response: clamping max_new_tokens {max_new_tokens} -> {max_allowed} "
+            f"(input_len={input_len}, model_max_len={model_max_len})"
+        )
+        return max_allowed
+    return max_new_tokens
 
 
 def _generate_response(model_choice: str, force_cpu_slow: bool, prompt: str, cfg: dict):
+    _dbg(
+        "generate_response: "
+        + f"model_choice={model_choice} force_cpu_slow={force_cpu_slow} "
+        + f"prompt_len={len(prompt) if prompt else 0} "
+        + f"cfg=tk:{cfg.get('tk')} t:{cfg.get('t')} p:{cfg.get('p')} rep:{cfg.get('rep_penalty')}"
+    )
     # If local inference is disabled (HF Space), fall back to HF Inference API
     if DISABLE_LOCAL_INFERENCE:
         if not HF_REMOTE_TOKEN:
+            _dbg("generate_response: remote path selected but HF_REMOTE_TOKEN missing")
             raise RuntimeError("REMOTE_TOKEN_MISSING")
         client = InferenceClient(token=HF_REMOTE_TOKEN)
         # Use requested model when provided (e.g., MedGemma) else default
         model_name = model_choice or REMOTE_MODEL
+        _dbg(f"generate_response: remote inference model={model_name}")
         resp = client.text_generation(
             prompt,
             model=model_name,
@@ -2597,28 +1928,75 @@ def _generate_response(model_choice: str, force_cpu_slow: bool, prompt: str, cfg
             temperature=cfg["t"],
             top_p=cfg["p"],
         )
-        return resp.strip()
+        out = resp.strip()
+        _dbg(f"generate_response: remote response_len={len(out)}")
+        return out
 
     with MODEL_MUTEX:
+        _dbg("generate_response: local inference path")
         load_model(model_choice, allow_cpu_large=force_cpu_slow)
+        _dbg(
+            f"generate_response: model_active={models.get('active_name')} "
+            f"is_text={models.get('is_text')} device={getattr(models.get('model'), 'device', 'n/a')}"
+        )
         if models["is_text"]:
             tok = models["tokenizer"]
+            processor = models.get("processor")
             messages = [{"role": "user", "content": prompt}]
-            inputs = tok.apply_chat_template(
-                messages,
-                add_generation_prompt=True,
-                return_tensors="pt",
-                return_dict=True,
-            ).to(models["model"].device)
-            out = models["model"].generate(
-                **inputs,
-                max_new_tokens=cfg["tk"],
-                temperature=cfg["t"],
-                top_p=cfg["p"],
-                repetition_penalty=cfg.get("rep_penalty", 1.1),
-                do_sample=(cfg["t"] > 0),
+            if processor is not None:
+                prompt_text = tok.apply_chat_template(
+                    messages,
+                    add_generation_prompt=True,
+                    tokenize=False,
+                )
+                inputs = processor(text=prompt_text, return_tensors="pt")
+                inputs = {k: v.to(models["model"].device) for k, v in inputs.items()}
+            else:
+                inputs = tok.apply_chat_template(
+                    messages,
+                    add_generation_prompt=True,
+                    return_tensors="pt",
+                    return_dict=True,
+                ).to(models["model"].device)
+            _dbg(f"generate_response: text inputs device={inputs['input_ids'].device}")
+            pad_id = _safe_pad_token_id(tok)
+            input_len = inputs["input_ids"].shape[-1]
+            model_max_len = _resolve_model_max_length(models["model"], tok)
+            max_new_tokens = _cap_new_tokens(cfg["tk"], input_len, model_max_len)
+            t_gen = time.perf_counter()
+            try:
+                with torch.inference_mode():
+                    out = models["model"].generate(
+                        **inputs,
+                        max_new_tokens=max_new_tokens,
+                        temperature=cfg["t"],
+                        top_p=cfg["p"],
+                        repetition_penalty=cfg.get("rep_penalty", 1.1),
+                        do_sample=(cfg["t"] > 0),
+                        pad_token_id=pad_id,
+                    )
+            except RuntimeError as e:
+                if "probability tensor contains either `inf`, `nan`" in str(e):
+                    _dbg("generate_response: NaN/Inf in sampling; retrying with greedy decode")
+                    with torch.inference_mode():
+                        out = models["model"].generate(
+                            **inputs,
+                            max_new_tokens=max_new_tokens,
+                            temperature=0.0,
+                            top_p=1.0,
+                            repetition_penalty=cfg.get("rep_penalty", 1.1),
+                            do_sample=False,
+                            pad_token_id=pad_id,
+                        )
+                else:
+                    raise
+            gen_len = out.shape[-1] - input_len
+            _dbg(
+                f"generate_response: generated_tokens={gen_len} max_new_tokens={max_new_tokens} "
+                f"hit_cap={gen_len >= max_new_tokens}"
             )
-            res = models["tokenizer"].decode(out[0][inputs["input_ids"].shape[-1] :], skip_special_tokens=True).strip()
+            _dbg(f"generate_response: text generate in {time.perf_counter() - t_gen:.2f}s")
+            res = tok.decode(out[0][inputs["input_ids"].shape[-1] :], skip_special_tokens=True).strip()
         else:
             processor = models["processor"]
             if processor is None:
@@ -2630,15 +2008,43 @@ def _generate_response(model_choice: str, force_cpu_slow: bool, prompt: str, cfg
                 return_dict=True,
                 return_tensors="pt",
             ).to(models["model"].device)
-            out = models["model"].generate(
-                **inputs,
-                max_new_tokens=cfg["tk"],
-                temperature=cfg["t"],
-                top_p=cfg["p"],
-                repetition_penalty=cfg.get("rep_penalty", 1.1),
-                do_sample=(cfg["t"] > 0),
+            _dbg(f"generate_response: vision inputs device={inputs['input_ids'].device}")
+            input_len = inputs["input_ids"].shape[-1]
+            model_max_len = _resolve_model_max_length(models["model"], None)
+            max_new_tokens = _cap_new_tokens(cfg["tk"], input_len, model_max_len)
+            t_gen = time.perf_counter()
+            try:
+                with torch.inference_mode():
+                    out = models["model"].generate(
+                        **inputs,
+                        max_new_tokens=max_new_tokens,
+                        temperature=cfg["t"],
+                        top_p=cfg["p"],
+                        repetition_penalty=cfg.get("rep_penalty", 1.1),
+                        do_sample=(cfg["t"] > 0),
+                    )
+            except RuntimeError as e:
+                if "probability tensor contains either `inf`, `nan`" in str(e):
+                    _dbg("generate_response: NaN/Inf in sampling; retrying with greedy decode")
+                    with torch.inference_mode():
+                        out = models["model"].generate(
+                            **inputs,
+                            max_new_tokens=max_new_tokens,
+                            temperature=0.0,
+                            top_p=1.0,
+                            repetition_penalty=cfg.get("rep_penalty", 1.1),
+                            do_sample=False,
+                        )
+                else:
+                    raise
+            gen_len = out.shape[-1] - input_len
+            _dbg(
+                f"generate_response: generated_tokens={gen_len} max_new_tokens={max_new_tokens} "
+                f"hit_cap={gen_len >= max_new_tokens}"
             )
+            _dbg(f"generate_response: vision generate in {time.perf_counter() - t_gen:.2f}s")
             res = processor.decode(out[0][inputs["input_ids"].shape[-1] :], skip_special_tokens=True).strip()
+        _dbg(f"generate_response: local response_len={len(res)}")
     return res
 
 
@@ -2657,6 +2063,11 @@ async def chat(request: Request, _=Depends(require_auth)):
         model_choice = form.get("model_choice")
         force_cpu_slow = form.get("force_28b") == "true"
         override_prompt = form.get("override_prompt") or ""
+        _dbg(
+            "chat request: "
+            + f"mode={mode} model_choice={model_choice} force_28b={force_cpu_slow} "
+            + f"private={is_priv} msg_len={len(msg) if msg else 0}"
+        )
         triage_consciousness = form.get("triage_consciousness") or ""
         triage_breathing_status = form.get("triage_breathing_status") or ""
         triage_pain_level = form.get("triage_pain_level") or ""
@@ -2690,9 +2101,16 @@ async def chat(request: Request, _=Depends(require_auth)):
         if override_prompt.strip():
             prompt = override_prompt.strip()
 
+        # Persist the exact prompt submitted for debug visibility in Settings.
+        try:
+            set_settings_meta(last_prompt_verbatim=prompt)
+        except Exception:
+            logger.exception("Unable to persist last_prompt_verbatim")
+
         try:
             res = await asyncio.to_thread(_generate_response, model_choice, force_cpu_slow, prompt, cfg)
         except RuntimeError as e:
+            _dbg(f"chat runtime error: {e}")
             if str(e) == "SLOW_28B_CPU":
                 return JSONResponse(
                     {
@@ -2794,6 +2212,7 @@ def model_cache_status(model_name: str):
     """Lightweight check: is the huggingface snapshot for this model present locally?"""
     safe = model_name.replace("/", "--")
     base = CACHE_DIR / "hub" / f"models--{safe}"
+    _dbg(f"cache_status: model={model_name} base={base}")
     if not base.exists():
         return False, "cache directory missing"
     snap_dir = base / "snapshots"
@@ -2811,6 +2230,7 @@ def model_cache_status(model_name: str):
             except Exception as e:
                 last_err = f"config load failed: {e}"
                 continue
+            _dbg(f"cache_status: valid snapshot {child}")
             return True, ""
         if not cfg.exists():
             last_err = "config.json missing"
@@ -2898,7 +2318,9 @@ def _resolve_local_model_dir(model_name: str):
     if not snap_dir.exists():
         return None
     candidates = sorted([p for p in snap_dir.iterdir() if p.is_dir()], key=lambda p: p.stat().st_mtime, reverse=True)
-    return str(candidates[0]) if candidates else None
+    resolved = str(candidates[0]) if candidates else None
+    _dbg(f"resolve_local_model_dir: model={model_name} resolved={resolved}")
+    return resolved
 
 
 def verify_required_models(download_missing: bool = False):
@@ -3088,16 +2510,9 @@ async def offline_ensure(_=Depends(require_auth)):
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-@app.post("/api/photos/cleanup")
-async def cleanup_pharmacy_photos():
-    """Legacy endpoint retained for compatibility; no action needed."""
-    return {"cleared": 0, "details": []}
-
-
 hb_models = _heartbeat("Housekeeping", interval=2.0)
 _startup_model_check()
 _background_verify_models()
-_start_photo_worker()
 hb_models.set()
 
 if __name__ == "__main__":
@@ -3125,7 +2540,7 @@ def _clear_store_data(store):
                 shutil.rmtree(path)
         except Exception:
             continue
-    # Clear uploads (including medicine photos)
+    # Clear uploads
     for path in store["uploads"].iterdir():
         try:
             if path.is_file() or path.is_symlink():

@@ -297,7 +297,6 @@ function ensurePharmacyDefaults(item) {
             ? item.purchaseHistory.map(ensurePurchaseDefaults)
             : [ensurePurchaseDefaults({})],
         source: item.source || '',
-        photoImported: !!item.photoImported,
         excludeFromResources: Boolean(item.excludeFromResources),
     };
     // If only a combined formStrength is available, backfill strength to keep validation lenient.
@@ -419,7 +418,7 @@ function scheduleSaveMedication(id, rerender = false) {
 }
 
 function getMedicationDisplayName(med) {
-    const clean = (val) => (val || '').replace(/\s*\(photo import\)$/i, '').trim();
+    const clean = (val) => (val || '').trim();
     const isPlaceholder = (val) => !val || /^medication\b/i.test(val);
     const generic = clean(med.genericName);
     const brand = clean(med.brandName);
@@ -987,7 +986,6 @@ async function addWhoMeds(triggerId = null) {
                 standardDosage: medTpl.adultDosage || '',
                 notes: `${medTpl.remarks || medTpl.consultDoctor || 'WHO ship list import'} | Added from WHO list on ${timestamp}`,
                 source: 'who_recommended',
-                photoImported: false,
                 purchaseHistory: [],
                 excludeFromResources: true,
             });

@@ -3087,7 +3087,6 @@
   }
 ]
 
--- med_photo_jobs --
 []
 
 -- patients --
@@ -3307,8 +3306,6 @@
   "rep_penalty": 1.1,
   "mission_context": "Offshore sailboat 1000 miles offshore. Professional medical help at least 5 days away.",
   "user_mode": "developer",
-  "med_photo_model": "qwen",
-  "med_photo_prompt": "You are a pharmacy intake assistant on a sailing vessel. Look at the medication photo and return JSON only with keys: generic_name, brand_name, form, strength, expiry_date, batch_lot, storage_location, manufacturer, indication, allergy_warnings, dosage, notes.",
   "vaccine_types": [
     "Diphtheria, Tetanus, and Pertussis (DTaP/Tdap)",
     "Polio (IPV/OPV)",

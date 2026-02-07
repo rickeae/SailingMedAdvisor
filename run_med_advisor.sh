@@ -2,7 +2,9 @@
 # run_med_advisor.sh - Secure startup script for MedGemma Advisor
 
 echo "=================================================="
-echo "🏥 Starting MedGemma Offshore Medical Advisor..."
+echo "SailingMeAdvisor - Offline emergency medical guidance for offshore sailors,"
+echo "powered by MedGemma (HAI-DEF)"
+echo ""
 echo "=================================================="
 
 # Check if virtual environment exists

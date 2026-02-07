@@ -1,9 +1,7 @@
 === WORKSPACE: Carl (id=1, slug=carl) ===
--- med_photo_jobs --
 []
 
 === WORKSPACE: Dave&Nathalie (id=2, slug=dave-nathalie) ===
--- med_photo_jobs --
 []
 
 === WORKSPACE: DaveG (id=3, slug=daveg) ===
@@ -3268,7 +3266,6 @@
   }
 ]
 
--- med_photo_jobs --
 []
 
 -- patients --
@@ -3488,8 +3485,6 @@
   "rep_penalty": 1.1,
   "mission_context": "Offshore sailboat 1000 miles offshore. Professional medical help at least 5 days away.",
   "user_mode": "developer",
-  "med_photo_model": "qwen",
-  "med_photo_prompt": "You are a pharmacy intake assistant on a sailing vessel. Look at the medication photo and return JSON only with keys: generic_name, brand_name, form, strength, expiry_date, batch_lot, storage_location, manufacturer, indication, allergy_warnings, dosage, notes.",
   "vaccine_types": [
     "Diphtheria, Tetanus, and Pertussis (DTaP/Tdap)",
     "Polio (IPV/OPV)",
@@ -5019,15 +5014,12 @@
 }
 
 === WORKSPACE: Demo Workspace Pre-Loaded with Sample Data (id=4, slug=demo-workspace-pre-loaded-with-sample-data) ===
--- med_photo_jobs --
 []
 
 === WORKSPACE: Julia&Jeff (id=5, slug=julia-jeff) ===
--- med_photo_jobs --
 []
 
 === WORKSPACE: Jeremy (id=6, slug=jeremy) ===
--- med_photo_jobs --
 []
 
 === WORKSPACE: Lorraine (id=7, slug=lorraine) ===
@@ -8233,10 +8225,8 @@
   }
 ]
 
--- med_photo_jobs --
 []
 
--- med_photo_queue --
 [
   {
     "id": "group-2c1e3a186b734df0aa61741bbfc4b4ed",
@@ -8480,8 +8470,6 @@
   "rep_penalty": 1.1,
   "mission_context": "Offshore sailboat 1000 miles offshore. Professional medical help at least 5 days away.",
   "user_mode": "advanced",
-  "med_photo_model": "qwen",
-  "med_photo_prompt": "You are a pharmacy intake assistant on a sailing vessel. Look at the medication photo and return JSON only with keys: generic_name, brand_name, form, strength, expiry_date, batch_lot, storage_location, manufacturer, indication, allergy_warnings, dosage, notes.",
   "vaccine_types": [
     "MMR",
     "DTaP",
@@ -10001,7 +9989,6 @@
 }
 
 === WORKSPACE: Pamela (id=8, slug=pamela) ===
--- med_photo_jobs --
 []
 
 === WORKSPACE: Rick (id=9, slug=rick) ===
@@ -13266,7 +13253,6 @@
   }
 ]
 
--- med_photo_jobs --
 []
 
 -- patients --
@@ -13486,8 +13472,6 @@
   "rep_penalty": 1.1,
   "mission_context": "Offshore sailboat 1000 miles offshore. Professional medical help at least 5 days away.",
   "user_mode": "developer",
-  "med_photo_model": "qwen",
-  "med_photo_prompt": "You are a pharmacy intake assistant on a sailing vessel. Look at the medication photo and return JSON only with keys: generic_name, brand_name, form, strength, expiry_date, batch_lot, storage_location, manufacturer, indication, allergy_warnings, dosage, notes.",
   "vaccine_types": [
     "Diphtheria, Tetanus, and Pertussis (DTaP/Tdap)",
     "Polio (IPV/OPV)",
@@ -15017,11 +15001,9 @@
 }
 
 === WORKSPACE: Tracy&John (id=10, slug=tracy-john) ===
--- med_photo_jobs --
 []
 
 === WORKSPACE: Wayne (id=11, slug=wayne) ===
--- med_photo_jobs --
 []
 
 === WORKSPACE: Darlene&Neal (id=16560, slug=darlene-neal) ===

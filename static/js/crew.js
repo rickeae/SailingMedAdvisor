@@ -620,7 +620,7 @@ function loadCrewData(data, history = [], settings = {}) {
             }
         };
         if (typeof refreshPromptPreview === 'function') {
-            refreshPromptPreview(true);
+            refreshPromptPreview();
         }
     }
     
@@ -1121,7 +1121,7 @@ async function autoSaveProfile(id) {
                 }
             }
             if (typeof refreshPromptPreview === 'function') {
-                refreshPromptPreview(true);
+                refreshPromptPreview();
             }
         }
     }, 1000);

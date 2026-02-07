@@ -39,15 +39,69 @@ const fetchJson = (window.Utils && window.Utils.fetchJson) ? window.Utils.fetchJ
 
 let equipmentCache = [];              // Cached equipment/consumables from server
 const equipmentSaveTimers = {};       // Debounce timers for auto-save
-let phoneSelectedFiles = [];          // Staged photos from mobile camera
-let desktopSelectedFiles = [];        // Staged photos from desktop (drag-drop or picker)
-let medPhotoJobs = [];                // Active photo processing jobs
-let medPhotoPollTimer = null;         // Polling interval for job status updates
-let syncedInventoryJobIds = new Set(); // Track which jobs already synced to pharmacy
-let medPhotoDropBound = false;        // Photo drop handler bound flag
-let medPhotoMode = 'single';          // Photo import mode
 
 const eqWorkspaceHeaders = workspaceHeaders;
+
+const DEFAULT_EQUIPMENT_CATEGORIES = [
+    'Diagnostics & monitoring',
+    'Instruments & tools',
+    'Airway & breathing',
+    'Splints & supports',
+    'Eye care',
+    'Dental',
+    'PPE',
+    'Survival & utility',
+    'Other'
+];
+const DEFAULT_CONSUMABLE_CATEGORIES = [
+    'Wound care & dressings',
+    'Burn care',
+    'Antiseptics & hygiene',
+    'Irrigation & syringes',
+    'Splints & supports',
+    'PPE',
+    'Survival & utility',
+    'Other'
+];
+
+function getEquipmentCategoryList() {
+    const list = window.CACHED_SETTINGS && Array.isArray(window.CACHED_SETTINGS.equipment_categories)
+        ? window.CACHED_SETTINGS.equipment_categories
+        : DEFAULT_EQUIPMENT_CATEGORIES;
+    return list.filter((v) => typeof v === 'string' && v.trim()).map((v) => v.trim());
+}
+
+function getConsumableCategoryList() {
+    const list = window.CACHED_SETTINGS && Array.isArray(window.CACHED_SETTINGS.consumable_categories)
+        ? window.CACHED_SETTINGS.consumable_categories
+        : DEFAULT_CONSUMABLE_CATEGORIES;
+    return list.filter((v) => typeof v === 'string' && v.trim()).map((v) => v.trim());
+}
+
+function buildCategoryOptions(list, selected) {
+    const opts = ['<option value="">Uncategorized</option>'];
+    const selectedNorm = (selected || '').trim().toLowerCase();
+    list.forEach((cat) => {
+        const value = cat;
+        const isSel = selectedNorm && selectedNorm === cat.trim().toLowerCase();
+        opts.push(`<option value="${value.replace(/\"/g, '&quot;')}" ${isSel ? 'selected' : ''}>${value}</option>`);
+    });
+    return opts.join('');
+}
+
+function refreshEquipmentCategoryOptions() {
+    const eqSelect = document.getElementById('eq-new-category');
+    if (eqSelect) eqSelect.innerHTML = buildCategoryOptions(getEquipmentCategoryList(), eqSelect.value);
+    const consSelect = document.getElementById('cons-new-category');
+    if (consSelect) consSelect.innerHTML = buildCategoryOptions(getConsumableCategoryList(), consSelect.value);
+}
+
+window.refreshEquipmentCategoriesFromSettings = function () {
+    refreshEquipmentCategoryOptions();
+    if (equipmentCache.length) {
+        renderEquipment(equipmentCache);
+    }
+};
 
 /**
  * Update section header count badges.
@@ -62,40 +116,6 @@ function updateSectionCount(id, count) {
     if (el) {
         el.textContent = `(${count})`;
     }
-}
-
-/**
- * Open mobile photo import overlay.
- * 
- * Mobile-Optimized Flow:
- * 1. Displays full-screen overlay with camera access
- * 2. Shows file input (triggers camera on mobile devices)
- * 3. Provides photo preview and staging area
- * 4. Allows mode selection (single vs grouped)
- * 5. Submits batch to processing queue
- * 
- * Called by phone-only buttons (hidden on desktop via CSS media queries).
- */
-async function openPhoneImportView() {
-    const overlay = document.getElementById('phone-import-overlay');
-    if (!overlay) return;
-    overlay.style.display = 'flex';
-    document.body.style.overflow = 'hidden';
-    // ensure input is present for iOS
-    const input = document.getElementById('phone-med-photo-input');
-    if (input) input.style.display = 'block';
-    bindPhoneInput();
-    renderPhonePreview();
-}
-
-/**
- * Close mobile photo import overlay.
- * Restores body scroll and hides overlay.
- */
-function closePhoneImportView() {
-    const overlay = document.getElementById('phone-import-overlay');
-    if (overlay) overlay.style.display = 'none';
-    document.body.style.overflow = '';
 }
 
 /**
@@ -173,6 +193,7 @@ async function loadEquipment(expandId = null) {
     if (!list) return;
     list.innerHTML = '';
     try {
+        refreshEquipmentCategoryOptions();
         const data = await fetchJson('/api/data/tools');
         equipmentCache = (Array.isArray(data) ? data : []).map(ensureEquipmentDefaults);
         renderEquipment(equipmentCache, expandId);
@@ -202,485 +223,6 @@ function classifyEquipment(item) {
     if (type === 'medication' || category.includes('medication')) return 'medication';
     if (type === 'consumable') return 'consumable';
     return 'equipment';
-}
-
-/**
- * Bind change handler to mobile photo input.
- * 
- * On mobile devices, file input with accept="image/*" automatically
- * triggers the device camera. This handler stages captured photos
- * in the preview area for batch submission.
- * 
- * Uses dataset flag to prevent duplicate binding.
- */
-function bindPhoneInput() {
-    const input = document.getElementById('phone-med-photo-input');
-    if (!input || input.dataset.bound) return;
-    input.dataset.bound = 'true';
-    input.addEventListener('change', () => {
-        const files = Array.from(input.files || []);
-        if (!files.length) return;
-        phoneSelectedFiles.push(...files);
-        renderPhonePreview();
-        input.value = '';
-    });
-}
-
-/**
- * Set medicine photo import mode.
- * 
- * Modes:
- * - 'single': Each photo → separate medication (default)
- * - 'grouped': All photos → one medication (multiple angles)
- * 
- * Updates UI labels to explain current mode behavior.
- * 
- * @param {string} mode - 'single' or 'grouped'
- */
-function setMedPhotoMode(mode) {
-    medPhotoMode = mode === 'grouped' ? 'grouped' : 'single';
-    const labels = document.querySelectorAll('[data-med-photo-mode-label]');
-    labels.forEach((el) => {
-        if (medPhotoMode === 'grouped') {
-            el.textContent = 'Import these photos as one medicine record';
-        } else {
-            el.textContent = 'Import each photo as its own medicine';
-        }
-    });
-}
-
-/**
- * Render preview of staged mobile photos.
- * 
- * Creates thumbnail cards for each photo with:
- * - Photo number label
- * - Image preview (160px height)
- * - Remove button
- * 
- * Updates count badge showing total photos ready for import.
- */
-function renderPhonePreview() {
-    const preview = document.getElementById('phone-photo-preview');
-    const count = document.getElementById('phone-photo-count');
-    if (count) count.textContent = phoneSelectedFiles.length ? `${phoneSelectedFiles.length} photo(s) ready` : 'No photos selected.';
-    if (!preview) return;
-    preview.innerHTML = '';
-    phoneSelectedFiles.forEach((file, idx) => {
-        const url = URL.createObjectURL(file);
-        const box = document.createElement('div');
-        box.style.cssText = 'border:1px solid #d0d7e2; border-radius:6px; padding:12px; background:#fff; display:flex; flex-direction:column; gap:8px; width:200px;';
-        box.innerHTML = `<div style="font-weight:700;">Photo ${idx + 1}</div><img src="${url}" style="width:100%; height:160px; object-fit:cover; border-radius:4px;"><button class="btn btn-sm" style="background:var(--red); width:100%;" onclick="removePhonePhoto(${idx})">Remove</button>`;
-        preview.appendChild(box);
-    });
-}
-
-/**
- * Render preview of staged desktop photos.
- * 
- * Similar to renderPhonePreview but smaller cards (90px height) optimized
- * for desktop layout where multiple photos appear side-by-side.
- */
-function renderDesktopPreview() {
-    const preview = document.getElementById('med-photo-preview');
-    const sel = document.getElementById('med-photo-selected');
-    if (sel) sel.textContent = desktopSelectedFiles.length ? `${desktopSelectedFiles.length} file(s) selected` : 'No files selected.';
-    if (!preview) return;
-    preview.innerHTML = '';
-    desktopSelectedFiles.forEach((file, idx) => {
-        const url = URL.createObjectURL(file);
-        const box = document.createElement('div');
-        box.style.cssText = 'border:1px solid #d0d7e2; border-radius:6px; padding:6px; background:#fff; display:flex; flex-direction:column; gap:6px; width:140px;';
-        box.innerHTML = `<div style="font-size:11px; font-weight:700;">Photo ${idx + 1}</div><img src="${url}" style="width:100%; height:90px; object-fit:cover; border-radius:4px;"><button class="btn btn-sm" style="background:var(--red); width:100%;" onclick="removeDesktopPhoto(${idx})">Remove</button>`;
-        preview.appendChild(box);
-    });
-}
-
-/**
- * Render medicine photo processing job queue.
- * 
- * Displays all active jobs (queued, processing, completed, failed) with:
- * - Status badge (color-coded by state)
- * - Photo thumbnails
- * - Extracted medication info (when available)
- * - Model used for extraction
- * - Retry button (for failed jobs)
- * - Delete button (all jobs)
- * 
- * Renders to both desktop and mobile containers for consistent experience.
- * 
- * Job Status States:
- * - queued: Yellow badge, awaiting processing
- * - processing: Blue badge, AI model actively extracting
- * - completed: Green badge, synced to inventory
- * - failed: Red badge, extraction error (can retry)
- * 
- * Auto-sync Feature:
- * Completed jobs with inventory_id automatically trigger pharmacy reload
- * to show newly imported medications.
- */
-function renderMedPhotoJobs() {
-    const container = document.getElementById('med-photo-queue');
-    const phoneContainer = document.getElementById('phone-import-queue');
-    const renderTarget = (el) => {
-        if (!el) return;
-        if (!medPhotoJobs.length) {
-            el.innerHTML =
-                '<div style="padding:8px; border:1px dashed #d8e0f0; border-radius:8px; color:#555; background:#f9fbff;">No photo jobs yet.</div>';
-            return;
-        }
-        const statusColors = {
-            queued: { bg: '#fff7e0', color: '#a66b00', label: 'Queued' },
-            processing: { bg: '#e3f2fd', color: '#1565c0', label: 'Processing' },
-            completed: { bg: 'var(--inquiry)', color: '#fff', label: 'Done' },
-            failed: { bg: '#ffebee', color: '#c62828', label: 'Failed' },
-        };
-        el.innerHTML = medPhotoJobs
-            .map((job) => {
-                const status = statusColors[job.status] || statusColors.queued;
-                const thumbs = Array.isArray(job.urls) ? job.urls : [];
-                const thumbHtml =
-                    thumbs && thumbs.length
-                        ? thumbs
-                              .map(
-                                  (u, idx) =>
-                                      `<img src="${u}" alt="Photo ${idx + 1}" style="width:60px; height:60px; object-fit:cover; border:1px solid #ccc; border-radius:6px;">`
-                              )
-                              .join('<span style="width:6px;"></span>')
-                        : '';
-                const summary = job.result || {};
-                const title =
-                    [summary.genericName, summary.brandName, summary.strength].filter(Boolean).join(' · ') ||
-                    summary.raw ||
-                    'Awaiting processing';
-                const modelLabel = job.used_model || job.preferred_model || '';
-                const modelLine = modelLabel ? `<div style="font-size:12px; color:#555;">Model: ${modelLabel}</div>` : '';
-                const err = job.error ? `<div style="font-size:12px; color:#c62828; margin-top:4px;">${job.error}</div>` : '';
-                const retryBtn =
-                    job.status === 'failed'
-                        ? `<button class="btn btn-sm" style="background:var(--dark);" onclick="retryMedPhotoJob('${job.id}')">Retry</button>`
-                        : '';
-                const deleteBtn = `<button class="btn btn-sm" style="background:var(--red);" onclick="deleteMedPhotoJob('${job.id}')">Delete</button>`;
-                return `
-                <div style="border:1px solid #d9e5f7; border-radius:8px; padding:10px; background:#fff; margin-bottom:8px;">
-                    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:6px;">
-                        <span style="font-size:12px; font-weight:800; padding:2px 8px; border-radius:999px; background:${status.bg}; color:${status.color};">${status.label}</span>
-                        <span style="font-size:12px; color:#555;">Mode: ${job.mode || 'single'}</span>
-                        ${modelLabel ? `<span style="font-size:12px; color:#555;">Model: ${modelLabel}</span>` : ''}
-                        ${job.inventory_id ? `<span style="font-size:12px; color:var(--inquiry);">Added to inventory</span>` : ''}
-                    </div>
-                    <div style="display:flex; gap:10px; align-items:flex-start; flex-wrap:wrap;">
-                        ${thumbHtml}
-                        <div style="font-weight:700; color:#1f2d3d;">${title}</div>
-                    </div>
-                    ${modelLine}
-                    ${err}
-                    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:6px;">
-                        ${retryBtn}
-                        ${deleteBtn}
-                    </div>
-                </div>
-                `;
-            })
-            .join('');
-    };
-    renderTarget(container);
-    renderTarget(phoneContainer);
-}
-
-/**
- * Load and monitor medicine photo processing queue.
- * 
- * Initialization:
- * 1. Binds drag-and-drop handlers (if not already bound)
- * 2. Fetches current job list from server
- * 3. Renders job status cards
- * 4. Checks for newly completed jobs
- * 5. Auto-syncs completed jobs to pharmacy inventory
- * 6. Starts polling timer (5-second intervals)
- * 
- * Polling Strategy:
- * Continuously polls /api/medicines/jobs every 5 seconds to update
- * job statuses in real-time. Shows progress as AI model processes photos.
- * 
- * Auto-Sync Logic:
- * Tracks which jobs have already been synced (syncedInventoryJobIds set).
- * When a job completes and has inventory_id, triggers loadPharmacy() once
- * to refresh medication list with newly imported items.
- * 
- * Called By:
- * - Equipment tab initialization
- * - After submitting new photo batch
- * - Manual refresh requests
- */
-async function loadMedPhotoQueue() {
-    bindMedPhotoDrop();
-    const fetchJobs = async () => {
-        try {
-            const data = await fetchJson('/api/medicines/jobs', { headers: eqWorkspaceHeaders() });
-            medPhotoJobs = Array.isArray(data.jobs) ? data.jobs : [];
-            renderMedPhotoJobs();
-            const newlyCompleted = medPhotoJobs.filter((j) => j.status === 'completed' && j.inventory_id && !syncedInventoryJobIds.has(j.id));
-            if (newlyCompleted.length && typeof loadPharmacy === 'function') {
-                loadPharmacy();
-                newlyCompleted.forEach((j) => syncedInventoryJobIds.add(j.id));
-            }
-        } catch (err) {
-            const container = document.getElementById('med-photo-queue');
-            if (container) {
-                container.innerHTML = `<div style="color:red;">Unable to load photo jobs: ${err.message}</div>`;
-            }
-            const phoneQueue = document.getElementById('phone-import-queue');
-            if (phoneQueue) {
-                phoneQueue.innerHTML = `<div style="color:red;">Unable to load photo jobs: ${err.message}</div>`;
-            }
-        }
-    };
-    await fetchJobs();
-    if (!medPhotoPollTimer) {
-        medPhotoPollTimer = setInterval(fetchJobs, 5000);
-    }
-}
-
-/**
- * Check if file is an image based on MIME type or extension.
- * 
- * Detection Strategy:
- * 1. Check MIME type starts with "image/"
- * 2. Check filename extension (.png, .jpg, .jpeg, .webp, .bmp, .heic, .heif)
- * 
- * Handles edge cases:
- * - Files without MIME type (some mobile browsers)
- * - HEIC/HEIF formats (iOS camera default)
- * - Missing file type metadata
- * 
- * @param {File} file - File object to check
- * @returns {boolean} True if likely an image
- */
-function isLikelyImage(file) {
-    if (!file) return false;
-    const type = (file.type || '').toLowerCase();
-    if (type.startsWith('image/')) return true;
-    const name = (file.name || '').toLowerCase();
-    return ['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.heic', '.heif'].some((ext) => name.endsWith(ext));
-}
-
-function clearDesktopPhotoSelection() {
-    const input = document.getElementById('med-photo-input');
-    if (input) input.value = '';
-    desktopSelectedFiles = [];
-    renderDesktopPreview();
-}
-
-/**
- * Generate ASCII-safe filename for upload.
- * 
- * Some backend systems struggle with non-ASCII characters (Unicode, emojis)
- * in filenames. This ensures safe transmission and storage.
- * 
- * Strategy:
- * - If filename is pure ASCII (0x20-0x7E), use original
- * - Otherwise, generate: phone-photo-[timestamp]-[index].jpg
- * 
- * Use Cases:
- * - iOS photos with special characters
- * - Filenames with non-Latin scripts
- * - Files with emojis or symbols
- * 
- * @param {File} file - File to generate name for
- * @param {number} idx - Index in batch (for uniqueness)
- * @returns {string} ASCII-safe filename
- */
-function safeAsciiName(file, idx) {
-    const hasAsciiName = file && typeof file.name === 'string' && /^[\x20-\x7E]+$/.test(file.name);
-    return hasAsciiName ? file.name : `phone-photo-${Date.now()}-${idx + 1}.jpg`;
-}
-
-/**
- * Convert File object to base64 data URL.
- * 
- * Used as fallback when multipart/form-data upload fails (some proxies,
- * firewalls, or network conditions). Allows sending images as JSON strings.
- * 
- * Process:
- * 1. Creates FileReader
- * 2. Reads file as data URL (base64)
- * 3. Returns promise that resolves with data URL string
- * 
- * Format: "data:image/jpeg;base64,/9j/4AAQSkZJRg..."
- * 
- * Trade-off: ~33% larger than binary but more universally compatible.
- * 
- * @param {File} file - File to convert
- * @returns {Promise<string>} Resolves with base64 data URL
- */
-function fileToDataUrl(file) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result);
-        reader.onerror = (e) => reject(e);
-        reader.readAsDataURL(file);
-    });
-}
-
-/**
- * Queue photos using JSON/base64 fallback endpoint.
- * 
- * Fallback Strategy:
- * When multipart/form-data upload fails (corporate proxies, restrictive
- * firewalls, or API gateway limitations), this endpoint accepts photos
- * as base64-encoded JSON payload.
- * 
- * Process:
- * 1. Converts each File to base64 data URL
- * 2. Builds JSON payload with file metadata
- * 3. POSTs to /api/medicines/photos/base64
- * 4. Returns job IDs for tracking
- * 
- * Trade-offs:
- * ✓ Works through restrictive networks
- * ✓ No multipart parsing issues
- * ✗ ~33% larger payload
- * ✗ Higher memory usage
- * ✗ Slower for large batches
- * 
- * @param {Array<File>} images - Image files to queue
- * @param {Object} opts - Options including mode ('single'|'grouped')
- * @returns {Promise<Object>} API response with job IDs
- */
-async function queuePhotosViaJson(images, opts = {}) {
-    const payload = {
-        files: await Promise.all(
-            images.map(async (file, idx) => ({
-                name: safeAsciiName(file, idx),
-                type: file.type || '',
-                data: await fileToDataUrl(file),
-            }))
-        ),
-    };
-    const res = await fetch(`/api/medicines/photos/base64?mode=${opts.mode || 'single'}`, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: eqWorkspaceHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify(payload),
-    });
-    const rawText = await res.text();
-    let data = {};
-    try {
-        data = rawText ? JSON.parse(rawText) : {};
-    } catch (err) {
-        data = {};
-    }
-    if (!res.ok || data.error) throw new Error(data.error || rawText || `Status ${res.status}`);
-    return data;
-}
-
-/**
- * Import medicine photos with automatic fallback handling.
- * 
- * Primary Import Path (Multipart Upload):
- * 1. Filters to image files only
- * 2. Generates safe ASCII filenames
- * 3. Builds FormData with files
- * 4. POSTs to /api/medicines/photos
- * 5. Creates job entries in processing queue
- * 
- * Automatic Fallback (Base64/JSON):
- * If multipart upload fails, automatically retries using queuePhotosViaJson()
- * which sends photos as base64-encoded JSON. Most networks accept this.
- * 
- * Status Updates:
- * If statusEl provided, shows progress messages:
- * - "Importing photos…"
- * - "Queued N job(s) from M photo(s)."
- * - "Unable to import: [error]"
- * 
- * Side Effects:
- * - Triggers loadMedPhotoQueue() to start polling
- * - Triggers loadPharmacy() to prepare for new medications
- * 
- * @param {Array<File>} files - Files to import
- * @param {Object} opts - Options: mode, statusEl, __triedJson
- * @returns {Promise<Object>} {success: boolean, jobs: Array}
- */
-async function importPhotosFromFiles(files, opts = {}) {
-    const images = Array.from(files || []).filter(isLikelyImage);
-    if (!images.length) {
-        alert('Please select image files.');
-        return { success: false };
-    }
-    const total = images.length;
-    const mode = opts.mode || 'single';
-    const statusEl = opts.statusEl || null;
-    const setStatus = (msg, isError = false) => {
-        if (!statusEl) return;
-        statusEl.textContent = msg;
-        statusEl.style.color = isError ? 'var(--red)' : '#1f2d3d';
-    };
-    const fd = new FormData();
-    images.forEach((file, idx) => {
-        const safeName = safeAsciiName(file, idx);
-        fd.append('files', file, safeName);
-    });
-    setStatus('Importing photos…');
-    try {
-        const res = await fetch(`/api/medicines/photos?mode=${mode}`, {
-            method: 'POST',
-            body: fd,
-            credentials: 'same-origin',
-            headers: eqWorkspaceHeaders(),
-        });
-        const rawText = await res.text();
-        let data = {};
-        try {
-            data = rawText ? JSON.parse(rawText) : {};
-        } catch (err) {
-            data = {};
-        }
-        if (!res.ok || data.error) throw new Error(data.error || rawText || `Status ${res.status}`);
-        const jobs = Array.isArray(data.jobs) ? data.jobs : [];
-        const count = jobs.length;
-        setStatus(`Queued ${count} job(s) from ${total} photo(s).`);
-        await loadMedPhotoQueue();
-        if (typeof loadPharmacy === 'function') {
-            loadPharmacy();
-        }
-        return { success: true, jobs };
-    } catch (err) {
-        console.error('Photo import failed', err);
-        setStatus(`Unable to import ${total} photo(s): ${err.message}`, true);
-        // fallback to JSON if multipart fails
-        if (!opts.__triedJson) {
-            try {
-                const data = await queuePhotosViaJson(images, { mode, __triedJson: true });
-                const jobs = Array.isArray(data.jobs) ? data.jobs : [];
-                setStatus(`Queued ${jobs.length} job(s) from ${total} photo(s).`);
-                await loadMedPhotoQueue();
-                if (typeof loadPharmacy === 'function') {
-                    loadPharmacy();
-                }
-                return { success: true, jobs };
-            } catch (err2) {
-                setStatus(`Unable to import ${total} photo(s): ${err2.message}`, true);
-            }
-        }
-        return { success: false };
-    }
-}
-
-function removePhonePhoto(idx) {
-    phoneSelectedFiles = phoneSelectedFiles.filter((_, i) => i !== idx);
-    renderPhonePreview();
-}
-
-function removeDesktopPhoto(idx) {
-    desktopSelectedFiles = desktopSelectedFiles.filter((_, i) => i !== idx);
-    renderDesktopPreview();
-}
-
-function getSelectedPhotoMode(prefix = '') {
-    const name = prefix ? `${prefix}-med-photo-mode` : 'med-photo-mode';
-    const checked = document.querySelector(`input[name="${name}"]:checked`);
-    return checked ? checked.value : medPhotoMode;
 }
 
 function showImportStatus(id, message, isError = false) {
@@ -775,54 +317,6 @@ function downloadTabDelimitedFile(filename, content) {
     link.click();
     document.body.removeChild(link);
     setTimeout(() => URL.revokeObjectURL(url), 1500);
-}
-
-async function importDesktopMedicinePhotos() {
-    const input = document.getElementById('med-photo-input');
-    const statusEl = document.getElementById('med-photo-status');
-    if (!desktopSelectedFiles.length) {
-        alert('Select one or more medicine photos first.');
-        return;
-    }
-    const mode = getSelectedPhotoMode('desktop');
-    await importPhotosFromFiles(desktopSelectedFiles, { mode, statusEl });
-    clearDesktopPhotoSelection();
-}
-
-async function importPhoneMedicinePhotos() {
-    const statusEl = document.getElementById('phone-photo-status');
-    if (!phoneSelectedFiles.length) {
-        alert('Tap to take one or more medicine photos first.');
-        return;
-    }
-    const mode = getSelectedPhotoMode('phone');
-    await importPhotosFromFiles(phoneSelectedFiles, { mode, statusEl });
-    phoneSelectedFiles = [];
-    renderPhonePreview();
-}
-
-async function retryMedPhotoJob(id) {
-    try {
-        const res = await fetch(`/api/medicines/jobs/${id}/retry`, { method: 'POST', credentials: 'same-origin', headers: eqWorkspaceHeaders() });
-        const data = await res.json();
-        if (!res.ok || data.error) throw new Error(data.error || `Status ${res.status}`);
-        medPhotoJobs = Array.isArray(data.jobs) ? data.jobs : medPhotoJobs;
-        renderMedPhotoJobs();
-    } catch (err) {
-        alert(`Unable to retry job: ${err.message}`);
-    }
-}
-
-async function deleteMedPhotoJob(id) {
-    try {
-        const res = await fetch(`/api/medicines/jobs/${id}`, { method: 'DELETE', credentials: 'same-origin', headers: eqWorkspaceHeaders() });
-        const data = await res.json();
-        if (!res.ok || data.error) throw new Error(data.error || `Status ${res.status}`);
-        medPhotoJobs = Array.isArray(data.jobs) ? data.jobs : medPhotoJobs.filter((j) => j.id !== id);
-        renderMedPhotoJobs();
-    } catch (err) {
-        alert(`Unable to delete job: ${err.message}`);
-    }
 }
 
 async function exportConsumables() {
@@ -1035,52 +529,6 @@ async function exportEquipmentItems() {
     }
 }
 
-function bindMedPhotoDrop() {
-    if (medPhotoDropBound) return;
-    const dropZone = document.getElementById('med-photo-drop');
-    const input = document.getElementById('med-photo-input');
-    const sel = document.getElementById('med-photo-selected');
-    const preview = document.getElementById('med-photo-preview');
-    if (!dropZone || !input) return;
-
-    const resetStyle = () => {
-        dropZone.style.borderColor = '#ccc';
-        dropZone.style.background = 'rgba(46, 125, 50, 0.08)';
-    };
-
-    dropZone.addEventListener('click', () => input.click());
-    dropZone.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        dropZone.style.borderColor = 'var(--inquiry)';
-        dropZone.style.background = 'rgba(46, 125, 50, 0.16)';
-    });
-    dropZone.addEventListener('dragleave', (e) => {
-        e.preventDefault();
-        resetStyle();
-    });
-    dropZone.addEventListener('drop', async (e) => {
-        e.preventDefault();
-        resetStyle();
-        if (e.dataTransfer && e.dataTransfer.files) {
-            const files = Array.from(e.dataTransfer.files || []).filter(isLikelyImage);
-            if (!files.length) {
-                alert('Please drop image files only.');
-                return;
-            }
-            desktopSelectedFiles.push(...files);
-            renderDesktopPreview();
-        }
-    });
-    input.addEventListener('change', () => {
-        const files = Array.from(input.files || []).filter(isLikelyImage);
-        if (files.length) {
-            desktopSelectedFiles.push(...files);
-        }
-        renderDesktopPreview();
-    });
-    medPhotoDropBound = true;
-}
-
 /**
  * Render all equipment items to appropriate lists.
  * 
@@ -1136,6 +584,8 @@ function renderEquipmentCard(item, expandId = null) {
     const itemType = (item.type || '').toLowerCase() || 'durable';
     const isConsumable = itemType === 'consumable';
     const isEquipment = itemType === 'durable';
+    const equipmentCategories = getEquipmentCategoryList();
+    const consumableCategories = getConsumableCategoryList();
     const lowStock = item.minPar && Number(item.totalQty) <= Number(item.minPar);
     const expirySoon = item.expiryDate && daysUntil(item.expiryDate) <= 60;
     const headerNote = [lowStock ? 'Low Stock' : null, expirySoon ? 'Expiring Soon' : null, item.status && item.status !== 'In Stock' ? item.status : null]
@@ -1182,6 +632,12 @@ function renderEquipmentCard(item, expandId = null) {
                         <input id="eq-qty-${item.id}" type="text" value="${item.totalQty}" style="width:100%; padding:8px;" oninput="scheduleSaveEquipment('${item.id}')">
                     </div>
                     <div style="grid-column: span 2;">
+                        <label style="font-weight:700; font-size:12px;">Category</label>
+                        <select id="eq-cat-${item.id}" style="width:100%; padding:8px;" onchange="scheduleSaveEquipment('${item.id}')">
+                            ${buildCategoryOptions(consumableCategories, item.category)}
+                        </select>
+                    </div>
+                    <div style="grid-column: span 2;">
                         <div class="dev-tag">dev:consumable-detail-notes</div>
                         <label style="font-weight:700; font-size:12px;">Notes</label>
                         <textarea id="eq-notes-${item.id}" style="width:100%; padding:8px; min-height:60px;" oninput="scheduleSaveEquipment('${item.id}')">${item.notes || ''}</textarea>
@@ -1214,6 +670,12 @@ function renderEquipmentCard(item, expandId = null) {
                 <div>
                     <label style="font-weight:700; font-size:12px;">Quantity</label>
                     <input id="eq-qty-${item.id}" type="text" value="${item.totalQty}" style="width:100%; padding:8px;" oninput="scheduleSaveEquipment('${item.id}')">
+                </div>
+                <div style="grid-column: span 2;">
+                    <label style="font-weight:700; font-size:12px;">Category</label>
+                    <select id="eq-cat-${item.id}" style="width:100%; padding:8px;" onchange="scheduleSaveEquipment('${item.id}')">
+                        ${buildCategoryOptions(equipmentCategories, item.category)}
+                    </select>
                 </div>
                 <div style="grid-column: span 2;">
                     <label style="font-weight:700; font-size:12px;">Storage Location</label>
@@ -1388,7 +850,7 @@ async function addMedicalStore() {
     const location = getNewEquipmentVal('eq-new-loc');
     const notes = document.getElementById('eq-new-notes')?.value || '';
     const exclude = document.getElementById('eq-new-exclude')?.checked || false;
-    const category = 'Medical Equipment';
+    const category = getNewEquipmentVal('eq-new-category');
     const newId = `eq-${Date.now()}`;
     const newItem = ensureEquipmentDefaults({
         id: newId,
@@ -1413,7 +875,7 @@ async function addMedicalStore() {
     });
 
     // Clear the add form for the next entry
-    ['eq-new-name','eq-new-loc','eq-new-qty','eq-new-notes']
+    ['eq-new-name','eq-new-loc','eq-new-qty','eq-new-notes','eq-new-category']
         .forEach((id) => { const el = document.getElementById(id); if (el) el.value = ''; });
     const newExclude = document.getElementById('eq-new-exclude');
     if (newExclude) newExclude.checked = false;
@@ -1480,10 +942,8 @@ async function addMedicationItem() {
         sortCategory,
         verified,
         notes,
-        photos: [],
         purchaseHistory,
         source: 'manual_entry',
-        photoImported: false,
         excludeFromResources: exclude,
     };
 
@@ -1562,7 +1022,7 @@ async function addConsumableItem() {
     const quantity = getNewEquipmentVal('cons-new-qty');
     const notes = document.getElementById('cons-new-notes')?.value || '';
     const exclude = document.getElementById('cons-new-exclude')?.checked || false;
-    const category = 'Consumable';
+    const category = getNewEquipmentVal('cons-new-category');
     const newId = `eq-${Date.now()}`;
     const newItem = ensureEquipmentDefaults({
         id: newId,
@@ -1586,7 +1046,7 @@ async function addConsumableItem() {
         credentials: 'same-origin',
     });
 
-    ['cons-new-name','cons-new-qty','cons-new-notes']
+    ['cons-new-name','cons-new-qty','cons-new-notes','cons-new-category']
         .forEach((id) => { const el = document.getElementById(id); if (el) el.value = ''; });
     const consumableExclude = document.getElementById('cons-new-exclude');
     if (consumableExclude) consumableExclude.checked = false;
@@ -1668,14 +1128,6 @@ window.addMedicationItem = addMedicationItem;
 window.addConsumableItem = addConsumableItem;
 window.deleteEquipment = deleteEquipment;
 window.scheduleSaveEquipment = scheduleSaveEquipment;
-window.loadMedPhotoQueue = loadMedPhotoQueue;
-window.importDesktopMedicinePhotos = importDesktopMedicinePhotos;
-window.importPhoneMedicinePhotos = importPhoneMedicinePhotos;
-window.openPhoneImportView = openPhoneImportView;
-window.closePhoneImportView = closePhoneImportView;
-window.setMedPhotoMode = setMedPhotoMode;
-window.retryMedPhotoJob = retryMedPhotoJob;
-window.deleteMedPhotoJob = deleteMedPhotoJob;
 window.exportConsumables = exportConsumables;
 window.openConsumablesFilePicker = openConsumablesFilePicker;
 window.handleConsumablesFileImport = handleConsumablesFileImport;
@@ -1689,27 +1141,3 @@ window.forceClearCache = function forceClearCache() {
         window.location.replace(url.toString());
     }
 };
-// Ensure phone-only button appears on small screens and opens overlay
-document.addEventListener('DOMContentLoaded', () => {
-    const phoneBtns = Array.from(document.querySelectorAll('.phone-only'));
-    const updatePhoneBtnVisibility = () => {
-        const isPhoneLike = window.matchMedia('(pointer: coarse)').matches || window.innerWidth <= 1100;
-        phoneBtns.forEach((btn) => {
-            btn.style.display = isPhoneLike ? 'inline-flex' : 'none';
-        });
-    };
-
-    phoneBtns.forEach((btn) => {
-        btn.addEventListener('click', (e) => {
-            e.preventDefault();
-            openPhoneImportView();
-        });
-    });
-
-    updatePhoneBtnVisibility();
-    window.addEventListener('resize', updatePhoneBtnVisibility);
-    bindPhoneInput();
-    renderPhonePreview();
-    renderDesktopPreview();
-    setMedPhotoMode(medPhotoMode);
-});

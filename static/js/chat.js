@@ -509,7 +509,7 @@ function bindTriageMetaRefresh() {
             el.dataset.tmodeBound = 'true';
             el.addEventListener('change', () => {
                 persistChatState();
-                refreshPromptPreview(true);
+                refreshPromptPreview();
             });
         }
     });
@@ -737,10 +737,11 @@ async function runChat(promptText = null, force28b = false) {
             fd.append('triage_circulation', document.getElementById('triage-circulation')?.value || '');
             fd.append('triage_cause', document.getElementById('triage-cause')?.value || '');
         }
-        const promptEditor = document.getElementById('prompt-preview-container');
         const promptTextarea = document.getElementById('prompt-preview');
-        if (promptEditor && promptEditor.style.display === 'block' && promptTextarea && promptTextarea.value.trim()) {
-            const composedPrompt = buildOverridePrompt(promptTextarea.value, txt, currentMode);
+        const manualOverride = promptTextarea && promptTextarea.dataset.autofilled === 'false';
+        if (manualOverride) {
+            const baseText = (promptTextarea.value || '').trim();
+            const composedPrompt = baseText ? buildOverridePrompt(baseText, txt, currentMode) : txt;
             if (composedPrompt) {
                 fd.append('override_prompt', composedPrompt);
             }

@@ -166,7 +166,7 @@ This allows modules to work even if utils.js fails to load.
      * ```
      * 
      * Used Throughout:
-     * - equipment.js: Photo uploads, equipment saves
+     * - equipment.js: Equipment saves
      * - crew.js: Crew data operations
      * - pharmacy.js: Medication operations
      * 

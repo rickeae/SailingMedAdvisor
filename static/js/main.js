@@ -56,7 +56,7 @@ Page Load → ensureCrewData() → Promise.all([
 Tab Switch → showTab() → 
   if Chat: updateUI(), restoreCollapsibleState()
   if CrewMedical: ensureCrewData()
-  if OnboardEquipment: loadEquipment(), loadMedPhotoQueue()
+  if OnboardEquipment: loadEquipment()
   if Settings: loadSettingsUI(), loadCrewCredentials()
 ```
 
@@ -69,7 +69,7 @@ LocalStorage Keys:
 Integration Points:
 - crew.js: loadCrewData() renders crew lists
 - pharmacy.js: preloadPharmacy(), loadPharmacy()
-- equipment.js: loadEquipment(), loadMedPhotoQueue()
+- equipment.js: loadEquipment()
 - settings.js: loadSettingsUI(), loadCrewCredentials()
 - chat.js: updateUI(), refreshPromptPreview()
 */
@@ -376,7 +376,6 @@ async function ensureCrewData() {
  * 
  * **OnboardEquipment Tab:**
  * - Loads equipment list
- * - Loads medicine photo queue
  * - Preloads pharmacy data
  * - Loads context sidebar
  * 
@@ -417,9 +416,6 @@ async function showTab(e, n) {
         if (typeof loadEquipment === 'function') {
             loadEquipment();
         }
-        if (typeof loadMedPhotoQueue === 'function') {
-            loadMedPhotoQueue();
-        }
         if (typeof loadPharmacy === 'function') {
             loadPharmacy();
         }
@@ -435,7 +431,7 @@ async function showTab(e, n) {
         restoreCollapsibleState('query-form-header', true);
         // Prefetch prompt preview so it is ready when expanded
         if (typeof refreshPromptPreview === 'function') {
-            refreshPromptPreview(true);
+            refreshPromptPreview();
         }
     }
 }

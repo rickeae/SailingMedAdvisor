@@ -39,7 +39,8 @@ venv/
 # Editor/temp artifacts
 *.swp
 
-# Local DB/runtime artifacts (do not publish)
-app.db
+# Local DB/runtime artifacts
+# Keep primary app.db tracked for deployment/demo portability.
 app.db.*
 seed/*.db
+not_needed/

@@ -36,3 +36,10 @@ templates/sidebars/SailingMedAdvisorDeloy\ token\ Huggingface
 # Local virtualenvs
 .venv/
 venv/
+# Editor/temp artifacts
+*.swp
+
+# Local DB/runtime artifacts (do not publish)
+app.db
+app.db.*
+seed/*.db

@@ -44,3 +44,13 @@ venv/
 app.db.*
 seed/*.db
 not_needed/
+
+# Local scratch/export artifacts
+server.log
+Untitled Folder/
+*_export_text.txt
+consumables
+consumables to import.txt
+non-consumables to import.txt
+who list for import.txt
+copy_pharm_lorraine_to_rick.sh

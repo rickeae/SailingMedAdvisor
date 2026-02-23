@@ -1,9 +1,20 @@
+<!-- =============================================================================
+     Author: Rick Escher
+     Project: SilingMedAdvisor (SailingMedAdvisor)
+     Context: Google HAI-DEF Framework
+     Models: Google MedGemmas
+     Program: Kaggle Impact Challenge
+     ========================================================================== -->
 <div class="dev-tag">dev:sidebar-vessel</div>
-<div class="sidebar-section" data-sidebar-section="vessel-info">
-    <div class="sidebar-title"><span class="sidebar-pill">Vessel</span> Registry & Profile</div>
-    <div class="sidebar-body">Integer volutpat elit elit, id aliquet justo sodales vel. Nunc blandit quam ac tortor efficitur aliquam.</div>
+<div class="sidebar-section">
+    <div class="sidebar-title"><span class="sidebar-pill">Vessel & Crew</span> Contextual Data Engineering</div>
+    <div class="sidebar-body">
+        <strong>Purpose:</strong> This tab manages the Contextual Metadata layer. It integrates structured crew profiles, including allergies, chronic histories, and biometric baselines, with the vessel's operational profile. When a consultation is initiated, this "Medical Identity" is injected into the prompt, enabling personalized, person-specific medicine.
+    </div>
 </div>
-<div class="sidebar-section" data-sidebar-section="crew-add">
-    <div class="sidebar-title">Adding New Crew</div>
-    <div class="sidebar-body">Curabitur pellentesque risus non arcu consectetur, non vestibulum nisl varius. Suspendisse pharetra dapibus malesuada.</div>
+<div class="sidebar-section">
+    <div class="sidebar-title">Operational Logic</div>
+    <div class="sidebar-body">
+        The goal is to move from "Zero-Shot" medical advice to a fully Context-Aware intervention. By providing MedGemma with a rich profile of the patient, we enhance the model's safety profile, ensuring it accounts for individual contraindications and the unique environmental stressors of the current voyage.
+    </div>
 </div>

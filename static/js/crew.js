@@ -1,3 +1,10 @@
+/* =============================================================================
+ * Author: Rick Escher
+ * Project: SilingMedAdvisor (SailingMedAdvisor)
+ * Context: Google HAI-DEF Framework
+ * Models: Google MedGemmas
+ * Program: Kaggle Impact Challenge
+ * ========================================================================== */
 /*
 File: static/js/crew.js
 Author notes: Client-side controller for Crew & Vessel information management.
@@ -29,6 +36,11 @@ Integration Points:
 
 // Reuse the chat dropdown storage key without redefining the global constant
 const CREW_LAST_PATIENT_KEY = typeof LAST_PATIENT_KEY !== 'undefined' ? LAST_PATIENT_KEY : 'sailingmed:lastPatient';
+const renderAssistantMarkdownCrew = (window.Utils && window.Utils.renderAssistantMarkdown)
+    ? window.Utils.renderAssistantMarkdown
+    : (txt) => (window.marked && typeof window.marked.parse === 'function')
+        ? window.marked.parse(txt || '', { gfm: true, breaks: true })
+        : (window.escapeHtml ? window.escapeHtml(txt || '') : String(txt || '')).replace(/\n/g, '<br>');
 /**
  * Default vaccine types used when settings don't provide custom types.
  * These represent common vaccinations tracked for maritime crew health records.
@@ -83,7 +95,7 @@ function calculateAge(birthdate) {
 
 /**
  * Toggle visibility of individual chat log entry (query/response pair).
- * Also shows/hides action buttons (Reactivate, Export, Delete) when expanded.
+ * Also shows/hides action buttons (Restore, Export, Delete) when expanded.
  * 
  * @param {HTMLElement} el - The header element that was clicked
  */
@@ -97,6 +109,103 @@ function toggleLogEntry(el) {
     buttons.forEach((btn) => {
         btn.style.visibility = isExpanded ? 'hidden' : 'visible';
     });
+}
+
+/**
+ * parseHistoryTranscriptEntry: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function parseHistoryTranscriptEntry(item) {
+    if (!item) return { messages: [], meta: {} };
+    if (typeof item.response === 'string' && item.response.trim().startsWith('{')) {
+        try {
+            const parsed = JSON.parse(item.response);
+            if (parsed && Array.isArray(parsed.messages)) {
+                return { messages: parsed.messages, meta: parsed.meta || {} };
+            }
+        } catch (err) { /* ignore */ }
+    }
+    return { messages: [], meta: {} };
+}
+
+/**
+ * renderTranscriptHtml: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function renderTranscriptHtml(messages) {
+    if (!messages || !messages.length) return '';
+    return messages
+        .map((msg) => {
+            if (!msg || typeof msg !== 'object') return '';
+            const role = (msg.role || msg.type || '').toString().toLowerCase();
+            const isUser = role === 'user';
+            const raw = msg.message || msg.content || '';
+            const content = (!isUser)
+                ? renderAssistantMarkdownCrew(raw || '')
+                : escapeHtml(raw || '').replace(/\\n/g, '<br>');
+            const metaParts = [isUser ? 'You' : 'MedGemma'];
+            if (msg.model) metaParts.push(String(msg.model));
+            if (msg.ts) {
+                const ts = new Date(msg.ts);
+                if (!Number.isNaN(ts.getTime())) {
+                    metaParts.push(ts.toLocaleString());
+                }
+            }
+            if (msg.duration_ms != null) {
+                const durMs = Number(msg.duration_ms);
+                if (Number.isFinite(durMs) && durMs > 0) {
+                    const secs = durMs / 1000;
+                    metaParts.push(secs >= 10 ? `${Math.round(secs)}s` : `${secs.toFixed(1)}s`);
+                }
+            }
+            let triageBlock = '';
+            const triageMeta = msg.triage_meta || msg.triageMeta;
+            if (isUser && triageMeta && typeof triageMeta === 'object') {
+                const lines = Object.entries(triageMeta)
+                    .filter(([, v]) => v)
+                    .map(([k, v]) => `${escapeHtml(k)}: ${escapeHtml(v)}`)
+                    .join('<br>');
+                if (lines) {
+                    triageBlock = `<div class="chat-triage-meta"><strong>Triage Intake</strong><br>${lines}</div>`;
+                }
+            }
+            return `
+                <div class="chat-message ${isUser ? 'user' : 'assistant'}">
+                    <div class="chat-meta">${escapeHtml(metaParts.join(' • '))}</div>
+                    <div class="chat-content">${content}</div>
+                    ${triageBlock}
+                </div>`;
+        })
+        .join('');
+}
+
+/**
+ * renderTranscriptText: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function renderTranscriptText(messages) {
+    if (!messages || !messages.length) return '';
+    const lines = [];
+    messages.forEach((msg) => {
+        if (!msg || typeof msg !== 'object') return;
+        const role = (msg.role || msg.type || '').toString().toLowerCase();
+        const label = role === 'user' ? 'USER' : 'ASSISTANT';
+        const content = msg.message || msg.content || '';
+        if (!content) return;
+        lines.push(`${label}: ${content}`);
+        const triageMeta = msg.triage_meta || msg.triageMeta;
+        if (role === 'user' && triageMeta && typeof triageMeta === 'object') {
+            const metaLines = Object.entries(triageMeta)
+                .filter(([, v]) => v)
+                .map(([k, v]) => `- ${k}: ${v}`);
+            if (metaLines.length) {
+                lines.push('TRIAGE INTAKE:');
+                lines.push(...metaLines);
+            }
+        }
+        lines.push('');
+    });
+    return lines.join('\\n').trim();
 }
 
 /**
@@ -127,19 +236,28 @@ function exportHistoryItemById(id) {
         return;
     }
     const item = historyStoreById[id];
+    const parsed = parseHistoryTranscriptEntry(item);
     const name = (item.patient || 'Unknown').replace(/[^a-z0-9]/gi, '_');
     const date = (item.date || '').replace(/[^0-9T:-]/g, '_');
     const filename = `history_${name}_${date || 'entry'}.txt`;
     const parts = [];
     parts.push(`Date: ${item.date || ''}`);
     parts.push(`Patient: ${item.patient || 'Unknown'}`);
+    if (item.mode) parts.push(`Mode: ${item.mode}`);
+    if (item.model) parts.push(`Last Model: ${item.model}`);
+    if (item.duration_ms) parts.push(`Last Latency (ms): ${item.duration_ms}`);
     if (item.title) parts.push(`Title: ${item.title}`);
     parts.push('');
-    parts.push('Query:');
-    parts.push(item.query || '');
-    parts.push('');
-    parts.push('Response:');
-    parts.push(item.response || '');
+    if (parsed.messages.length) {
+        parts.push('Transcript:');
+        parts.push(renderTranscriptText(parsed.messages));
+    } else {
+        parts.push('Query:');
+        parts.push(item.query || '');
+        parts.push('');
+        parts.push('Response:');
+        parts.push(item.response || '');
+    }
     const blob = new Blob([parts.join('\\n')], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -147,6 +265,177 @@ function exportHistoryItemById(id) {
     a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
+}
+
+/**
+ * isDeveloperModeActive: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function isDeveloperModeActive() {
+    try {
+        const bodyHasMode = !!document.body && document.body.classList.contains('mode-developer');
+        const htmlHasMode = document.documentElement.classList.contains('mode-developer');
+        if (bodyHasMode || htmlHasMode) return true;
+        const modeSelect = document.getElementById('user_mode');
+        if (modeSelect && String(modeSelect.value || '').toLowerCase() === 'developer') return true;
+        const cachedMode = window.CACHED_SETTINGS?.user_mode;
+        if (String(cachedMode || '').toLowerCase() === 'developer') return true;
+        const stored = localStorage.getItem('user_mode') || '';
+        return String(stored).toLowerCase() === 'developer';
+    } catch (err) {
+        return false;
+    }
+}
+
+/**
+ * getHistoryEditableFields: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function getHistoryEditableFields(item) {
+    const parsed = parseHistoryTranscriptEntry(item);
+    const transcriptMessages = parsed.messages || [];
+    const firstUser = transcriptMessages.find((m) => (m?.role || '').toString().toLowerCase() === 'user');
+    const assistants = transcriptMessages.filter((m) => (m?.role || '').toString().toLowerCase() === 'assistant');
+    const lastAssistant = assistants.length ? assistants[assistants.length - 1] : null;
+    return {
+        query: (firstUser?.message || item?.query || item?.user_query || '').toString(),
+        response: (lastAssistant?.message || item?.response || '').toString(),
+    };
+}
+
+/**
+ * toggleHistoryEntryEditor: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function toggleHistoryEntryEditor(id) {
+    if (!id) return;
+    if (!isDeveloperModeActive()) {
+        alert('Consultation log editing is only available in Developer Mode.');
+        return;
+    }
+    const wrap = document.getElementById(`history-edit-wrap-${id}`);
+    if (!wrap) return;
+    const isOpen = wrap.style.display === 'block';
+    wrap.style.display = isOpen ? 'none' : 'block';
+}
+
+async function saveHistoryItemById(id) {
+    if (!id) return;
+    if (!isDeveloperModeActive()) {
+        alert('Consultation log editing is only available in Developer Mode.');
+        return;
+    }
+
+    const dateEl = document.getElementById(`history-edit-date-${id}`);
+    const queryEl = document.getElementById(`history-edit-query-${id}`);
+    const responseEl = document.getElementById(`history-edit-response-${id}`);
+    const statusEl = document.getElementById(`history-edit-status-${id}`);
+    const saveBtn = document.getElementById(`history-edit-save-${id}`);
+    if (!dateEl || !queryEl || !responseEl) {
+        alert('Unable to save: editor fields are missing.');
+        return;
+    }
+
+    const editedDate = (dateEl.value || '').trim();
+    const editedQuery = (queryEl.value || '').trim();
+    const editedResponse = (responseEl.value || '').trim();
+    if (!editedDate) {
+        alert('Date is required.');
+        return;
+    }
+    if (!editedQuery) {
+        alert('Query is required.');
+        return;
+    }
+    if (!editedResponse) {
+        alert('Response is required.');
+        return;
+    }
+
+    try {
+        if (statusEl) statusEl.textContent = 'Saving...';
+        if (saveBtn) saveBtn.disabled = true;
+
+        const res = await fetch('/api/data/history', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error(res.statusText || 'Failed to load history');
+        const data = await res.json();
+        if (!Array.isArray(data)) throw new Error('History payload is not an array');
+
+        const idx = data.findIndex((entry) => entry && entry.id === id);
+        if (idx < 0) throw new Error('Entry not found');
+        const entry = { ...(data[idx] || {}) };
+
+        entry.date = editedDate;
+        entry.query = editedQuery;
+        entry.user_query = editedQuery;
+        entry.updated_at = new Date().toISOString();
+
+        let updatedResponse = editedResponse;
+        if (typeof entry.response === 'string' && entry.response.trim().startsWith('{')) {
+            try {
+                const parsed = JSON.parse(entry.response);
+                if (parsed && Array.isArray(parsed.messages)) {
+                    const messages = parsed.messages.map((m) => (m && typeof m === 'object' ? { ...m } : m));
+
+                    const userIndex = messages.findIndex((m) => (m?.role || m?.type || '').toString().toLowerCase() === 'user');
+                    if (userIndex >= 0) {
+                        messages[userIndex].message = editedQuery;
+                    } else {
+                        messages.unshift({ role: 'user', message: editedQuery, ts: new Date().toISOString() });
+                    }
+
+                    let assistantIndex = -1;
+                    for (let i = messages.length - 1; i >= 0; i -= 1) {
+                        const role = (messages[i]?.role || messages[i]?.type || '').toString().toLowerCase();
+                        if (role === 'assistant') {
+                            assistantIndex = i;
+                            break;
+                        }
+                    }
+                    if (assistantIndex >= 0) {
+                        messages[assistantIndex].message = editedResponse;
+                    } else {
+                        messages.push({
+                            role: 'assistant',
+                            message: editedResponse,
+                            ts: new Date().toISOString(),
+                            model: entry.model || '',
+                        });
+                    }
+
+                    if (parsed.meta && typeof parsed.meta === 'object') {
+                        parsed.meta.initial_query = editedQuery;
+                        if (!parsed.meta.date && editedDate) parsed.meta.date = editedDate;
+                    }
+
+                    parsed.messages = messages;
+                    updatedResponse = JSON.stringify(parsed);
+                }
+            } catch (err) {
+                // Keep editedResponse as plain text if JSON parsing fails.
+            }
+        }
+        entry.response = updatedResponse;
+        data[idx] = entry;
+
+        const saveRes = await fetch('/api/data/history', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+            credentials: 'same-origin',
+        });
+        if (!saveRes.ok) throw new Error(saveRes.statusText || 'Failed to save history');
+
+        if (statusEl) statusEl.textContent = 'Saved';
+        if (typeof loadData === 'function') {
+            await loadData();
+        }
+    } catch (err) {
+        if (statusEl) statusEl.textContent = '';
+        alert(`Failed to save entry: ${err.message}`);
+    } finally {
+        if (saveBtn) saveBtn.disabled = false;
+    }
 }
 
 /**
@@ -230,13 +519,36 @@ function getCrewFullName(crew) {
 }
 
 /**
+ * normalizePatientName: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function normalizePatientName(value) {
+    return (value || '')
+        .toString()
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9,\s]/g, ' ')
+        .replace(/\s+/g, ' ');
+}
+
+/**
+ * appendHistoryKey: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function appendHistoryKey(target, key) {
+    const val = (key || '').toString().trim();
+    if (!val) return;
+    if (!target.includes(val)) target.push(val);
+}
+
+/**
  * Group chat history entries by patient/crew member.
  * 
  * Creates multiple lookup keys per entry to handle various matching scenarios:
  * - By patient name (text)
  * - By patient ID (id:xxx)
  * - "Unnamed Crew" for entries without patient info
- * - "Inquiry History" for general medical inquiries
+ * - Inquiry-placeholder records are folded into "Unnamed Crew"
  * 
  * Also populates historyStoreById map for quick ID-based lookups.
  * 
@@ -252,7 +564,7 @@ function getCrewFullName(crew) {
  * {
  *   "John Smith": [{id: "h1", ...}],
  *   "id:123": [{id: "h1", ...}],
- *   "Inquiry History": [{id: "h2", ...}]
+ *   "Unnamed Crew": [{id: "h2", ...}]
  * }
  */
 function groupHistoryByPatient(history) {
@@ -263,10 +575,24 @@ function groupHistoryByPatient(history) {
         }
         const keys = [];
         const patientName = (item.patient || '').trim();
-        if (patientName) keys.push(patientName);
-        if (item.patient_id) keys.push(`id:${item.patient_id}`);
-        if (!patientName && !item.patient_id) keys.push('Unnamed Crew');
-        if (patientName && patientName.toLowerCase() === 'inquiry') keys.push('Inquiry History');
+        const isInquiryPlaceholder = patientName.toLowerCase() === 'inquiry';
+        if (patientName && !isInquiryPlaceholder) {
+            appendHistoryKey(keys, patientName);
+            const normalizedName = normalizePatientName(patientName);
+            if (normalizedName) {
+                appendHistoryKey(keys, `name:${normalizedName}`);
+                const parts = normalizedName.split(' ').filter(Boolean);
+                if (parts.length >= 2) {
+                    appendHistoryKey(keys, `name:${parts[0]} ${parts[parts.length - 1]}`);
+                }
+            }
+        }
+        if (item.patient_id != null && String(item.patient_id).trim()) {
+            appendHistoryKey(keys, `id:${String(item.patient_id).trim()}`);
+        }
+        if ((!patientName && !item.patient_id) || (isInquiryPlaceholder && !item.patient_id)) {
+            appendHistoryKey(keys, 'Unnamed Crew');
+        }
         keys.forEach((k) => {
             if (!map[k]) map[k] = [];
             map[k].push(item);
@@ -281,7 +607,8 @@ function groupHistoryByPatient(history) {
  * Each entry is displayed as a collapsible card with:
  * - Date and preview of first line of query
  * - Expandable query/response details
- * - Action buttons: Reactivate, Export, Delete (visible when expanded)
+ * - Action buttons: Restore, Demo Restore, Export, Delete
+ * - Developer Mode action: Edit (visible when expanded)
  * 
  * @param {Array<Object>} entries - Array of history entry objects
  * @returns {string} HTML markup for all entries
@@ -293,12 +620,44 @@ function renderHistoryEntries(entries) {
     const sorted = [...entries].sort((a, b) => (a.date || '').localeCompare(b.date || '')).reverse();
     return sorted
         .map((item, idx) => {
-            const q = escapeHtml(item.query || '').replace(/\n/g, '<br>');
-            const r = escapeHtml(item.response || '').replace(/\n/g, '<br>');
+            const parsed = parseHistoryTranscriptEntry(item);
+            const transcriptMessages = parsed.messages || [];
+            const messagesForRender = transcriptMessages.length
+                ? transcriptMessages
+                : [
+                    ...(item.query ? [{ role: 'user', message: item.query, ts: item.date || '' }] : []),
+                    ...(item.response ? [{
+                        role: 'assistant',
+                        message: item.response,
+                        ts: item.date || '',
+                        model: item.model || '',
+                        duration_ms: item.duration_ms,
+                    }] : []),
+                ];
+            // Backfill assistant duration from entry-level latency when transcript
+            // messages are missing duration_ms (older/mixed history payloads).
+            const normalizedMessages = messagesForRender.map((msg) =>
+                (msg && typeof msg === 'object') ? { ...msg } : msg
+            );
+            if (item.duration_ms != null) {
+                normalizedMessages.forEach((msg) => {
+                    const role = (msg?.role || msg?.type || '').toString().toLowerCase();
+                    if ((role === 'assistant' || role === 'user') && (msg.duration_ms == null || msg.duration_ms === '')) {
+                        msg.duration_ms = item.duration_ms;
+                    }
+                });
+            }
             const date = escapeHtml(item.date || '');
-            const previewRaw = (item.query || '').split('\n')[0] || '';
+            const firstUser = transcriptMessages.find((m) => (m.role || '').toString().toLowerCase() === 'user');
+            const previewRaw = (firstUser?.message || item.query || '').split('\n')[0] || '';
             let preview = escapeHtml(previewRaw);
             if (preview.length > 80) preview = preview.slice(0, 80) + '...';
+            const transcriptHtml = renderTranscriptHtml(normalizedMessages);
+            const devEditDisplay = isDeveloperModeActive() ? '' : 'display:none;';
+            const editable = getHistoryEditableFields(item);
+            const editableDate = escapeHtml(item.date || '');
+            const editableQuery = escapeHtml(editable.query || '');
+            const editableResponse = escapeHtml(editable.response || '');
             return `
                 <div class="collapsible" style="margin-bottom:6px;">
                     <div class="col-header crew-med-header" onclick="toggleLogEntry(this)" style="justify-content:flex-start; align-items:center;">
@@ -306,14 +665,34 @@ function renderHistoryEntries(entries) {
                         <span class="toggle-label history-arrow" style="font-size:16px; margin-right:8px;">▸</span>
                         <span style="flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:600; font-size:13px;">${date || 'Entry'}${preview ? ' — ' + preview : ''}</span>
                         <div style="display:flex; gap:6px; align-items:center;">
-                            <button class="btn btn-sm history-entry-action" style="background:#3949ab; visibility:hidden;" onclick="event.stopPropagation(); reactivateChat('${item.id || ''}')">↩ Reactivate</button>
-                            <button class="btn btn-sm history-entry-action" style="background:var(--inquiry); visibility:hidden;" onclick="event.stopPropagation(); exportHistoryItemById('${item.id || ''}')">Export</button>
+                            <button class="btn btn-sm history-entry-action user-adv-only" style="background:#3949ab; visibility:hidden;" onclick="event.stopPropagation(); restoreChatSession('${item.id || ''}')">↩ Restore</button>
+                            <button class="btn btn-sm history-entry-action user-adv-only" style="background:#0d6b50; visibility:hidden;" onclick="event.stopPropagation(); restoreChatAsReturned('${item.id || ''}')">Demo Restore</button>
+                            <button class="btn btn-sm history-entry-action user-adv-only" style="background:var(--inquiry); visibility:hidden;" onclick="event.stopPropagation(); exportHistoryItemById('${item.id || ''}')">Export</button>
+                            <button class="btn btn-sm history-entry-action developer-only" style="${devEditDisplay} background:#6d4c41; visibility:hidden;" onclick="event.stopPropagation(); toggleHistoryEntryEditor('${item.id || ''}')">Edit</button>
                             <button class="btn btn-sm history-entry-action" style="background:var(--red); visibility:hidden;" onclick="event.stopPropagation(); deleteHistoryItemById('${item.id || ''}')">Delete</button>
                         </div>
                     </div>
-                    <div class="col-body" style="padding:8px; font-size:13px; display:none;">
-                        <div style="margin-bottom:6px;"><strong>Query:</strong><br>${q}</div>
-                        <div><strong>Response:</strong><br>${r}</div>
+                    <div class="col-body" style="padding:8px; display:none;">
+                        <div class="chat-transcript">${transcriptHtml}</div>
+                        <div id="history-edit-wrap-${item.id || ''}" style="display:none; margin-top:10px; border:1px solid #cbb8a8; border-radius:6px; background:#fffaf5; padding:10px;">
+                            <div style="font-weight:700; margin-bottom:8px; color:#5f4330;">Edit Consultation Log Entry</div>
+                            <div style="display:grid; grid-template-columns: 1fr; gap:8px;">
+                                <label style="font-size:12px; color:#4a5568;">Date/Time
+                                    <input id="history-edit-date-${item.id || ''}" type="text" style="width:100%; padding:8px; box-sizing:border-box;" value="${editableDate}">
+                                </label>
+                                <label style="font-size:12px; color:#4a5568;">Query
+                                    <textarea id="history-edit-query-${item.id || ''}" style="width:100%; min-height:80px; box-sizing:border-box;">${editableQuery}</textarea>
+                                </label>
+                                <label style="font-size:12px; color:#4a5568;">Response
+                                    <textarea id="history-edit-response-${item.id || ''}" style="width:100%; min-height:160px; box-sizing:border-box;">${editableResponse}</textarea>
+                                </label>
+                            </div>
+                            <div style="display:flex; gap:8px; align-items:center; margin-top:8px;">
+                                <button id="history-edit-save-${item.id || ''}" class="btn btn-sm" style="background:#0b8457;" onclick="event.stopPropagation(); saveHistoryItemById('${item.id || ''}')">Save</button>
+                                <button class="btn btn-sm" style="background:#4a5568;" onclick="event.stopPropagation(); toggleHistoryEntryEditor('${item.id || ''}')">Cancel</button>
+                                <span id="history-edit-status-${item.id || ''}" style="font-size:12px; color:#3b4a60;"></span>
+                            </div>
+                        </div>
                     </div>
                 </div>`;
         })
@@ -332,12 +711,13 @@ function renderHistorySection(label, entries, defaultOpen = true) {
     const bodyStyle = defaultOpen ? 'display:block;' : '';
     const arrow = defaultOpen ? '▾' : '▸';
     const count = Array.isArray(entries) ? entries.length : 0;
+    const countLabel = count ? ` (${count} ${count === 1 ? 'entry' : 'entries'})` : '';
     return `
         <div class="collapsible history-item" style="margin-top:10px;">
             <div class="col-header crew-med-header" onclick="toggleCrewSection(this)" style="justify-content:flex-start; align-items:center;">
                 <span class="dev-tag">dev:crew-history-section</span>
                 <span class="toggle-label history-arrow" style="font-size:18px; margin-right:8px;">${arrow}</span>
-                <span style="flex:1; font-weight:600; font-size:14px;">${escapeHtml(label)}${count ? ` (${count} entries)` : ''}</span>
+                <span style="flex:1; font-weight:600; font-size:14px;">${escapeHtml(label)}${countLabel}</span>
             </div>
             <div class="col-body" style="padding:10px; ${bodyStyle}">
                 ${renderHistoryEntries(entries)}
@@ -361,13 +741,44 @@ function renderHistorySection(label, entries, defaultOpen = true) {
 function getHistoryForCrew(p, historyMap) {
     const keys = [];
     const fullName = getCrewFullName(p);
-    if (fullName) keys.push(fullName);
-    if (p.name) keys.push(p.name);
-    if (p.firstName || p.lastName) keys.push(`${p.firstName || ''} ${p.lastName || ''}`.trim());
-    if (p.id) keys.push(`id:${p.id}`);
+    if (fullName) appendHistoryKey(keys, fullName);
+    if (p.name) appendHistoryKey(keys, p.name);
+    if (p.firstName || p.middleName || p.lastName) {
+        appendHistoryKey(keys, `${p.firstName || ''} ${p.middleName || ''} ${p.lastName || ''}`.trim());
+    }
+    if (p.firstName || p.lastName) appendHistoryKey(keys, `${p.firstName || ''} ${p.lastName || ''}`.trim());
+    if (p.id != null && String(p.id).trim()) appendHistoryKey(keys, `id:${String(p.id).trim()}`);
     for (const k of keys) {
         if (historyMap[k]) return historyMap[k];
+        const normalized = normalizePatientName(k);
+        if (normalized && historyMap[`name:${normalized}`]) return historyMap[`name:${normalized}`];
     }
+
+    if (p.firstName && p.lastName) {
+        const firstNorm = normalizePatientName(p.firstName);
+        const lastNorm = normalizePatientName(p.lastName);
+        if (firstNorm && lastNorm) {
+            const merged = [];
+            Object.entries(historyMap).forEach(([key, entries]) => {
+                if (!key.startsWith('name:')) return;
+                const label = key.slice(5);
+                if (label.includes(firstNorm) && label.includes(lastNorm)) {
+                    merged.push(...(Array.isArray(entries) ? entries : []));
+                }
+            });
+            if (merged.length) {
+                const seen = new Set();
+                return merged.filter((entry) => {
+                    const id = String(entry?.id || '');
+                    if (!id) return true;
+                    if (seen.has(id)) return false;
+                    seen.add(id);
+                    return true;
+                });
+            }
+        }
+    }
+
     return [];
 }
 
@@ -597,7 +1008,7 @@ function loadCrewData(data, history = [], settings = {}) {
                 return `<option value="${value}">${fullName}</option>`;
             })
             .join('');
-        pSelect.innerHTML = `<option value="">Unnamed Crew</option>` + options;
+        pSelect.innerHTML = `<option value="">Unnamed Crew Member</option>` + options;
         const hasPrevId = storedValue && Array.from(pSelect.options).some(opt => opt.value === storedValue);
         if (hasPrevId) {
             pSelect.value = storedValue;
@@ -627,33 +1038,46 @@ function loadCrewData(data, history = [], settings = {}) {
     // Medical histories list
     const medicalContainer = document.getElementById('crew-medical-list');
     if (medicalContainer) {
+        const matchedHistoryIds = new Set();
         const medicalBlocks = data.map(p => {
             const displayName = getCrewDisplayName(p);
             const crewHistory = getHistoryForCrew(p, historyMap);
+            crewHistory.forEach((entry) => {
+                const entryId = String(entry?.id || '').trim();
+                if (entryId) matchedHistoryIds.add(entryId);
+            });
             const historyCount = Array.isArray(crewHistory) ? crewHistory.length : 0;
-            const historySection = renderHistorySection(`${displayName} Log`, crewHistory, true);
+            const countLabel = historyCount ? ` (${historyCount} ${historyCount === 1 ? 'entry' : 'entries'})` : '';
             return `
             <div class="collapsible history-item">
                 <div class="col-header crew-med-header" onclick="toggleCrewSection(this)" style="justify-content:flex-start;">
                     <span class="dev-tag">dev:crew-entry</span>
                     <span class="toggle-label history-arrow" style="font-size:18px; margin-right:8px;">▸</span>
                     <span style="flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:700;">
-                        ${displayName}${historyCount ? ` (${historyCount})` : ''}
+                        ${displayName}${countLabel}
                     </span>
                     <button onclick="event.stopPropagation(); exportCrew('${p.id}', '${getCrewFullName(p).replace(/'/g, "\\'")}')" class="btn btn-sm history-action-btn" style="background:var(--inquiry); visibility:hidden;">📤 Export</button>
                 </div>
                 <div class="col-body" style="padding:12px; background:#e8f4ff; border:1px solid #c7ddff; border-radius:6px;">
-                    ${historySection}
+                    ${renderHistoryEntries(crewHistory)}
                 </div>
             </div>`;
         });
 
-        // Add pseudo entries for unnamed and inquiry history
+        // Add pseudo entry for unnamed/unassigned history
         if (historyMap['Unnamed Crew']) {
+            historyMap['Unnamed Crew'].forEach((entry) => {
+                const entryId = String(entry?.id || '').trim();
+                if (entryId) matchedHistoryIds.add(entryId);
+            });
             medicalBlocks.push(renderHistorySection('Unnamed Crew Log', historyMap['Unnamed Crew'], true));
         }
-        if (historyMap['Inquiry History']) {
-            medicalBlocks.push(renderHistorySection('Inquiry History', historyMap['Inquiry History'], true));
+        const unmatchedHistory = historyStore.filter((entry) => {
+            const entryId = String(entry?.id || '').trim();
+            return !entryId || !matchedHistoryIds.has(entryId);
+        });
+        if (unmatchedHistory.length) {
+            medicalBlocks.push(renderHistorySection('All Consultation Entries', unmatchedHistory, true));
         }
 
         medicalContainer.innerHTML = `
@@ -815,6 +1239,11 @@ window.loadCrewData = loadCrewData;
 
 // Expose for other scripts that call loadData() before bundling
 window.loadCrewData = loadCrewData;
+window.toggleLogEntry = toggleLogEntry;
+window.exportHistoryItemById = exportHistoryItemById;
+window.toggleHistoryEntryEditor = toggleHistoryEntryEditor;
+window.saveHistoryItemById = saveHistoryItemById;
+window.deleteHistoryItemById = deleteHistoryItemById;
 console.log('[DEBUG] crew.js loaded and loadCrewData attached');
 
 // Debug immediately after attach
@@ -1219,7 +1648,10 @@ async function uploadDocument(id, fieldName, inputElement) {
                 alert('Upload failed. Please try again.');
                 return;
             }
-            loadData(); // Refresh to show the new document
+            if (typeof loadData === 'function') {
+                await loadData(); // Refresh to show the new document
+            }
+            expandCrewInfoCard(id);
         } catch (err) {
             console.warn('[crew] uploadDocument error', err);
             alert('Upload failed. Please try again.');
@@ -1254,18 +1686,40 @@ async function deleteDocument(id, fieldName) {
             return;
         }
         try { localStorage.setItem('sailingmed:lastOpenCrew', id); } catch (err) { /* ignore */ }
-        const card = document.querySelector(`.collapsible[data-crew-id="${id}"]`);
-        if (card) {
-            const img = card.querySelector('img[src]');
-            if (img && img.parentElement) img.parentElement.innerHTML = '';
-            const link = card.querySelector('a[target="_blank"]');
-            if (link && link.parentElement) link.parentElement.innerHTML = '';
+        if (typeof loadData === 'function') {
+            await loadData();
         }
-        loadData();
+        expandCrewInfoCard(id);
     } catch (err) {
         console.warn('[crew] delete document error', err);
         alert('Delete failed. Please try again.');
     }
+}
+
+/**
+ * Ensure a specific crew info card is expanded after a UI refresh.
+ * Used after document upload/delete so users stay in-context.
+ *
+ * @param {string} crewId - Crew member unique ID
+ * @returns {boolean} True when card was found and expanded
+ */
+function expandCrewInfoCard(crewId) {
+    if (!crewId) return false;
+    const infoContainer = document.getElementById('crew-info-list');
+    if (!infoContainer) return false;
+    const cards = infoContainer.querySelectorAll('.collapsible[data-crew-id]');
+    const card = Array.from(cards).find((node) => node.getAttribute('data-crew-id') === crewId);
+    if (!card) return false;
+    const header = card.querySelector('.col-header');
+    const body = header ? header.nextElementSibling : null;
+    if (!header || !body) return false;
+    body.style.display = 'block';
+    const icon = header.querySelector('.toggle-label');
+    if (icon) icon.textContent = '▾';
+    header.querySelectorAll('.history-action-btn').forEach((btn) => {
+        btn.style.visibility = 'visible';
+    });
+    return true;
 }
 
 /**
@@ -1546,6 +2000,195 @@ async function exportCrewList() {
 }
 
 /**
+ * Export immigration package ZIP (crew list, passport pages, vessel info).
+ */
+async function exportImmigrationZip() {
+    try {
+        const resp = await fetch('/api/export/immigration-zip', { credentials: 'same-origin' });
+        if (!resp.ok) {
+            const txt = await resp.text();
+            alert(`Export failed (${resp.status}): ${txt || 'Unknown error'}`);
+            return;
+        }
+        const blob = await resp.blob();
+        const cd = resp.headers.get('content-disposition') || '';
+        let filename = `immigration_export_${new Date().toISOString().split('T')[0]}.zip`;
+        const utf8 = cd.match(/filename\*=UTF-8''([^;]+)/i);
+        const plain = cd.match(/filename=\"?([^\";]+)\"?/i);
+        try {
+            if (utf8 && utf8[1]) filename = decodeURIComponent(utf8[1]);
+            else if (plain && plain[1]) filename = plain[1];
+        } catch (err) {
+            // Keep fallback filename if decode fails.
+        }
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
+        alert(`Immigration zip exported to ${filename}`);
+    } catch (err) {
+        console.warn('[IMMIGRATION] export failed', err);
+        alert('Export failed. Please try again.');
+    }
+}
+
+const VESSEL_INPUT_MAP = {
+    'vessel-name': 'vesselName',
+    'vessel-registration': 'registrationNumber',
+    'vessel-flag': 'flagCountry',
+    'vessel-homeport': 'homePort',
+    'vessel-callsign': 'callSign',
+    'vessel-tonnage': 'tonnage',
+    'vessel-net-tonnage': 'netTonnage',
+    'vessel-mmsi': 'mmsi',
+    'vessel-hull-number': 'hullNumber',
+    'vessel-starboard-engine': 'starboardEngine',
+    'vessel-starboard-sn': 'starboardEngineSn',
+    'vessel-port-engine': 'portEngine',
+    'vessel-port-sn': 'portEngineSn',
+    'vessel-rib-sn': 'ribSn',
+};
+
+const VESSEL_PHOTO_FIELDS = {
+    boatPhoto: { previewId: 'vessel-photo-preview-boatPhoto', label: 'Boat photo' },
+    registrationFrontPhoto: { previewId: 'vessel-photo-preview-registrationFrontPhoto', label: 'Registration front image' },
+    registrationBackPhoto: { previewId: 'vessel-photo-preview-registrationBackPhoto', label: 'Registration back image' },
+};
+
+/**
+ * setVesselFieldValues: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function setVesselFieldValues(payload, sourceLabel) {
+    const setVal = (id, val) => {
+        const el = document.getElementById(id);
+        if (el) el.value = val || '';
+    };
+    Object.entries(VESSEL_INPUT_MAP).forEach(([id, key]) => {
+        const val = payload?.[key] || '';
+        setVal(id, val);
+        if (sourceLabel) console.log(`[VESSEL] ${sourceLabel} set`, id, '->', val);
+    });
+}
+
+/**
+ * renderVesselPhotoPreview: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function renderVesselPhotoPreview(field, dataUrl) {
+    const meta = VESSEL_PHOTO_FIELDS[field];
+    if (!meta) return;
+    const preview = document.getElementById(meta.previewId);
+    if (!preview) return;
+    const value = typeof dataUrl === 'string' ? dataUrl.trim() : '';
+    preview.innerHTML = '';
+    if (!value) {
+        preview.textContent = 'No file uploaded.';
+        return;
+    }
+    if (value.startsWith('data:image/')) {
+        const img = document.createElement('img');
+        img.src = value;
+        img.alt = meta.label;
+        img.onclick = () => window.open(value, '_blank', 'noopener');
+        preview.appendChild(img);
+        return;
+    }
+    const link = document.createElement('a');
+    link.href = value;
+    link.target = '_blank';
+    link.rel = 'noopener';
+    link.style.color = 'var(--inquiry)';
+    link.style.fontWeight = '700';
+    link.textContent = value.startsWith('data:application/pdf') ? 'View uploaded PDF' : 'View uploaded file';
+    preview.appendChild(link);
+}
+
+/**
+ * renderAllVesselPhotoPreviews: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function renderAllVesselPhotoPreviews(payload) {
+    Object.keys(VESSEL_PHOTO_FIELDS).forEach((field) => {
+        renderVesselPhotoPreview(field, payload?.[field] || '');
+    });
+}
+
+async function uploadVesselPhoto(fieldName, inputElement) {
+    if (!VESSEL_PHOTO_FIELDS[fieldName]) return;
+    const file = inputElement?.files?.[0];
+    if (!file) return;
+    if (file.size > 8 * 1024 * 1024) {
+        alert('File size must be less than 8MB');
+        inputElement.value = '';
+        return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+        try {
+            const resp = await fetch('/api/vessel/photo', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ field: fieldName, data: event.target.result || '' }),
+                credentials: 'same-origin',
+            });
+            const txt = await resp.text();
+            if (!resp.ok) {
+                console.warn('[VESSEL] upload photo failed', resp.status, txt.slice(0, 200));
+                alert('Upload failed. Please try again.');
+                return;
+            }
+            const statusEl = document.getElementById('vessel-save-status');
+            if (statusEl) {
+                statusEl.textContent = 'Saved image at ' + new Date().toLocaleTimeString();
+                statusEl.style.color = '#2e7d32';
+                setTimeout(() => { statusEl.textContent = ''; }, 4000);
+            }
+            await loadVesselInfo();
+        } catch (err) {
+            console.warn('[VESSEL] upload photo error', err);
+            alert('Upload failed. Please try again.');
+        } finally {
+            if (inputElement) inputElement.value = '';
+        }
+    };
+    reader.readAsDataURL(file);
+}
+
+async function deleteVesselPhoto(fieldName) {
+    const meta = VESSEL_PHOTO_FIELDS[fieldName];
+    if (!meta) return;
+    if (!confirm(`Delete ${meta.label}?`)) return;
+    try {
+        const resp = await fetch('/api/vessel/photo', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ field: fieldName, data: '' }),
+            credentials: 'same-origin',
+        });
+        const txt = await resp.text();
+        if (!resp.ok) {
+            console.warn('[VESSEL] delete photo failed', resp.status, txt.slice(0, 200));
+            alert('Delete failed. Please try again.');
+            return;
+        }
+        const statusEl = document.getElementById('vessel-save-status');
+        if (statusEl) {
+            statusEl.textContent = 'Image removed';
+            statusEl.style.color = '#2e7d32';
+            setTimeout(() => { statusEl.textContent = ''; }, 3000);
+        }
+        await loadVesselInfo();
+    } catch (err) {
+        console.warn('[VESSEL] delete photo error', err);
+        alert('Delete failed. Please try again.');
+    }
+}
+
+/**
  * Load vessel information from server and populate form fields.
  * 
  * Two-Stage Loading:
@@ -1567,32 +2210,13 @@ async function exportCrewList() {
  */
 async function loadVesselInfo() {
     console.log('[VESSEL] loadVesselInfo invoked');
-    const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val || ''; };
 
     // 1) use preloaded data if present (server-rendered)
     if (window.VESSEL_PREFILL && typeof window.VESSEL_PREFILL === 'object') {
         console.log('[VESSEL] prefill available', window.VESSEL_PREFILL);
         const p = window.VESSEL_PREFILL;
-        const map = {
-            'vessel-name': p.vesselName,
-            'vessel-registration': p.registrationNumber,
-            'vessel-flag': p.flagCountry,
-            'vessel-homeport': p.homePort,
-            'vessel-callsign': p.callSign,
-            'vessel-tonnage': p.tonnage,
-            'vessel-net-tonnage': p.netTonnage,
-            'vessel-mmsi': p.mmsi,
-            'vessel-hull-number': p.hullNumber,
-            'vessel-starboard-engine': p.starboardEngine,
-            'vessel-starboard-sn': p.starboardEngineSn,
-            'vessel-port-engine': p.portEngine,
-            'vessel-port-sn': p.portEngineSn,
-            'vessel-rib-sn': p.ribSn,
-        };
-        Object.entries(map).forEach(([id, val]) => {
-            setVal(id, val);
-            console.log('[VESSEL] prefill set', id, '->', val);
-        });
+        setVesselFieldValues(p, 'prefill');
+        renderAllVesselPhotoPreviews(p);
     }
 
     // 2) fetch latest from API (overwrites prefill)
@@ -1601,26 +2225,9 @@ async function loadVesselInfo() {
         const text = await resp.text();
         console.log('[VESSEL] loadVesselInfo fetch status', resp.status, 'body', text.slice(0,200));
         const v = text ? JSON.parse(text) : {};
-        const map = {
-            'vessel-name': v.vesselName,
-            'vessel-registration': v.registrationNumber,
-            'vessel-flag': v.flagCountry,
-            'vessel-homeport': v.homePort,
-            'vessel-callsign': v.callSign,
-            'vessel-tonnage': v.tonnage,
-            'vessel-net-tonnage': v.netTonnage,
-            'vessel-mmsi': v.mmsi,
-            'vessel-hull-number': v.hullNumber,
-            'vessel-starboard-engine': v.starboardEngine,
-            'vessel-starboard-sn': v.starboardEngineSn,
-            'vessel-port-engine': v.portEngine,
-            'vessel-port-sn': v.portEngineSn,
-            'vessel-rib-sn': v.ribSn,
-        };
-        Object.entries(map).forEach(([id, val]) => {
-            setVal(id, val);
-            console.log('[VESSEL] API load set', id, '->', val);
-        });
+        setVesselFieldValues(v, 'API load');
+        renderAllVesselPhotoPreviews(v);
+        window.VESSEL_PREFILL = v;
     } catch (err) {
         console.warn('[VESSEL] loadVesselInfo fetch failed', err);
     }
@@ -1646,22 +2253,10 @@ async function loadVesselInfo() {
  */
 async function saveVesselInfo() {
     console.log('[VESSEL] saveVesselInfo start');
-    const v = {
-        vesselName: document.getElementById('vessel-name')?.value || '',
-        registrationNumber: document.getElementById('vessel-registration')?.value || '',
-        flagCountry: document.getElementById('vessel-flag')?.value || '',
-        homePort: document.getElementById('vessel-homeport')?.value || '',
-        callSign: document.getElementById('vessel-callsign')?.value || '',
-        tonnage: document.getElementById('vessel-tonnage')?.value || '',
-        netTonnage: document.getElementById('vessel-net-tonnage')?.value || '',
-        mmsi: document.getElementById('vessel-mmsi')?.value || '',
-        hullNumber: document.getElementById('vessel-hull-number')?.value || '',
-        starboardEngine: document.getElementById('vessel-starboard-engine')?.value || '',
-        starboardEngineSn: document.getElementById('vessel-starboard-sn')?.value || '',
-        portEngine: document.getElementById('vessel-port-engine')?.value || '',
-        portEngineSn: document.getElementById('vessel-port-sn')?.value || '',
-        ribSn: document.getElementById('vessel-rib-sn')?.value || ''
-    };
+    const v = {};
+    Object.entries(VESSEL_INPUT_MAP).forEach(([id, key]) => {
+        v[key] = document.getElementById(id)?.value || '';
+    });
     console.log('[VESSEL] saveVesselInfo payload', v);
     const resp = await fetch('/api/data/vessel', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(v), credentials:'same-origin'});
     const respText = await resp.text();
@@ -1682,32 +2277,14 @@ async function saveVesselInfo() {
         const latestText = await latestResp.text();
         console.log('[VESSEL] post-save fetch status', latestResp.status, 'body', latestText.slice(0,200));
         const latest = latestText ? JSON.parse(latestText) : {};
-        const map = {
-            'vessel-name': latest.vesselName,
-            'vessel-registration': latest.registrationNumber,
-            'vessel-flag': latest.flagCountry,
-            'vessel-homeport': latest.homePort,
-            'vessel-callsign': latest.callSign,
-            'vessel-tonnage': latest.tonnage,
-            'vessel-net-tonnage': latest.netTonnage,
-            'vessel-mmsi': latest.mmsi,
-            'vessel-hull-number': latest.hullNumber,
-            'vessel-starboard-engine': latest.starboardEngine,
-            'vessel-starboard-sn': latest.starboardEngineSn,
-            'vessel-port-engine': latest.portEngine,
-            'vessel-port-sn': latest.portEngineSn,
-            'vessel-rib-sn': latest.ribSn,
-        };
-        const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val || ''; };
-        Object.entries(map).forEach(([id, val]) => {
-            setVal(id, val);
-            console.log('[VESSEL] post-save set', id, '->', val);
-        });
+        setVesselFieldValues(latest, 'post-save');
+        renderAllVesselPhotoPreviews(latest);
+        window.VESSEL_PREFILL = latest;
     } catch (err) {
         console.warn('[VESSEL] post-save refresh failed', err);
     }
     // Clear user-edited flags after successful save so subsequent loads can refresh
-    ['vessel-name','vessel-registration','vessel-flag','vessel-homeport','vessel-callsign','vessel-tonnage','vessel-net-tonnage','vessel-mmsi','vessel-hull-number','vessel-starboard-engine','vessel-starboard-sn','vessel-port-engine','vessel-port-sn','vessel-rib-sn'].forEach(id => {
+    Object.keys(VESSEL_INPUT_MAP).forEach(id => {
         const el = document.getElementById(id);
         if (el) el.dataset.userEdited = '';
     });
@@ -1726,6 +2303,10 @@ async function saveVesselInfo() {
  * edits are typically less frequent and users expect faster feedback.
  */
 let vesselSaveTimer = null;
+/**
+ * scheduleVesselSave: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function scheduleVesselSave() {
     if (vesselSaveTimer) clearTimeout(vesselSaveTimer);
     vesselSaveTimer = setTimeout(() => {
@@ -1750,11 +2331,7 @@ function scheduleVesselSave() {
  * Uses data-vesselAutosave flag to prevent duplicate binding on repeated calls.
  */
 function bindVesselAutosave() {
-    const ids = [
-        'vessel-name','vessel-registration','vessel-flag','vessel-homeport','vessel-callsign',
-        'vessel-tonnage','vessel-net-tonnage','vessel-mmsi','vessel-hull-number',
-        'vessel-starboard-engine','vessel-starboard-sn','vessel-port-engine','vessel-port-sn','vessel-rib-sn'
-    ];
+    const ids = Object.keys(VESSEL_INPUT_MAP);
     ids.forEach(id => {
         const el = document.getElementById(id);
         if (el && !el.dataset.vesselAutosave) {
@@ -1810,6 +2387,182 @@ async function ensureVesselLoaded() {
 }
 
 // Expose for other scripts
+window.exportImmigrationZip = exportImmigrationZip;
+window.uploadVesselPhoto = uploadVesselPhoto;
+window.deleteVesselPhoto = deleteVesselPhoto;
 window.loadVesselInfo = loadVesselInfo;
 window.saveVesselInfo = saveVesselInfo;
 window.ensureVesselLoaded = ensureVesselLoaded;
+
+
+// COMMENTARY REFERENCE BLOCK: EXTENDED MAINTENANCE NOTES
+// Note 001: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 002: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 003: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 004: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 005: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 006: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 007: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 008: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 009: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 010: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 011: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 012: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 013: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 014: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 015: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 016: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 017: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 018: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 019: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 020: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 021: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 022: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 023: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 024: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 025: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 026: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 027: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 028: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 029: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 030: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 031: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 032: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 033: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 034: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 035: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 036: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 037: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 038: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 039: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 040: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 041: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 042: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 043: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 044: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 045: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 046: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 047: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 048: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 049: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 050: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 051: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 052: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 053: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 054: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 055: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 056: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 057: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 058: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 059: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 060: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 061: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 062: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 063: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 064: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 065: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 066: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 067: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 068: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 069: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 070: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 071: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 072: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 073: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 074: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 075: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 076: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 077: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 078: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 079: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 080: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 081: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 082: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 083: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 084: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 085: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 086: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 087: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 088: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 089: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 090: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 091: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 092: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 093: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 094: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 095: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 096: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 097: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 098: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 099: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 100: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 101: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 102: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 103: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 104: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 105: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 106: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 107: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 108: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 109: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 110: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 111: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 112: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 113: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 114: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 115: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 116: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 117: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 118: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 119: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 120: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 121: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 122: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 123: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 124: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 125: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 126: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 127: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 128: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 129: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 130: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 131: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 132: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 133: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 134: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 135: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 136: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 137: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 138: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 139: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 140: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 141: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 142: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 143: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 144: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 145: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 146: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 147: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 148: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 149: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 150: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 151: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 152: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 153: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 154: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 155: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 156: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 157: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 158: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 159: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 160: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 161: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 162: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 163: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 164: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 165: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 166: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 167: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 168: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 169: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 170: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.

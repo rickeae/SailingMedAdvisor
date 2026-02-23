@@ -1,5 +1,20 @@
+<!-- =============================================================================
+     Author: Rick Escher
+     Project: SilingMedAdvisor (SailingMedAdvisor)
+     Context: Google HAI-DEF Framework
+     Models: Google MedGemmas
+     Program: Kaggle Impact Challenge
+     ========================================================================== -->
 <div class="dev-tag">dev:sidebar-settings</div>
-<div class="sidebar-section" data-sidebar-section="settings-overview">
-    <div class="sidebar-title"><span class="sidebar-pill">Settings</span> Parameters</div>
-    <div class="sidebar-body">Integer ac ligula nec sapien tristique porttitor. Suspendisse id ultrices eros, in ultricies mi.</div>
+<div class="sidebar-section">
+    <div class="sidebar-title"><span class="sidebar-pill">Settings</span> Model Tuning & Safety Guardrails</div>
+    <div class="sidebar-body">
+        <strong>Purpose:</strong> The Settings tab serves as the Runtime Configuration and safety guardrail layer for the application. It manages the technical environment through the Offline Readiness module, which handles cached model management and local flags to ensure functionality in zero-bandwidth environments. It also defines the global boundaries for MedGemma Model Parameters, allowing for precise control over token limits for Triage and Inquiry modes to ensure stability on Edge hardware.
+    </div>
+</div>
+<div class="sidebar-section">
+    <div class="sidebar-title">Operational Logic</div>
+    <div class="sidebar-body">
+        This is where the medical officer calibrates the application's underlying infrastructure. By managing these parameters and User Modes (Advanced/Developer) here, you ensure the system is tuned for the vessel's specific hardware capabilities and safety posture. The Offline Readiness controls are particularly vital for mission-critical reliability, ensuring that the necessary model weights and system instructions are locally available and properly configured before the vessel leaves port.
+    </div>
 </div>

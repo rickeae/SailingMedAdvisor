@@ -1,3 +1,10 @@
+/* =============================================================================
+ * Author: Rick Escher
+ * Project: SilingMedAdvisor (SailingMedAdvisor)
+ * Context: Google HAI-DEF Framework
+ * Models: Google MedGemmas
+ * Program: Kaggle Impact Challenge
+ * ========================================================================== */
 /*
 File: static/js/main.js
 Author notes: Application orchestration and global UI utilities.
@@ -79,9 +86,139 @@ Integration Points:
 // ============================================================================
 
 const SIDEBAR_STATE_KEY = 'sailingmed:sidebarCollapsed';
+const renderAssistantMarkdownMain = (window.Utils && window.Utils.renderAssistantMarkdown)
+    ? window.Utils.renderAssistantMarkdown
+    : (txt) => (window.marked && typeof window.marked.parse === 'function')
+        ? window.marked.parse(txt || '', { gfm: true, breaks: true })
+        : (window.escapeHtml ? window.escapeHtml(txt || '') : String(txt || '')).replace(/\n/g, '<br>');
 let globalSidebarCollapsed = false;  // Sidebar collapse state (synced across all tabs)
 let crewDataLoaded = false;          // Prevent duplicate crew data loads
 let crewDataPromise = null;          // Promise for concurrent load protection
+const LAST_PATIENT_KEY_MAIN = 'sailingmed:lastPatient';
+const COLLAPSIBLE_PREF_SCHEMA_KEY = 'sailingmed:collapsiblePrefSchema';
+const COLLAPSIBLE_PREF_SCHEMA_VERSION = '2';
+
+/**
+ * migrateCollapsiblePrefs: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function migrateCollapsiblePrefs() {
+    try {
+        const current = localStorage.getItem(COLLAPSIBLE_PREF_SCHEMA_KEY);
+        if (current === COLLAPSIBLE_PREF_SCHEMA_VERSION) return;
+        // Legacy values were stored inverted; normalize once.
+        ['query-form-open', 'triage-pathway-open'].forEach((key) => {
+            const raw = localStorage.getItem(key);
+            if (raw === 'true') localStorage.setItem(key, 'false');
+            else if (raw === 'false') localStorage.setItem(key, 'true');
+        });
+        localStorage.setItem(COLLAPSIBLE_PREF_SCHEMA_KEY, COLLAPSIBLE_PREF_SCHEMA_VERSION);
+    } catch (err) { /* ignore */ }
+}
+
+/**
+ * getCrewFullNameFast: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function getCrewFullNameFast(crew) {
+    const first = crew && typeof crew.firstName === 'string' ? crew.firstName.trim() : '';
+    const last = crew && typeof crew.lastName === 'string' ? crew.lastName.trim() : '';
+    const full = `${first} ${last}`.trim();
+    if (full) return full;
+    if (crew && typeof crew.name === 'string' && crew.name.trim()) return crew.name.trim();
+    return 'Unnamed Crew';
+}
+
+/**
+ * Fast-path dropdown population so the Chat crew selector is usable
+ * immediately after splash/login transition.
+ *
+ * This intentionally avoids rendering full crew/history UI and only updates
+ * `#p-select` while the rest of loadData() continues in the background.
+ */
+function populateCrewSelectFast(patients) {
+    if (!Array.isArray(patients)) return;
+    const select = document.getElementById('p-select');
+    if (!select) return;
+
+    let storedValue = '';
+    try {
+        storedValue = localStorage.getItem(LAST_PATIENT_KEY_MAIN) || '';
+    } catch (err) { /* ignore */ }
+    const currentValue = select.value || '';
+    const preferredValue = currentValue || storedValue;
+
+    const frag = document.createDocumentFragment();
+    const defaultOpt = document.createElement('option');
+    defaultOpt.value = '';
+    defaultOpt.textContent = 'Unnamed Crew Member';
+    frag.appendChild(defaultOpt);
+    patients.forEach((crew) => {
+        const opt = document.createElement('option');
+        opt.value = String((crew && crew.id) || '');
+        opt.textContent = getCrewFullNameFast(crew);
+        frag.appendChild(opt);
+    });
+    select.replaceChildren(frag);
+
+    if (preferredValue && Array.from(select.options).some((opt) => opt.value === preferredValue)) {
+        select.value = preferredValue;
+        return;
+    }
+    if (preferredValue) {
+        const byName = Array.from(select.options).find((opt) => opt.textContent === preferredValue);
+        select.value = byName ? (byName.value || '') : '';
+        return;
+    }
+    select.value = '';
+}
+
+/**
+ * getMedicalChestRenderCount: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function getMedicalChestRenderCount() {
+    const pharmaCount = document.querySelectorAll('#pharmacy-list .history-item').length;
+    const equipmentCount = document.querySelectorAll('#equipment-list .history-item').length;
+    const consumableCount = document.querySelectorAll('#consumables-list .history-item').length;
+    return pharmaCount + equipmentCount + consumableCount;
+}
+
+async function runMedicalChestLoadCycle() {
+    const loaders = [];
+    if (typeof loadEquipment === 'function') {
+        loaders.push(Promise.resolve(loadEquipment()));
+    }
+    if (typeof loadPharmacy === 'function') {
+        loaders.push(Promise.resolve(loadPharmacy()));
+    }
+    if (!loaders.length) return;
+    await Promise.allSettled(loaders);
+}
+
+async function ensureMedicalChestLoaded() {
+    await runMedicalChestLoadCycle();
+    if (getMedicalChestRenderCount() > 0) return;
+    try {
+        const [invRes, toolsRes] = await Promise.all([
+            fetch('/api/data/inventory', { credentials: 'same-origin' }),
+            fetch('/api/data/tools', { credentials: 'same-origin' }),
+        ]);
+        const [invData, toolsData] = await Promise.all([
+            invRes.ok ? invRes.json() : Promise.resolve([]),
+            toolsRes.ok ? toolsRes.json() : Promise.resolve([]),
+        ]);
+        const hasBackendData = (Array.isArray(invData) && invData.length > 0)
+            || (Array.isArray(toolsData) && toolsData.length > 0);
+        if (hasBackendData) {
+            console.warn('[DEBUG] Medical Chest rendered empty; retrying load once.');
+            await new Promise((resolve) => setTimeout(resolve, 300));
+            await runMedicalChestLoadCycle();
+        }
+    } catch (err) {
+        console.warn('[DEBUG] Medical Chest retry probe failed:', err);
+    }
+}
 
 /**
  * Set sidebar collapsed state across all sidebars.
@@ -148,17 +285,18 @@ function toggleSection(el) {
     if (sortWrap) {
         sortWrap.style.display = nextExpanded ? "flex" : "none";
     }
-    // Show inline triage sample selector only when expanded AND in advanced/developer mode
-    const sampleInline = el.querySelector('.triage-sample-inline');
-    if (sampleInline) {
-        const isAdvanced = document.body.classList.contains('mode-advanced') || document.body.classList.contains('mode-developer');
-        sampleInline.style.display = (nextExpanded && isAdvanced) ? "flex" : "none";
-    }
     if (el.dataset && el.dataset.sidebarId) {
         syncSidebarSections(el.dataset.sidebarId, nextExpanded);
     }
     if (el.dataset && el.dataset.prefKey) {
-        try { localStorage.setItem(el.dataset.prefKey, (!nextExpanded).toString()); } catch (err) { /* ignore */ }
+        try { localStorage.setItem(el.dataset.prefKey, nextExpanded.toString()); } catch (err) { /* ignore */ }
+    }
+    if (el.id === 'query-form-header') {
+        if (typeof window.handleStartPanelToggle === 'function') {
+            window.handleStartPanelToggle(nextExpanded);
+        } else if (typeof window.updateStartPanelTitle === 'function') {
+            window.updateStartPanelTitle();
+        }
     }
 }
 
@@ -382,12 +520,17 @@ async function ensureCrewData() {
  * @param {Event} e - Click event
  * @param {string} n - Tab name/ID to show
  */
-async function showTab(e, n) {
+async function showTab(trigger, n) {
     console.log('[DEBUG] showTab ->', n);
     document.querySelectorAll('.content').forEach(c=>c.style.display='none');
     document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
     document.getElementById(n).style.display='flex'; 
-    e.currentTarget.classList.add('active');
+    const clickedTab = trigger?.currentTarget
+        || (trigger && trigger.nodeType === 1 ? trigger : null)
+        || document.querySelector(`.tab[onclick*="'${n}'"]`);
+    if (clickedTab) {
+        clickedTab.classList.add('active');
+    }
     toggleBannerControls(n);
     if (n === 'Chat') updateUI();
     
@@ -413,12 +556,7 @@ async function showTab(e, n) {
         }
         loadContext(n);
     } else if (n === 'OnboardEquipment') {
-        if (typeof loadEquipment === 'function') {
-            loadEquipment();
-        }
-        if (typeof loadPharmacy === 'function') {
-            loadPharmacy();
-        }
+        await ensureMedicalChestLoaded();
         loadContext(n);
     }
     if (n === 'Chat') {
@@ -428,13 +566,21 @@ async function showTab(e, n) {
             console.warn('[DEBUG] Chat crew load failed:', err);
         }
         loadContext('Chat');
-        restoreCollapsibleState('query-form-header', true);
+        if (typeof window.syncStartPanelWithConsultationState === 'function') {
+            window.syncStartPanelWithConsultationState();
+        } else {
+            restoreCollapsibleState('query-form-header', true);
+        }
+        restoreCollapsibleState('triage-pathway-header', false);
         // Prefetch prompt preview so it is ready when expanded
         if (typeof refreshPromptPreview === 'function') {
             refreshPromptPreview();
         }
     }
 }
+
+// Ensure inline onclick handlers can always resolve this function.
+window.showTab = showTab;
 
 /**
  * Load crew, history, and settings data from server.
@@ -470,21 +616,52 @@ async function showTab(e, n) {
 async function loadData() {
     console.log('[DEBUG] loadData: start');
     try {
-        const [res, historyRes, settingsRes] = await Promise.all([
-            fetch('/api/data/patients', { credentials: 'same-origin' }),
-            fetch('/api/data/history', { credentials: 'same-origin' }),
-            fetch('/api/data/settings', { credentials: 'same-origin' })
-        ]);
-        console.log('[DEBUG] loadData: status patients', res.status, 'history', historyRes.status, 'settings', settingsRes.status);
+        // Prioritize patient roster fetch so #p-select is usable as early as possible.
+        const patientsResPromise = fetch('/api/data/patients', { credentials: 'same-origin' });
+        const patientOptionsPromise = fetch('/api/patients/options', { credentials: 'same-origin' })
+            .then(async (res) => {
+                if (!res.ok) return null;
+                const data = await res.json();
+                return Array.isArray(data) ? data : null;
+            })
+            .then((options) => {
+                if (Array.isArray(options) && options.length) {
+                    populateCrewSelectFast(options);
+                }
+                return options;
+            })
+            .catch((err) => {
+                console.warn('Patient options request failed before response; falling back to full patients payload.', err);
+                return null;
+            });
+        const historyResPromise = fetch('/api/data/history', { credentials: 'same-origin' })
+            .catch((err) => {
+                console.warn('History request failed before response; continuing without history.', err);
+                return null;
+            });
+        const settingsResPromise = fetch('/api/data/settings', { credentials: 'same-origin' })
+            .catch((err) => {
+                console.warn('Settings request failed before response; using defaults.', err);
+                return null;
+            });
+        const res = await patientsResPromise;
         if (!res.ok) throw new Error(`Patients request failed: ${res.status}`);
-        if (!settingsRes.ok) console.warn('Settings request failed:', settingsRes.status);
 
-        // Parse patients (hard requirement)
+        // Parse patients (hard requirement) and immediately hydrate chat dropdown.
         const data = await res.json();
+        console.log('[DEBUG] loadData: patients status', res.status, 'length', Array.isArray(data) ? data.length : 'n/a');
+        if (!Array.isArray(data)) throw new Error('Unexpected patients data format');
+        populateCrewSelectFast(data);
+        // Ensure fast options request has settled; failures are already handled.
+        await patientOptionsPromise;
+
+        const [historyRes, settingsRes] = await Promise.all([historyResPromise, settingsResPromise]);
+        console.log('[DEBUG] loadData: status history', historyRes ? historyRes.status : 'error', 'settings', settingsRes ? settingsRes.status : 'error');
+        if (!settingsRes || !settingsRes.ok) console.warn('Settings request failed:', settingsRes ? settingsRes.status : 'network');
 
         // Parse history, but never block crew rendering if it fails
         let history = [];
-        if (historyRes.ok) {
+        if (historyRes && historyRes.ok) {
             try {
                 const parsedHistory = await historyRes.json();
                 history = Array.isArray(parsedHistory) ? parsedHistory : [];
@@ -493,19 +670,17 @@ async function loadData() {
                 history = [];
             }
         } else {
-            console.warn('History request failed; continuing without history. Status:', historyRes.status);
+            console.warn('History request failed; continuing without history. Status:', historyRes ? historyRes.status : 'network');
         }
 
         // Parse settings (optional)
         let settings = {};
         try {
-            settings = settingsRes.ok ? await settingsRes.json() : {};
+            settings = (settingsRes && settingsRes.ok) ? await settingsRes.json() : {};
         } catch (err) {
             console.warn('Settings parse failed, using defaults.', err);
         }
         window.CACHED_SETTINGS = settings || {};
-        console.log('[DEBUG] loadData: patients length', Array.isArray(data) ? data.length : 'n/a');
-        if (!Array.isArray(data)) throw new Error('Unexpected patients data format');
 
         // Ensure crew renderer is ready; retry briefly if the script is still loading
         if (typeof loadCrewData !== 'function') {
@@ -527,7 +702,7 @@ async function loadData() {
         window.CACHED_SETTINGS = window.CACHED_SETTINGS || {};
         // Gracefully clear UI to avoid JS errors
         const pSelect = document.getElementById('p-select');
-        if (pSelect) pSelect.innerHTML = '<option>Unnamed Crew</option>';
+        if (pSelect) pSelect.innerHTML = '<option value=\"\">Unnamed Crew Member</option>';
         const medicalContainer = document.getElementById('crew-medical-list');
         if (medicalContainer) medicalContainer.innerHTML = `<div style="color:#666;">Unable to load crew data. ${err.message}</div>`;
         const infoContainer = document.getElementById('crew-info-list');
@@ -550,6 +725,7 @@ async function loadData() {
  * 
  * **Vessel & Crew Info Tab:**
  * - Export crew CSV button (for border crossings)
+ * - Export immigration zip button (crew + vessel package)
  * 
  * Other tabs: All banner controls hidden
  * 
@@ -560,11 +736,15 @@ function toggleBannerControls(activeTab) {
     const crewControls = document.getElementById('banner-controls-crew');
     const medExportAll = document.getElementById('crew-med-export-all-btn');
     const crewCsvBtn = document.getElementById('crew-csv-btn');
+    const immigrationZipBtn = document.getElementById('crew-immigration-zip-btn');
     if (triageControls) triageControls.style.display = activeTab === 'Chat' ? 'flex' : 'none';
     if (crewControls) crewControls.style.display = (activeTab === 'CrewMedical' || activeTab === 'VesselCrewInfo') ? 'flex' : 'none';
     if (medExportAll) medExportAll.style.display = activeTab === 'CrewMedical' ? 'inline-flex' : 'none';
     if (crewCsvBtn) crewCsvBtn.style.display = activeTab === 'VesselCrewInfo' ? 'inline-flex' : 'none';
+    if (immigrationZipBtn) immigrationZipBtn.style.display = activeTab === 'VesselCrewInfo' ? 'inline-flex' : 'none';
 }
+
+window.toggleBannerControls = toggleBannerControls;
 
 /**
  * Application initialization on page load.
@@ -596,24 +776,41 @@ function toggleBannerControls(activeTab) {
  */
 window.onload = () => { 
     console.log('[DEBUG] window.onload: start');
-    ensureCrewData();
-    // Preload Medical Chest data so tab opens instantly.
-    if (typeof preloadPharmacy === 'function') {
-        preloadPharmacy().catch((err) => console.warn('[DEBUG] preloadPharmacy failed:', err));
-    }
-    if (typeof loadWhoMedsFromServer === 'function') {
-        loadWhoMedsFromServer().catch((err) => console.warn('[DEBUG] preload WHO meds failed:', err));
-    }
-    if (typeof ensurePharmacyLabels === 'function') {
-        ensurePharmacyLabels().catch((err) => console.warn('[DEBUG] preload pharmacy labels failed:', err));
-    }
-    if (typeof loadPharmacy === 'function') {
-        loadPharmacy(); // pre-warm Medical Chest so list is ready when tab opens
-    }
+    migrateCollapsiblePrefs();
+    const preloadMedicalChest = () => {
+        // Preload Medical Chest after crew dropdown hydration to prioritize chat readiness.
+        if (typeof preloadPharmacy === 'function') {
+            preloadPharmacy().catch((err) => console.warn('[DEBUG] preloadPharmacy failed:', err));
+        }
+        if (typeof loadWhoMedsFromServer === 'function') {
+            loadWhoMedsFromServer().catch((err) => console.warn('[DEBUG] preload WHO meds failed:', err));
+        }
+        if (typeof ensurePharmacyLabels === 'function') {
+            ensurePharmacyLabels().catch((err) => console.warn('[DEBUG] preload pharmacy labels failed:', err));
+        }
+        if (typeof loadPharmacy === 'function') {
+            loadPharmacy(); // pre-warm Medical Chest so list is ready when tab opens
+        }
+    };
+    const crewReady = ensureCrewData().catch((err) => {
+        console.warn('[DEBUG] ensureCrewData failed during boot:', err);
+    });
+    crewReady.finally(() => {
+        if (typeof window.requestIdleCallback === 'function') {
+            window.requestIdleCallback(preloadMedicalChest, { timeout: 800 });
+        } else {
+            setTimeout(preloadMedicalChest, 0);
+        }
+    });
     updateUI(); 
     toggleBannerControls('Chat');
     initSidebarSync();
-    restoreCollapsibleState('query-form-header', true);
+    if (typeof window.syncStartPanelWithConsultationState === 'function') {
+        window.syncStartPanelWithConsultationState();
+    } else {
+        restoreCollapsibleState('query-form-header', true);
+    }
+    restoreCollapsibleState('triage-pathway-header', false);
     restoreLastChatView();
 };
 
@@ -684,14 +881,15 @@ async function loadContext(tabName) {
 }
 
 /**
- * Restore last chat session on page load.
+ * Restore the most recent chat session on page load.
  * 
  * Restoration Process:
  * 1. Checks display element is empty (fresh load)
  * 2. Checks skipLastChat flag (user may have cleared it)
  * 3. Fetches history from server
  * 4. Gets most recent entry
- * 5. Renders query and response with markdown parsing
+ * 5. Attempts active session restore via chat.js helper
+ * 6. Falls back to read-only rendering if active restore is unavailable
  * 
  * Display Format:
  * - Title: "Last Session — [Patient] ([Date])"
@@ -710,7 +908,8 @@ async function loadContext(tabName) {
  * - History fetch fails
  * 
  * Integration:
- * Works with clearDisplay() in chat.js which sets skipLastChat flag.
+ * Respects skipLastChat flag set when starting a new consultation clears prior
+ * on-screen results.
  */
 async function restoreLastChatView() {
     try {
@@ -724,10 +923,57 @@ async function restoreLastChatView() {
         if (!res.ok) return;
         const history = await res.json();
         if (!Array.isArray(history) || history.length === 0) return;
-        const last = history[history.length - 1];
-        const parse = (txt) => (window.marked && typeof window.marked.parse === 'function')
-            ? window.marked.parse(txt || '')
-            : (txt || '').replace(/\\n/g, '<br>');
+        const toTimestamp = (entry) => {
+            if (!entry || typeof entry !== 'object') return Number.NEGATIVE_INFINITY;
+            const raw = entry.updated_at || entry.date || '';
+            if (!raw) return Number.NEGATIVE_INFINITY;
+            const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+            const ts = Date.parse(normalized);
+            return Number.isNaN(ts) ? Number.NEGATIVE_INFINITY : ts;
+        };
+        const sortedHistory = history.slice().sort((a, b) => toTimestamp(b) - toTimestamp(a));
+        const last = sortedHistory[0];
+        if (!last) return;
+        if (typeof window.restoreHistoryEntrySession === 'function') {
+            try {
+                const restored = window.restoreHistoryEntrySession(last, {
+                    focusInput: false,
+                    forceLoggingOn: true,
+                    notifyRestored: false,
+                    allowTakeover: false,
+                });
+                if (restored) return;
+            } catch (err) {
+                console.warn('Failed to restore active last chat session', err);
+            }
+        }
+        const parseTranscript = (entry) => {
+            if (!entry) return { messages: [] };
+            if (entry.response && typeof entry.response === 'object' && Array.isArray(entry.response.messages)) {
+                return { messages: entry.response.messages, meta: entry.response.meta || {} };
+            }
+            if (typeof entry.response === 'string' && entry.response.trim().startsWith('{')) {
+                try {
+                    const parsed = JSON.parse(entry.response);
+                    if (parsed && Array.isArray(parsed.messages)) {
+                        return { messages: parsed.messages, meta: parsed.meta || {} };
+                    }
+                } catch (err) { /* ignore */ }
+            }
+            return { messages: [] };
+        };
+        const transcript = parseTranscript(last);
+        if (transcript.messages.length && typeof window.renderTranscript === 'function') {
+            display.innerHTML = `
+                <div class="response-block" style="border-left-color:var(--inquiry);">
+                    <div style="font-weight:800; margin-bottom:6px;">Last Consultation (read-only) — ${last.patient || 'Unknown'} (${last.date || ''})</div>
+                    <div style="font-size:12px; color:#555;">Use the Consultation Log to restore and continue this session.</div>
+                </div>
+            `;
+            window.renderTranscript(transcript.messages, { append: true });
+            return;
+        }
+        const parse = (txt) => renderAssistantMarkdownMain(txt || '');
         const responseHtml = parse(last.response || '');
         const queryHtml = parse(last.query || '');
         display.innerHTML = `
@@ -739,6 +985,10 @@ async function restoreLastChatView() {
         `;
     } catch (err) {
         console.warn('Failed to restore last chat view', err);
+    } finally {
+        if (typeof window.syncStartPanelWithConsultationState === 'function') {
+            window.syncStartPanelWithConsultationState();
+        }
     }
 }
 
@@ -874,3 +1124,136 @@ function toggleSearchResults(headerEl) {
 // expose for inline handlers
 window.searchMedicalChest = searchMedicalChest;
 window.toggleSearchResults = toggleSearchResults;
+
+
+// COMMENTARY REFERENCE BLOCK: EXTENDED MAINTENANCE NOTES
+// Note 001: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 002: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 003: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 004: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 005: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 006: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 007: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 008: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 009: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 010: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 011: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 012: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 013: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 014: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 015: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 016: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 017: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 018: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 019: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 020: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 021: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 022: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 023: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 024: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 025: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 026: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 027: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 028: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 029: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 030: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 031: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 032: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 033: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 034: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 035: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 036: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 037: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 038: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 039: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 040: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 041: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 042: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 043: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 044: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 045: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 046: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 047: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 048: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 049: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 050: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 051: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 052: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 053: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 054: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 055: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 056: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 057: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 058: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 059: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 060: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 061: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 062: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 063: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 064: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 065: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 066: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 067: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 068: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 069: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 070: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 071: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 072: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 073: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 074: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 075: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 076: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 077: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 078: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 079: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 080: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 081: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 082: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 083: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 084: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 085: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 086: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 087: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 088: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 089: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 090: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 091: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 092: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 093: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 094: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 095: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 096: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 097: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 098: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 099: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 100: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 101: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 102: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 103: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 104: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 105: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 106: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 107: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 108: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 109: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 110: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 111: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 112: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 113: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 114: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 115: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 116: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 117: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 118: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 119: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 120: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 121: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 122: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 123: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 124: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 125: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 126: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 127: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 128: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 129: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 130: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.

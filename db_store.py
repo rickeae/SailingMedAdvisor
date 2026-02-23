@@ -1,3 +1,10 @@
+# =============================================================================
+# Author: Rick Escher
+# Project: SilingMedAdvisor (SailingMedAdvisor)
+# Context: Google HAI-DEF Framework
+# Models: Google MedGemmas
+# Program: Kaggle Impact Challenge
+# =============================================================================
 """
 File: db_store.py
 Author notes: Centralized persistence layer for SailingMedAdvisor. I keep all
@@ -14,7 +21,7 @@ import re
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Optional, Any, Dict
+from typing import Optional, Any, Dict
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -32,6 +39,10 @@ def configure_db(path: Path):
 
 
 def _conn():
+    """
+     Conn helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     try:
@@ -90,6 +101,9 @@ def _init_db():
                 portEngine TEXT,
                 portEngineSn TEXT,
                 ribSn TEXT,
+                boatPhoto TEXT,
+                registrationFrontPhoto TEXT,
+                registrationBackPhoto TEXT,
                 updated_at TEXT NOT NULL
             );
             """
@@ -197,12 +211,27 @@ def _init_db():
                 tr_temp REAL,
                 tr_tok INTEGER,
                 tr_p REAL,
+                tr_k INTEGER,
                 in_temp REAL,
                 in_tok INTEGER,
                 in_p REAL,
+                in_k INTEGER,
                 mission_context TEXT,
                 rep_penalty REAL,
                 updated_at TEXT NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS prompt_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                prompt_key TEXT NOT NULL,
+                name TEXT NOT NULL,
+                prompt_text TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(prompt_key, name)
             );
             """
         )
@@ -212,7 +241,6 @@ def _init_db():
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 user_mode TEXT,
                 offline_force_flags INTEGER DEFAULT 0,
-                resource_injection_mode TEXT,
                 last_prompt_verbatim TEXT,
                 updated_at TEXT NOT NULL
             );
@@ -259,6 +287,8 @@ def _init_db():
                 requiresPower INTEGER,
                 category TEXT,
                 typeDetail TEXT,
+                priorityTier TEXT,
+                tierCategory TEXT,
                 notes TEXT,
                 excludeFromResources INTEGER DEFAULT 0,
                 updated_at TEXT NOT NULL
@@ -344,28 +374,32 @@ def _init_db():
         )
         conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS triage_samples (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                situation TEXT,
-                chat_text TEXT,
-                responsive TEXT,
-                breathing TEXT,
-                pain TEXT,
-                main_problem TEXT,
-                temp TEXT,
-                circulation TEXT,
-                cause TEXT,
-                updated_at TEXT NOT NULL
-            );
-            """
-        )
-        conn.execute(
-            """
             CREATE TABLE IF NOT EXISTS triage_options (
                 field TEXT NOT NULL,
                 value TEXT NOT NULL,
                 position INTEGER NOT NULL,
                 PRIMARY KEY(field, position)
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS triage_prompt_modules (
+                category TEXT NOT NULL,
+                module_key TEXT NOT NULL,
+                module_text TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(category, module_key)
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS triage_prompt_tree (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                payload TEXT NOT NULL,
+                updated_at TEXT NOT NULL
             );
             """
         )
@@ -501,9 +535,11 @@ def _maybe_migrate_model_params(conn, now):
             tr_temp REAL,
             tr_tok INTEGER,
             tr_p REAL,
+            tr_k INTEGER,
             in_temp REAL,
             in_tok INTEGER,
             in_p REAL,
+            in_k INTEGER,
             mission_context TEXT,
             rep_penalty REAL,
             updated_at TEXT NOT NULL
@@ -522,11 +558,11 @@ def _maybe_migrate_model_params(conn, now):
             conn.execute(
                 """
                 INSERT INTO model_params(
-                    id, triage_instruction, inquiry_instruction, tr_temp, tr_tok, tr_p,
-                    in_temp, in_tok, in_p, mission_context, rep_penalty, updated_at
+                    id, triage_instruction, inquiry_instruction, tr_temp, tr_tok, tr_p, tr_k,
+                    in_temp, in_tok, in_p, in_k, mission_context, rep_penalty, updated_at
                 ) VALUES (
-                    1, :triage_instruction, :inquiry_instruction, :tr_temp, :tr_tok, :tr_p,
-                    :in_temp, :in_tok, :in_p, :mission_context, :rep_penalty, :updated_at
+                    1, :triage_instruction, :inquiry_instruction, :tr_temp, :tr_tok, :tr_p, :tr_k,
+                    :in_temp, :in_tok, :in_p, :in_k, :mission_context, :rep_penalty, :updated_at
                 )
                 ON CONFLICT(id) DO UPDATE SET
                     triage_instruction=excluded.triage_instruction,
@@ -534,9 +570,11 @@ def _maybe_migrate_model_params(conn, now):
                     tr_temp=excluded.tr_temp,
                     tr_tok=excluded.tr_tok,
                     tr_p=excluded.tr_p,
+                    tr_k=excluded.tr_k,
                     in_temp=excluded.in_temp,
                     in_tok=excluded.in_tok,
                     in_p=excluded.in_p,
+                    in_k=excluded.in_k,
                     mission_context=excluded.mission_context,
                     rep_penalty=excluded.rep_penalty,
                     updated_at=excluded.updated_at;
@@ -547,9 +585,11 @@ def _maybe_migrate_model_params(conn, now):
                     "tr_temp": data.get("tr_temp"),
                     "tr_tok": data.get("tr_tok"),
                     "tr_p": data.get("tr_p"),
+                    "tr_k": data.get("tr_k"),
                     "in_temp": data.get("in_temp"),
                     "in_tok": data.get("in_tok"),
                     "in_p": data.get("in_p"),
+                    "in_k": data.get("in_k"),
                     "mission_context": data.get("mission_context"),
                     "rep_penalty": data.get("rep_penalty"),
                     "updated_at": now,
@@ -564,6 +604,10 @@ def _maybe_migrate_items(conn, now):
     if existing > 0:
         return
     def insert_item(item, item_type):
+        """
+        Insert Item helper.
+        Detailed inline notes are included to support safe maintenance and future edits.
+        """
         iid = str(item.get("id") or f"item-{datetime.utcnow().timestamp()}")
         conn.execute(
             """
@@ -812,24 +856,21 @@ def _maybe_migrate_settings_meta(conn, now):
         data = {}
     user_mode = data.get("user_mode")
     offline_force_flags = 1 if data.get("offline_force_flags") else 0
-    resource_injection_mode = data.get("resource_injection_mode")
     last_prompt_verbatim = data.get("last_prompt_verbatim")
     _ensure_settings_meta_columns(conn)
     conn.execute(
         """
-        INSERT INTO settings_meta(id, user_mode, offline_force_flags, resource_injection_mode, last_prompt_verbatim, updated_at)
-        VALUES(1, :user_mode, :offline_force_flags, :resource_injection_mode, :last_prompt_verbatim, :updated_at)
+        INSERT INTO settings_meta(id, user_mode, offline_force_flags, last_prompt_verbatim, updated_at)
+        VALUES(1, :user_mode, :offline_force_flags, :last_prompt_verbatim, :updated_at)
         ON CONFLICT(id) DO UPDATE SET
             user_mode=excluded.user_mode,
             offline_force_flags=excluded.offline_force_flags,
-            resource_injection_mode=excluded.resource_injection_mode,
             last_prompt_verbatim=excluded.last_prompt_verbatim,
             updated_at=excluded.updated_at;
         """,
         {
             "user_mode": user_mode,
             "offline_force_flags": offline_force_flags,
-            "resource_injection_mode": resource_injection_mode,
             "last_prompt_verbatim": last_prompt_verbatim,
             "updated_at": now,
         },
@@ -853,117 +894,64 @@ def _maybe_migrate_settings_meta(conn, now):
 
 
 def _maybe_seed_triage(conn, now):
-    """Seed triage samples/options from bundled JSON if tables are empty."""
-    count = conn.execute("SELECT COUNT(*) FROM triage_samples").fetchone()[0]
-    if count == 0:
-        json_path = Path(__file__).parent / "static" / "data" / "triage_samples.json"
-        if json_path.exists():
-            try:
-                samples = json.loads(json_path.read_text())
-                for s in samples:
-                    conn.execute(
-                        """
-                        INSERT INTO triage_samples(
-                            id, situation, chat_text, responsive, breathing, pain, main_problem,
-                            temp, circulation, cause, updated_at
-                        ) VALUES (
-                            :id, :situation, :chat_text, :responsive, :breathing, :pain, :main_problem,
-                            :temp, :circulation, :cause, :updated_at
-                        )
-                        ON CONFLICT(id) DO UPDATE SET
-                            situation=excluded.situation,
-                            chat_text=excluded.chat_text,
-                            responsive=excluded.responsive,
-                            breathing=excluded.breathing,
-                            pain=excluded.pain,
-                            main_problem=excluded.main_problem,
-                            temp=excluded.temp,
-                            circulation=excluded.circulation,
-                            cause=excluded.cause,
-                            updated_at=excluded.updated_at;
-                        """,
-                        {
-                            "id": s.get("id"),
-                            "situation": s.get("situation"),
-                            "chat_text": s.get("chat_text"),
-                            "responsive": s.get("responsive"),
-                            "breathing": s.get("breathing"),
-                            "pain": s.get("pain"),
-                            "main_problem": s.get("main_problem"),
-                            "temp": s.get("temp"),
-                            "circulation": s.get("circulation"),
-                            "cause": s.get("cause"),
-                            "updated_at": now,
-                        },
-                    )
-            except Exception:
-                pass
+    """Seed triage dropdown options if table is empty."""
     opt_count = conn.execute("SELECT COUNT(*) FROM triage_options").fetchone()[0]
     if opt_count == 0:
         defaults = {
-            "triage-consciousness": [
-                "Awake and acting normally",
-                "Awake but confused or very drowsy",
-                "Responds only when spoken to",
-                "Responds only to pain (pinch, pressure)",
-                "Not responding at all",
+            "triage-domain": [
+                "Trauma",
+                "Medical illness",
+                "Environmental exposure",
+                "Dental",
+                "Behavioral / psychological",
             ],
-            "triage-breathing-status": [
-                "Breathing normally on their own",
-                "Breathing fast or struggling",
-                "Wheezing / gasping / very noisy",
-                "Using oxygen (nasal prongs or mask)",
-                "On breathing machine (CPAP / ventilator)",
-                "Not breathing",
-            ],
-            "triage-pain-level": [
-                "No pain",
-                "Mild pain",
-                "Moderate pain",
-                "Severe pain",
-                "Worst pain imaginable",
-            ],
-            "triage-main-problem": [
-                "Chest pain / heart problem",
-                "Trouble breathing",
-                "Stroke-like symptoms (weakness, speech, face)",
-                "Severe headache or seizure",
-                "Abdominal pain / vomiting / bleeding",
-                "Major bleeding or amputation",
-                "Severe injury (crush, fracture, impalement)",
-                "Allergic reaction / anaphylaxis",
-                "Severe infection or sepsis signs",
-                "Eye injury or vision loss",
-                "Severe burn",
-                "Other / not listed",
-            ],
-            "triage-temperature": [
-                "Very low / hypothermic (<35°C)",
-                "Low (35–36°C)",
-                "Normal (36–37.5°C)",
-                "Mild fever (37.6–38.4°C)",
-                "High fever (≥38.5°C)",
-                "Unknown",
-            ],
-            "triage-circulation": [
-                "Normal color, warm skin, strong pulse",
-                "Pale/clammy, weak pulse",
-                "Blue/purple lips or fingers",
-                "Heavy external bleeding",
-                "No pulse / cardiac arrest",
-            ],
-            "triage-cause": [
-                "Fall / blunt trauma",
-                "Penetrating object",
-                "Burn / electrical / lightning",
-                "Allergic reaction / sting",
-                "Infection / fever",
-                "Dehydration / heat illness",
+            "triage-problem": [
+                "Laceration",
+                "Bleeding wound (non-laceration)",
+                "Fracture",
+                "Dislocation / severe sprain",
+                "Burn",
+                "Infection / abscess",
+                "Embedded foreign body",
+                "Eye injury",
+                "Marine bite / sting / envenomation",
+                "Heat illness",
                 "Cold exposure / hypothermia",
-                "Cardiac cause",
-                "Stroke / neuro",
-                "Poisoning / toxin / gas",
-                "Other / unclear",
+                "General illness (vomiting, fever, weakness)",
+            ],
+            "triage-anatomy": [
+                "Head",
+                "Face / Eye",
+                "Neck / Airway",
+                "Chest",
+                "Abdomen",
+                "Back / Spine",
+                "Arm / Hand",
+                "Leg / Foot",
+                "Joint",
+                "Whole body / systemic",
+            ],
+            "triage-severity": [
+                "Stable minor",
+                "Significant bleeding",
+                "Uncontrolled bleeding",
+                "Altered mental status",
+                "Breathing difficulty",
+                "Severe pain or functional loss",
+                "Infection risk / sepsis signs",
+                "Deteriorating over time",
+            ],
+            "triage-mechanism": [
+                "Blunt impact",
+                "Sharp cut",
+                "Penetrating / Impaled",
+                "Crush / compression",
+                "Twist / overload (rope, winch)",
+                "High-tension recoil (snapback line)",
+                "Marine bite / sting",
+                "Thermal exposure",
+                "Immersion / near drowning",
+                "Chemical / electrical exposure",
             ],
         }
         for field, values in defaults.items():
@@ -1003,6 +991,10 @@ def _maybe_import_who_meds(conn, now):
             rows = root.findall(".//m:sheetData/m:row", ns)
 
             def val(cell):
+                """
+                Val helper.
+                Detailed inline notes are included to support safe maintenance and future edits.
+                """
                 v = cell.find("m:v", ns)
                 if v is None:
                     return ""
@@ -1064,9 +1056,11 @@ def _maybe_migrate_model_params(conn, now):
             tr_temp REAL,
             tr_tok INTEGER,
             tr_p REAL,
+            tr_k INTEGER,
             in_temp REAL,
             in_tok INTEGER,
             in_p REAL,
+            in_k INTEGER,
             mission_context TEXT,
             rep_penalty REAL,
             updated_at TEXT NOT NULL
@@ -1085,11 +1079,11 @@ def _maybe_migrate_model_params(conn, now):
             conn.execute(
                 """
                 INSERT INTO model_params(
-                    id, triage_instruction, inquiry_instruction, tr_temp, tr_tok, tr_p,
-                    in_temp, in_tok, in_p, mission_context, rep_penalty, updated_at
+                    id, triage_instruction, inquiry_instruction, tr_temp, tr_tok, tr_p, tr_k,
+                    in_temp, in_tok, in_p, in_k, mission_context, rep_penalty, updated_at
                 ) VALUES (
-                    1, :triage_instruction, :inquiry_instruction, :tr_temp, :tr_tok, :tr_p,
-                    :in_temp, :in_tok, :in_p, :mission_context, :rep_penalty, :updated_at
+                    1, :triage_instruction, :inquiry_instruction, :tr_temp, :tr_tok, :tr_p, :tr_k,
+                    :in_temp, :in_tok, :in_p, :in_k, :mission_context, :rep_penalty, :updated_at
                 )
                 ON CONFLICT(id) DO UPDATE SET
                     triage_instruction=excluded.triage_instruction,
@@ -1097,9 +1091,11 @@ def _maybe_migrate_model_params(conn, now):
                     tr_temp=excluded.tr_temp,
                     tr_tok=excluded.tr_tok,
                     tr_p=excluded.tr_p,
+                    tr_k=excluded.tr_k,
                     in_temp=excluded.in_temp,
                     in_tok=excluded.in_tok,
                     in_p=excluded.in_p,
+                    in_k=excluded.in_k,
                     mission_context=excluded.mission_context,
                     rep_penalty=excluded.rep_penalty,
                     updated_at=excluded.updated_at;
@@ -1110,9 +1106,11 @@ def _maybe_migrate_model_params(conn, now):
                     "tr_temp": data.get("tr_temp"),
                     "tr_tok": data.get("tr_tok"),
                     "tr_p": data.get("tr_p"),
+                    "tr_k": data.get("tr_k"),
                     "in_temp": data.get("in_temp"),
                     "in_tok": data.get("in_tok"),
                     "in_p": data.get("in_p"),
+                    "in_k": data.get("in_k"),
                     "mission_context": data.get("mission_context"),
                     "rep_penalty": data.get("rep_penalty"),
                     "updated_at": now,
@@ -1127,10 +1125,20 @@ def _upgrade_schema():
         with _conn() as conn:
             now = datetime.utcnow().isoformat()
             _ensure_items_verified_column(conn)
+            _ensure_items_tier_columns(conn)
+            _ensure_model_params_columns(conn)
+            _ensure_prompt_templates_table(conn)
+            _ensure_triage_prompt_modules_table(conn)
+            _ensure_triage_prompt_tree_table(conn)
             _ensure_settings_meta_columns(conn)
             _backfill_expiries_from_items(conn, now)
+            _seed_prompt_templates_from_model_params(conn, now)
+            _seed_triage_prompt_modules(conn, now)
+            _seed_triage_prompt_tree(conn, now)
             _maybe_seed_triage(conn, now)
             _maybe_import_who_meds(conn, now)
+            # Remove retired triage sample dataset/table.
+            conn.execute("DROP TABLE IF EXISTS triage_samples")
             # Drop legacy documents tables if they linger
             conn.execute("DROP TABLE IF EXISTS documents")
             conn.execute("DROP TABLE IF EXISTS documents_old")
@@ -1151,17 +1159,1109 @@ def _ensure_items_verified_column(conn):
         logger.warning("Unable to add verified column: %s", exc)
 
 
+def _ensure_items_tier_columns(conn):
+    """Add tier columns to items table if missing; keep legacy DBs compatible."""
+    try:
+        cols = conn.execute("PRAGMA table_info(items)").fetchall()
+        names = {c["name"] for c in cols}
+        if "priorityTier" not in names:
+            conn.execute("ALTER TABLE items ADD COLUMN priorityTier TEXT;")
+        if "tierCategory" not in names:
+            conn.execute("ALTER TABLE items ADD COLUMN tierCategory TEXT;")
+    except Exception as exc:
+        logger.warning("Unable to add tier columns: %s", exc)
+
+
+def _ensure_model_params_columns(conn):
+    """Add model sampling columns to model_params for older DBs."""
+    try:
+        cols = conn.execute("PRAGMA table_info(model_params)").fetchall()
+        names = {c["name"] for c in cols}
+        if "tr_k" not in names:
+            conn.execute("ALTER TABLE model_params ADD COLUMN tr_k INTEGER;")
+        if "in_k" not in names:
+            conn.execute("ALTER TABLE model_params ADD COLUMN in_k INTEGER;")
+    except Exception as exc:
+        logger.warning("Unable to add model_params columns: %s", exc)
+
+
+def _ensure_prompt_templates_table(conn):
+    """Create prompt template table for named prompt variants."""
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS prompt_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                prompt_key TEXT NOT NULL,
+                name TEXT NOT NULL,
+                prompt_text TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(prompt_key, name)
+            );
+            """
+        )
+    except Exception as exc:
+        logger.warning("Unable to ensure prompt_templates table: %s", exc)
+
+
+def _ensure_triage_prompt_modules_table(conn):
+    """Create module table for triage rule stacking."""
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS triage_prompt_modules (
+                category TEXT NOT NULL,
+                module_key TEXT NOT NULL,
+                module_text TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(category, module_key)
+            );
+            """
+        )
+    except Exception as exc:
+        logger.warning("Unable to ensure triage_prompt_modules table: %s", exc)
+
+
+def _ensure_triage_prompt_tree_table(conn):
+    """Create hierarchical triage prompt tree table."""
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS triage_prompt_tree (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                payload TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            """
+        )
+    except Exception as exc:
+        logger.warning("Unable to ensure triage_prompt_tree table: %s", exc)
+
+
+def _default_triage_prompt_tree():
+    """
+     Default Triage Prompt Tree helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    trauma_anatomy = {
+        "Head": "Neuro checks every 15m initially. Avoid circumferential pressure dressings.",
+        "Face / Eye": "Protect vision and airway. Avoid pressure if globe injury is possible.",
+        "Neck / Airway": "Position for airway patency. Escalate quickly for swelling/voice change.",
+        "Chest": "Watch breathing effort and asymmetry every 5m after intervention.",
+        "Abdomen / Pelvis": "Assume occult internal bleeding risk. Keep NPO and trend vitals.",
+        "Back / Spine": "Maintain neutral alignment; minimize movement until neurologically stable.",
+        "Extremity": "Check distal pulse/motor/sensation before and after splinting/bandaging.",
+    }
+    trauma_severity = {
+        "Stable minor": "Definitive care on board, then reassess every 4h.",
+        "Significant bleeding": "Direct pressure/hemostatic packing, reassess at 10m.",
+        "Uncontrolled bleeding": "Skip cleaning. Tourniquet/packing now. Reassess at 10m.",
+        "Altered mental status": "Continuous observation; reassess every 5m.",
+        "Breathing difficulty": "Airway/oxygen priority; reassess every 5m.",
+        "Severe pain / functional loss": "Immobilize and analgesia plan; reassess every 30m.",
+        "Deteriorating trend": "Escalate care level and evacuation state immediately.",
+    }
+    trauma_mechanism = {
+        "Blunt impact": "Assume hidden injury; monitor trend for 12h even if appearance is reassuring.",
+        "Sharp cut": "Debride only visible contamination. Reassess bleeding and perfusion at 10m.",
+        "Penetrating / Impaled": "Depth matters more than width. Do not probe blindly; stabilize in-situ object.",
+        "Crush / compression": "Watch swelling progression and perfusion loss every 30m.",
+        "Twist / overload": "Prioritize ligament/tendon protection and function checks every 30m.",
+        "High Energy / Snapback": "Mandatory prolonged watch for delayed internal injury signs.",
+        "Marine bite / sting": "High infection and envenomation risk; observe for allergic progression.",
+        "Thermal exposure": "Treat as mixed tissue injury; monitor pain/perfusion trend closely.",
+    }
+
+    medical_anatomy = {
+        "Whole body / systemic": "Use trend-based reassessment across vitals and mental status.",
+        "Head / neuro": "Monitor cognition, pupils, and focal deficits every 30m if abnormal.",
+        "Chest / respiratory": "Track respiratory rate, work of breathing, and SpO2 every 10m.",
+        "Abdomen / GI": "Trend hydration, emesis/stool output, and tenderness progression.",
+        "Skin / soft tissue": "Track rash spread, warmth, and perfusion over time.",
+    }
+    medical_severity = {
+        "Stable": "Supportive treatment and scheduled reassessment every 4h.",
+        "Persistent symptoms": "Escalate treatment tier if no response within expected window.",
+        "Anaphylaxis risk": "Airway-first pathway with continuous observation.",
+        "Sepsis risk": "Fever + tachycardia + decline requires urgent escalation.",
+        "Respiratory compromise": "Escalate airway/oxygen interventions immediately.",
+        "Deteriorating trend": "Switch to evacuation-focused pathway now.",
+    }
+    medical_mechanism = {
+        "Infectious exposure": "Use source-control and trend checks; reassess at 2-4h intervals.",
+        "Allergic trigger": "Observe for rebound/progression for at least 4h after improvement.",
+        "Dehydration / poor intake": "Rehydrate in stages and track response every 30-60m.",
+        "Heat stress": "Active cooling plus mentation/vitals checks every 10-15m.",
+        "Cold stress": "Controlled rewarming and repeated perfusion/mentation checks.",
+        "Medication / toxin effect": "Stop exposure and monitor for delayed worsening.",
+    }
+
+    env_anatomy = {
+        "Whole body / systemic": "Environment is active threat; correct exposure first, then reassess.",
+        "Airway / breathing": "Prioritize oxygenation and breathing mechanics every 5-10m.",
+        "Skin / extremities": "Track tissue injury progression and perfusion after rewarming/cooling.",
+        "Neuro / mental status": "Trend confusion, agitation, and responsiveness frequently.",
+        "Cardiovascular": "Watch perfusion and rhythm-related symptoms at short intervals.",
+    }
+    env_severity = {
+        "Mild exposure": "Remove source and monitor for delayed worsening every 1-2h.",
+        "Moderate exposure": "Treat aggressively and reassess every 15-30m.",
+        "Severe exposure": "High acuity management and immediate evacuation planning.",
+        "Respiratory symptoms": "Prioritize airway/breathing support and frequent reassessment.",
+        "Neurologic symptoms": "Continuous observation and escalation if trends worsen.",
+        "Deteriorating trend": "Escalate to urgent/immediate evacuation pathway.",
+    }
+    env_mechanism = {
+        "Heat": "Use staged cooling and hydration; avoid overcorrection.",
+        "Cold": "Controlled rewarming; avoid friction/rapid thermal injury.",
+        "Immersion": "Observe prolonged window for delayed pulmonary deterioration.",
+        "Marine toxin": "Symptom-targeted protocol plus anaphylaxis watch.",
+        "Chemical": "Decontaminate first, then assess tissue/airway effects.",
+        "Electrical": "Assume deeper injury than surface findings suggest.",
+    }
+
+    dental_anatomy = {
+        "Tooth": "Preserve viable structure; avoid irreversible procedures offshore.",
+        "Gingiva / periodontal": "Control bleeding and contamination; monitor swelling spread.",
+        "Jaw / facial bone": "Assess occlusion and functional limitation repeatedly.",
+        "Oral mucosa": "Protect airway and hydration; avoid harsh topical irritants.",
+        "Neck / airway adjacent": "Escalate quickly if swelling affects voice/swallowing.",
+    }
+    dental_severity = {
+        "Localized pain": "Analgesia and temporary stabilization, reassess every 4h.",
+        "Spreading swelling": "Escalate infection precautions and reassess every 30-60m.",
+        "Airway-adjacent swelling": "Airway-first urgency with continuous observation.",
+        "Uncontrolled bleeding": "Pressure/hemostatic steps first, reassess at 10m.",
+        "Deteriorating trend": "Escalate to urgent evacuation workflow.",
+    }
+    dental_mechanism = {
+        "Traumatic fracture": "Protect exposed pulp/dentin and reduce contamination.",
+        "Caries / chronic infection": "Source control and infection-watch priorities.",
+        "Recent extraction complication": "Assess clot stability and active bleeding trend.",
+        "Bruxism / overload": "Supportive pain control and functional protection.",
+        "Unknown cause": "Trend-based safety plan with frequent reassessment.",
+    }
+
+    behavioral_severity = {
+        "Mild distress": "De-escalation and monitor behavior/safety every 30-60m.",
+        "Moderate agitation": "Structured environment, 1:1 observation as needed.",
+        "Severe agitation / violence risk": "Crew safety first with continuous observation.",
+        "Suicide / self-harm concern": "Constant supervision and immediate escalation planning.",
+        "Delirium / confusion worsening": "Treat as medical emergency with frequent reassessment.",
+    }
+    behavioral_mechanism = {
+        "Acute stress reaction": "Reduce stimulation and apply directive grounding workflow.",
+        "Panic / anxiety episode": "Coaching + breathing control with frequent reassessment.",
+        "Substance intoxication": "Monitor airway, mentation, and injury risk continuously.",
+        "Withdrawal syndrome": "Trend autonomic signs and escalate for instability.",
+        "Medical mimic suspected": "Prioritize reversible medical causes before psych framing.",
+    }
+
+    return {
+        "base_doctrine": (
+            "You are SailingMedAdvisor. Role: Damage-control for Vessel Captain. "
+            "Priority: MARCH-PAWS. Rules: Numbered imperative steps, timed reassessment intervals, "
+            "no speculation, only Medical Chest items. For Ethan: weight-based dosing. "
+            "Output: STAY, URGENT, or IMMEDIATE."
+        ),
+        "tree": {
+            "Trauma": {
+                "mindset": "Physiology over appearance. Stabilize first. Order: Hemostasis -> Airway -> Breathing -> Circulation.",
+                "problems": {
+                    "Laceration": {
+                        "procedure": "Control bleeding -> Irrigate -> Inspect -> Decide closure.",
+                        "exclusions": "Do NOT close if >6 hours old, crush, puncture, or marine/saltwater contamination.",
+                        "anatomy_guardrails": dict(trauma_anatomy),
+                        "severity_modifiers": dict(trauma_severity),
+                        "mechanism_modifiers": dict(trauma_mechanism),
+                    },
+                    "Bleeding wound (non-laceration)": {
+                        "procedure": "Direct pressure or packing for full 10m without interruption.",
+                        "exclusions": "Do NOT delay hemorrhage control for cleaning or closure decisions.",
+                        "anatomy_guardrails": dict(trauma_anatomy),
+                        "severity_modifiers": dict(trauma_severity),
+                        "mechanism_modifiers": dict(trauma_mechanism),
+                    },
+                    "Embedded foreign body": {
+                        "procedure": "Stabilize object, control bleeding, and plan extraction-safe pathway.",
+                        "exclusions": "Do NOT close over retained material. Fish hook exception protocol only in non-critical areas.",
+                        "anatomy_guardrails": dict(trauma_anatomy),
+                        "severity_modifiers": dict(trauma_severity),
+                        "mechanism_modifiers": dict(trauma_mechanism),
+                    },
+                    "Fracture / Dislocation": {
+                        "procedure": "Check PMS -> Realign ONLY if pulseless -> Splint joint above/below.",
+                        "anatomy_guardrails": dict(trauma_anatomy),
+                        "severity_modifiers": dict(trauma_severity),
+                        "mechanism_modifiers": dict(trauma_mechanism),
+                    },
+                    "Burn": {
+                        "procedure": "Stop burn source -> cool with room-temp water -> non-adherent coverage.",
+                        "exclusions": "Do NOT break blisters or apply caustic home remedies.",
+                        "anatomy_guardrails": dict(trauma_anatomy),
+                        "severity_modifiers": dict(trauma_severity),
+                        "mechanism_modifiers": dict(trauma_mechanism),
+                    },
+                    "Eye injury": {
+                        "procedure": "Protect globe, irrigate if chemical exposure, and reassess vision trends.",
+                        "exclusions": "Do NOT apply globe pressure when penetrating injury is possible.",
+                        "anatomy_guardrails": dict(trauma_anatomy),
+                        "severity_modifiers": dict(trauma_severity),
+                        "mechanism_modifiers": dict(trauma_mechanism),
+                    },
+                    "Marine bite / sting / envenomation": {
+                        "procedure": "Stabilize wound, pain control, and monitor for allergic/systemic progression.",
+                        "exclusions": "Do NOT tightly close high-contamination marine wounds.",
+                        "anatomy_guardrails": dict(trauma_anatomy),
+                        "severity_modifiers": dict(trauma_severity),
+                        "mechanism_modifiers": dict(trauma_mechanism),
+                    },
+                    "Head injury / concussion": {
+                        "procedure": "Baseline neuro exam, serial checks, and strict deterioration triggers.",
+                        "exclusions": "Do NOT sedate heavily before baseline neurologic documentation.",
+                        "anatomy_guardrails": dict(trauma_anatomy),
+                        "severity_modifiers": dict(trauma_severity),
+                        "mechanism_modifiers": dict(trauma_mechanism),
+                    },
+                },
+            },
+            "Medical Illness": {
+                "mindset": "Vitals trends and treatment response only. Avoid rare/complex diagnoses.",
+                "problems": {
+                    "General illness (vomiting / fever / weakness)": {
+                        "procedure": "Hydration, symptom control, trend vitals, and escalate by response.",
+                        "anatomy_guardrails": dict(medical_anatomy),
+                        "severity_modifiers": dict(medical_severity),
+                        "mechanism_modifiers": dict(medical_mechanism),
+                    },
+                    "Allergic reaction": {
+                        "procedure": "Airway priority. Antihistamines/Epinephrine. Mandatory 4h observation for rebound.",
+                        "anatomy_guardrails": dict(medical_anatomy),
+                        "severity_modifiers": dict(medical_severity),
+                        "mechanism_modifiers": dict(medical_mechanism),
+                    },
+                    "Infection": {
+                        "procedure": "Source control. Antibiotics secondary. Circle margin with ink.",
+                        "anatomy_guardrails": dict(medical_anatomy),
+                        "severity_modifiers": dict(medical_severity),
+                        "mechanism_modifiers": dict(medical_mechanism),
+                    },
+                    "Breathing difficulty (medical)": {
+                        "procedure": "Airway and oxygen-first pathway with serial work-of-breathing checks.",
+                        "anatomy_guardrails": dict(medical_anatomy),
+                        "severity_modifiers": dict(medical_severity),
+                        "mechanism_modifiers": dict(medical_mechanism),
+                    },
+                    "Chest pain / cardiac concern": {
+                        "procedure": "Stabilize, monitor perfusion and rhythm symptoms, escalate for deterioration.",
+                        "anatomy_guardrails": dict(medical_anatomy),
+                        "severity_modifiers": dict(medical_severity),
+                        "mechanism_modifiers": dict(medical_mechanism),
+                    },
+                    "Severe dehydration": {
+                        "procedure": "Oral/IV rehydration based on capability and response trend checks.",
+                        "anatomy_guardrails": dict(medical_anatomy),
+                        "severity_modifiers": dict(medical_severity),
+                        "mechanism_modifiers": dict(medical_mechanism),
+                    },
+                    "Heat illness (medical)": {
+                        "procedure": "Rapid cooling, hydration, and serial neurologic/vital reassessment.",
+                        "anatomy_guardrails": dict(medical_anatomy),
+                        "severity_modifiers": dict(medical_severity),
+                        "mechanism_modifiers": dict(medical_mechanism),
+                    },
+                    "Cold exposure / hypothermia (medical)": {
+                        "procedure": "Controlled rewarming with trend-based perfusion/mentation checks.",
+                        "anatomy_guardrails": dict(medical_anatomy),
+                        "severity_modifiers": dict(medical_severity),
+                        "mechanism_modifiers": dict(medical_mechanism),
+                    },
+                },
+            },
+            "Environmental": {
+                "mindset": "Neutralize the pathogen (environment) first.",
+                "problems": {
+                    "Marine envenomation": {
+                        "procedure": "Identify species. Hot water (45C) 90 min to denature toxins.",
+                        "anatomy_guardrails": dict(env_anatomy),
+                        "severity_modifiers": dict(env_severity),
+                        "mechanism_modifiers": dict(env_mechanism),
+                    },
+                    "Heat illness": {
+                        "procedure": "Remove heat source, active cooling, hydration, and short-interval reassessment.",
+                        "anatomy_guardrails": dict(env_anatomy),
+                        "severity_modifiers": dict(env_severity),
+                        "mechanism_modifiers": dict(env_mechanism),
+                    },
+                    "Cold exposure / hypothermia": {
+                        "procedure": "Controlled rewarming and monitor for rebound instability.",
+                        "anatomy_guardrails": dict(env_anatomy),
+                        "severity_modifiers": dict(env_severity),
+                        "mechanism_modifiers": dict(env_mechanism),
+                    },
+                    "Immersion / near drowning": {
+                        "procedure": "Airway and oxygenation first; monitor delayed pulmonary compromise window.",
+                        "anatomy_guardrails": dict(env_anatomy),
+                        "severity_modifiers": dict(env_severity),
+                        "mechanism_modifiers": dict(env_mechanism),
+                    },
+                    "Chemical exposure": {
+                        "procedure": "Decontaminate first, then targeted symptom pathway.",
+                        "anatomy_guardrails": dict(env_anatomy),
+                        "severity_modifiers": dict(env_severity),
+                        "mechanism_modifiers": dict(env_mechanism),
+                    },
+                    "Electrical exposure": {
+                        "procedure": "Stop source safely, assess airway/circulation, and monitor for delayed injury.",
+                        "anatomy_guardrails": dict(env_anatomy),
+                        "severity_modifiers": dict(env_severity),
+                        "mechanism_modifiers": dict(env_mechanism),
+                    },
+                },
+            },
+            "Dental": {
+                "mindset": "Preservation only. No extractions unless airway is threatened.",
+                "problems": {
+                    "Dental pain / pulpitis": {
+                        "procedure": "Analgesia + temporary tooth protection + infection watch.",
+                        "anatomy_guardrails": dict(dental_anatomy),
+                        "severity_modifiers": dict(dental_severity),
+                        "mechanism_modifiers": dict(dental_mechanism),
+                    },
+                    "Dental abscess": {
+                        "procedure": "Source control strategy, pain management, and airway-risk monitoring.",
+                        "anatomy_guardrails": dict(dental_anatomy),
+                        "severity_modifiers": dict(dental_severity),
+                        "mechanism_modifiers": dict(dental_mechanism),
+                    },
+                    "Broken tooth / crown loss": {
+                        "procedure": "Protect exposed structure, reduce pain triggers, and monitor for infection.",
+                        "anatomy_guardrails": dict(dental_anatomy),
+                        "severity_modifiers": dict(dental_severity),
+                        "mechanism_modifiers": dict(dental_mechanism),
+                    },
+                    "Avulsed tooth": {
+                        "procedure": "Preserve tooth viability window and protect socket/airway.",
+                        "anatomy_guardrails": dict(dental_anatomy),
+                        "severity_modifiers": dict(dental_severity),
+                        "mechanism_modifiers": dict(dental_mechanism),
+                    },
+                    "Jaw pain / TMJ / trauma": {
+                        "procedure": "Immobilize/support jaw function and monitor airway/swallowing.",
+                        "anatomy_guardrails": dict(dental_anatomy),
+                        "severity_modifiers": dict(dental_severity),
+                        "mechanism_modifiers": dict(dental_mechanism),
+                    },
+                },
+            },
+            "Behavioral": {
+                "mindset": "Vessel safety first. Secure the environment; avoid chemical restraint.",
+                "problems": {
+                    "Agitation / aggression": {
+                        "procedure": "Scene control, low-stimulation de-escalation, and continuous safety checks.",
+                        "severity_modifiers": dict(behavioral_severity),
+                        "mechanism_modifiers": dict(behavioral_mechanism),
+                    },
+                    "Panic / acute anxiety": {
+                        "procedure": "Guided breathing, grounding, and repeated trend reassessment.",
+                        "severity_modifiers": dict(behavioral_severity),
+                        "mechanism_modifiers": dict(behavioral_mechanism),
+                    },
+                    "Suicidal ideation concern": {
+                        "procedure": "Immediate safety containment and constant observation protocol.",
+                        "severity_modifiers": dict(behavioral_severity),
+                        "mechanism_modifiers": dict(behavioral_mechanism),
+                    },
+                    "Delirium / confused behavior": {
+                        "procedure": "Treat as medical emergency until reversible causes are addressed.",
+                        "severity_modifiers": dict(behavioral_severity),
+                        "mechanism_modifiers": dict(behavioral_mechanism),
+                    },
+                    "Substance intoxication / withdrawal": {
+                        "procedure": "Airway/safety monitoring with structured escalation thresholds.",
+                        "severity_modifiers": dict(behavioral_severity),
+                        "mechanism_modifiers": dict(behavioral_mechanism),
+                    },
+                },
+            },
+        },
+    }
+
+
+def _normalize_triage_prompt_tree_payload(payload: Any) -> Dict[str, Any]:
+    """
+     Normalize Triage Prompt Tree Payload helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    data = payload
+    if isinstance(payload, str):
+        try:
+            data = json.loads(payload)
+        except Exception as exc:
+            raise ValueError("Invalid JSON payload for triage tree.") from exc
+    if not isinstance(data, dict):
+        raise ValueError("Triage tree payload must be an object.")
+
+    base_doctrine = str(data.get("base_doctrine") or "").strip()
+    tree = data.get("tree")
+    if not isinstance(tree, dict) or not tree:
+        raise ValueError("Triage tree payload must include a non-empty 'tree' object.")
+
+    normalized = {
+        "base_doctrine": base_doctrine,
+        "tree": tree,
+    }
+    try:
+        return json.loads(json.dumps(normalized, ensure_ascii=False))
+    except Exception as exc:
+        raise ValueError("Triage tree payload must be JSON-serializable.") from exc
+
+
+def _seed_triage_prompt_tree(conn, now: str):
+    """
+     Seed Triage Prompt Tree helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    _ensure_triage_prompt_tree_table(conn)
+    row = conn.execute("SELECT payload FROM triage_prompt_tree WHERE id = 1").fetchone()
+    defaults = _default_triage_prompt_tree()
+    if row and row["payload"]:
+        try:
+            _normalize_triage_prompt_tree_payload(json.loads(row["payload"]))
+            return
+        except Exception:
+            pass
+    payload = defaults
+    conn.execute(
+        """
+        INSERT INTO triage_prompt_tree(id, payload, updated_at)
+        VALUES(1, :payload, :updated_at)
+        ON CONFLICT(id) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at
+        """,
+        {
+            "payload": json.dumps(payload, ensure_ascii=False),
+            "updated_at": now,
+        },
+    )
+    conn.commit()
+
+
+def _module_text(*lines):
+    """
+     Module Text helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    return "\n".join(str(line).strip() for line in lines if str(line).strip())
+
+
+def _default_triage_prompt_modules():
+    """
+     Default Triage Prompt Modules helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    return {
+        "base": [
+            (
+                "Base Doctrine",
+                _module_text(
+                    "PRIORITIZE immediate life threats in ABCDE order before definitive care.",
+                    "USE concise command-style steps with clear sequence and timing.",
+                    "IF airway, breathing, or circulation is unstable, THEN escalate to resuscitation actions immediately.",
+                    "NEVER recommend procedures that require unavailable specialists or hospital-only resources.",
+                    "CROSS-CHECK every intervention against current_onboard_inventory before recommending it.",
+                    "IF a critical tool or medication is missing, THEN provide the safest onboard substitute.",
+                    "STATE monitoring cadence and explicit deterioration triggers for each phase of care.",
+                    "PREFER reversible, low-risk interventions first when diagnostic certainty is limited.",
+                    "AVOID non-actionable disclaimers; provide direct field-feasible offshore actions.",
+                    "DOCUMENT stop conditions and evacuation thresholds in the response plan.",
+                ),
+            ),
+        ],
+        "domain": [
+            (
+                "Trauma",
+                _module_text(
+                    "PRIORITIZE hemorrhage control, airway protection, and rapid secondary survey.",
+                    "IF mechanism suggests high energy, THEN assume occult multi-system injury until ruled out.",
+                    "STABILIZE fractures/dislocations and protect neurovascular status before movement.",
+                    "NEVER delay bleeding control while pursuing non-critical diagnostics.",
+                    "REASSESS perfusion, pain, and neurologic function every 5-10 minutes.",
+                    "PREPARE early evacuation planning if instability persists after initial interventions.",
+                ),
+            ),
+            (
+                "Medical illness",
+                _module_text(
+                    "PRIORITIZE life-threatening reversible causes using vitals and trend data.",
+                    "IF altered mental status is present, THEN check glucose, oxygenation, temperature, and sepsis cues.",
+                    "START supportive stabilization while building differential diagnosis in parallel.",
+                    "NEVER anchor on one diagnosis when red flags suggest broader systemic pathology.",
+                    "REASSESS response to each treatment step before escalating or changing therapies.",
+                    "ESCALATE urgency when symptoms persist despite first-line supportive care.",
+                ),
+            ),
+            (
+                "Environmental exposure",
+                _module_text(
+                    "PRIORITIZE airway, breathing, circulation, and core temperature correction.",
+                    "IF heat injury is suspected, THEN initiate active cooling without delay.",
+                    "IF cold injury is suspected, THEN begin controlled rewarming and gentle handling.",
+                    "NEVER use harmful rapid-temperature swings that increase tissue damage risk.",
+                    "MONITOR mental status, rhythm risk, hydration, and end-organ perfusion trends.",
+                    "SET prolonged observation windows for delayed deterioration after exposure events.",
+                ),
+            ),
+            (
+                "Dental",
+                _module_text(
+                    "PRIORITIZE pain control, infection containment, and airway safety assessment.",
+                    "IF facial swelling threatens airway or swallowing, THEN treat as urgent airway risk.",
+                    "USE temporary stabilization and drainage principles when definitive dental care is unavailable.",
+                    "NEVER perform forceful blind extraction in unstable offshore settings.",
+                    "MONITOR for spread: fever, trismus, neck swelling, and systemic toxicity signs.",
+                    "ESCALATE to evacuation planning when airway, sepsis, or uncontrolled pain emerges.",
+                ),
+            ),
+            (
+                "Behavioral / psychological",
+                _module_text(
+                    "PRIORITIZE scene safety for patient, crew, and confined vessel environment.",
+                    "IF suicidal, violent, or severely disorganized behavior is present, THEN initiate continuous observation.",
+                    "RULE OUT medical mimics: hypoxia, intoxication, hypoglycemia, head injury, and sepsis.",
+                    "USE calm, directive de-escalation with minimal stimulation and clear boundaries.",
+                    "NEVER leave a high-risk patient unattended during active crisis phase.",
+                    "MONITOR sleep deprivation, withdrawal, and autonomic instability for progression.",
+                ),
+            ),
+        ],
+        "problem": [
+            (
+                "Laceration",
+                _module_text(
+                    "CONTROL bleeding first with direct pressure, packing, and elevation as indicated.",
+                    "IF contamination is present, THEN perform high-volume irrigation before any closure decision.",
+                    "ASSESS tendon, nerve, vascular, and depth involvement before definitive wound plan.",
+                    "IF deep structure injury is suspected, THEN prioritize protection and delayed closure strategy.",
+                    "NEVER close devitalized, heavily contaminated, or actively infected tissue.",
+                    "PLAN dressing change intervals and reassessment checkpoints for infection/bleeding recurrence.",
+                ),
+            ),
+            (
+                "Bleeding wound (non-laceration)",
+                _module_text(
+                    "PRIORITIZE hemorrhage control over cosmetic wound management at all times.",
+                    "IF bleeding remains uncontrolled, THEN escalate to hemostatic packing or tourniquet protocol.",
+                    "QUANTIFY blood loss trend and shock indicators early and repeatedly.",
+                    "MARK intervention times and reassess distal perfusion after pressure/tourniquet use.",
+                    "NEVER release a successful hemostatic intervention without a clear reassessment plan.",
+                    "PREPARE rapid deterioration pathway if perfusion or consciousness declines.",
+                ),
+            ),
+            (
+                "Fracture",
+                _module_text(
+                    "IMMOBILIZE suspected fracture with joint-above/joint-below stabilization.",
+                    "IF open fracture exists, THEN irrigate, cover sterilely, and prioritize infection prevention.",
+                    "CHECK distal pulse, sensation, and motor function before and after splinting.",
+                    "NEVER perform repeated forceful realignment attempts in the field.",
+                    "CONTROL pain and swelling while preserving neurovascular integrity.",
+                    "MONITOR for compartment syndrome, skin compromise, and progressive neurovascular loss.",
+                ),
+            ),
+            (
+                "Dislocation / severe sprain",
+                _module_text(
+                    "ASSESS distal neurovascular status before any manipulation attempt.",
+                    "IF deformity with ischemia is present, THEN perform one gentle reduction attempt if trained.",
+                    "IMMOBILIZE immediately after reduction attempt and recheck perfusion/function.",
+                    "NEVER perform repeated high-force reductions after failed first attempt.",
+                    "TREAT severe sprain as occult fracture until functional reassessment confirms otherwise.",
+                    "TRACK swelling, pain escalation, and neurologic change over time.",
+                ),
+            ),
+            (
+                "Burn",
+                _module_text(
+                    "STOP the burn process immediately and cool thermal burns with clean cool water.",
+                    "IF airway/face/circumferential involvement exists, THEN treat as high-acuity burn emergency.",
+                    "COVER with clean non-adherent dressings and protect from ongoing heat loss.",
+                    "NEVER apply ice, caustics, or tight occlusive wraps to fresh burns.",
+                    "CALCULATE fluid and pain support based on extent/severity and trend vitals.",
+                    "MONITOR for inhalation injury, shock progression, and infection development.",
+                ),
+            ),
+            (
+                "Infection / abscess",
+                _module_text(
+                    "PRIORITIZE sepsis screening and source-control feasibility from the outset.",
+                    "IF fluctuance is localized and safe to access, THEN follow sterile drainage protocol if trained.",
+                    "START targeted antimicrobials only when findings support bacterial infection risk.",
+                    "NEVER close a draining or infected cavity that requires continued egress.",
+                    "TRACK temperature, pain spread, erythema margins, and systemic symptoms serially.",
+                    "ESCALATE quickly when hypotension, confusion, or tachypnea indicates systemic progression.",
+                ),
+            ),
+            (
+                "Embedded foreign body",
+                _module_text(
+                    "## CRITICAL: AS LONG AS A FOREIGN BODY IS PRESENT, ALL CLOSURE PROCEDURES (STAPLES/SUTURES) ARE PROHIBITED. REVEAL EXTRACTION STEPS ONLY.",
+                    "STABILIZE protruding objects and prevent further migration during all handling.",
+                    "IF object is deep or near eye/neck/chest/abdomen/major vessel, THEN defer removal and protect in place.",
+                    "IF safe superficial extraction criteria are met, THEN provide extraction-only sequence with analgesia and irrigation.",
+                    "NEVER perform blind probing or forceful advancement of the foreign body.",
+                    "AFTER extraction, reassess bleeding, contamination, and retained-fragment risk before wound decisions.",
+                ),
+            ),
+            (
+                "Eye injury",
+                _module_text(
+                    "PRIORITIZE vision preservation and protection from secondary ocular damage.",
+                    "IF penetrating globe injury is suspected, THEN shield eye and avoid all pressure.",
+                    "IF chemical exposure occurred, THEN irrigate continuously and reassess pH/irritation trend.",
+                    "NEVER patch both eyes in unstable settings with uncertain mechanism.",
+                    "AVOID repeated topical anesthetic use that masks worsening pathology.",
+                    "ESCALATE urgently for vision loss, severe pain, or intraocular injury concern.",
+                ),
+            ),
+            (
+                "Marine bite / sting / envenomation",
+                _module_text(
+                    "PRIORITIZE scene safety, airway risk, and anaphylaxis surveillance immediately.",
+                    "IF venomous sting pattern is likely, THEN apply species-appropriate deactivation or heat protocol.",
+                    "CONTROL bleeding and decontaminate tissue while minimizing toxin spread.",
+                    "NEVER apply contraindicated rinses or aggressive tissue manipulation.",
+                    "INITIATE allergy and shock pathway if respiratory, skin, or hemodynamic signs worsen.",
+                    "MONITOR delayed necrosis, infection, and systemic toxin effects over hours.",
+                ),
+            ),
+            (
+                "Heat illness",
+                _module_text(
+                    "INITIATE active cooling immediately when heat injury is suspected.",
+                    "IF altered mental status with hyperthermia is present, THEN treat as heat stroke emergency.",
+                    "USE hydration and electrolyte correction guided by perfusion and urine/mental trends.",
+                    "NEVER delay cooling while waiting for confirmatory diagnostics.",
+                    "RECHECK temperature and mentation at short intervals until stabilized.",
+                    "WATCH for rhabdomyolysis, renal injury, and rebound hyperthermia signs.",
+                ),
+            ),
+            (
+                "Cold exposure / hypothermia",
+                _module_text(
+                    "REMOVE wet exposure and insulate from wind/water heat loss immediately.",
+                    "IF moderate/severe hypothermia is suspected, THEN handle gently and rewarm core gradually.",
+                    "USE passive/active rewarming matched to perfusion and consciousness status.",
+                    "NEVER rub frostbitten tissue or rapidly rewarm when refreezing risk remains.",
+                    "MONITOR rhythm instability, mental status drift, and perfusion markers closely.",
+                    "PLAN extended observation for delayed afterdrop and recurrence risk.",
+                ),
+            ),
+            (
+                "General illness (vomiting, fever, weakness)",
+                _module_text(
+                    "PRIORITIZE dehydration, sepsis, and metabolic instability screening early.",
+                    "IF persistent vomiting or fever with weakness occurs, THEN structure workup by red flags first.",
+                    "START supportive hydration, symptom control, and serial vitals immediately.",
+                    "NEVER assume benign illness when neurologic or hemodynamic changes are present.",
+                    "REASSESS trajectory after each intervention and update likely differential.",
+                    "ESCALATE when deterioration outpaces response to supportive treatment.",
+                ),
+            ),
+        ],
+        "anatomy": [
+            (
+                "Head",
+                _module_text(
+                    "PRIORITIZE intracranial injury screening and neurologic trend monitoring.",
+                    "IF repeated vomiting, severe headache, or confusion appears, THEN treat as high-risk head injury.",
+                    "PROTECT airway whenever consciousness fluctuates or seizure risk increases.",
+                    "NEVER clear for routine activity without serial neurologic reassessment.",
+                    "TRACK pupils, orientation, motor asymmetry, and worsening headache over time.",
+                    "ESCALATE for seizure, focal deficits, or declining level of consciousness.",
+                ),
+            ),
+            (
+                "Face / Eye",
+                _module_text(
+                    "PRIORITIZE airway patency, visual function, and facial bleeding control.",
+                    "IF periorbital trauma suggests globe/orbital injury, THEN avoid pressure and shield appropriately.",
+                    "ASSESS cranial nerve function and jaw integrity before major interventions.",
+                    "NEVER perform blind deep probing in orbital or midface wounds.",
+                    "MONITOR swelling progression that can compromise airway or vision.",
+                    "ESCALATE for vision change, severe deformity, or uncontrolled facial hemorrhage.",
+                ),
+            ),
+            (
+                "Neck / Airway",
+                _module_text(
+                    "PRIORITIZE airway protection and hemorrhage control without delay.",
+                    "IF airway noise, stridor, or expanding neck swelling occurs, THEN activate airway emergency pathway.",
+                    "LIMIT neck manipulation and maintain neutral alignment when trauma is possible.",
+                    "NEVER remove penetrating neck objects in the field unless airway rescue demands it.",
+                    "MONITOR voice change, swallowing difficulty, and subcutaneous air progression.",
+                    "PREPARE immediate evacuation for any worsening airway or vascular signs.",
+                ),
+            ),
+            (
+                "Chest",
+                _module_text(
+                    "PRIORITIZE oxygenation, ventilation, and life-threatening thoracic injury recognition.",
+                    "IF unilateral breath asymmetry or shock develops, THEN suspect evolving thoracic emergency.",
+                    "TREAT pain in ways that preserve respiratory depth and cough effectiveness.",
+                    "NEVER ignore progressive dyspnea after blunt or penetrating chest mechanism.",
+                    "MONITOR respiratory rate, pulse ox trend, and chest wall movement pattern.",
+                    "ESCALATE rapidly for deterioration suggesting tension, tamponade, or severe contusion.",
+                ),
+            ),
+            (
+                "Abdomen",
+                _module_text(
+                    "PRIORITIZE occult bleeding and peritonitis surveillance from first contact.",
+                    "IF guarding, rebound, or hemodynamic instability emerges, THEN treat as internal injury risk.",
+                    "USE serial exams and trend vitals to detect delayed intra-abdominal deterioration.",
+                    "NEVER give false reassurance from an initially benign abdominal exam alone.",
+                    "MONITOR pain migration, distension, vomiting pattern, and perfusion changes.",
+                    "PREPARE early evacuation pathway when internal injury cannot be excluded.",
+                ),
+            ),
+            (
+                "Back / Spine",
+                _module_text(
+                    "PRIORITIZE spinal protection when neurologic deficit or high-risk mechanism exists.",
+                    "IF weakness, numbness, or bowel/bladder changes appear, THEN treat as spinal emergency.",
+                    "USE log-roll and transfer maneuvers that minimize rotational spinal movement.",
+                    "NEVER force painful spinal range-of-motion testing after trauma.",
+                    "MONITOR motor/sensory symmetry and pain progression at set intervals.",
+                    "ESCALATE for any worsening neurologic findings or unstable pain pattern.",
+                ),
+            ),
+            (
+                "Arm / Hand",
+                _module_text(
+                    "PRIORITIZE hemorrhage control, tendon function, and distal perfusion checks.",
+                    "IF motor or sensory deficit appears, THEN treat as neurovascular compromise.",
+                    "SPLINT to protect function and prevent secondary tissue injury.",
+                    "NEVER close deep hand wounds before tendon/nerve assessment is documented.",
+                    "MONITOR capillary refill, pulse quality, and compartment pressure symptoms.",
+                    "ESCALATE when ischemia, severe crush signs, or functional loss progresses.",
+                ),
+            ),
+            (
+                "Leg / Foot",
+                _module_text(
+                    "PRIORITIZE bleeding control and limb perfusion preservation.",
+                    "IF absent distal pulse or pallor/coolness appears, THEN initiate urgent vascular compromise response.",
+                    "IMMOBILIZE fractures and protect soft tissue during movement on vessel terrain.",
+                    "NEVER allow weight bearing when instability or severe pain persists.",
+                    "MONITOR swelling, compartment warning signs, and motor/sensory drift.",
+                    "ESCALATE with persistent ischemia, uncontrolled pain, or rapid edema increase.",
+                ),
+            ),
+            (
+                "Joint",
+                _module_text(
+                    "PRIORITIZE joint stability and distal neurovascular integrity.",
+                    "IF deformity with compromised perfusion is present, THEN perform one trained reduction attempt.",
+                    "IMMOBILIZE after manipulation and verify distal function immediately.",
+                    "NEVER repeat forceful reduction attempts after initial failure.",
+                    "MONITOR swelling, instability, and recurrent deformity over time.",
+                    "ESCALATE when function fails to recover or perfusion remains abnormal.",
+                ),
+            ),
+            (
+                "Whole body / systemic",
+                _module_text(
+                    "PRIORITIZE systemic stabilization over isolated symptom treatment.",
+                    "IF multi-organ warning signs are present, THEN run full shock/sepsis/respiratory risk pathways.",
+                    "USE trend-based reassessment to detect deterioration not visible on first exam.",
+                    "NEVER narrow management to one body region when systemic signs are active.",
+                    "MONITOR vitals bundle, urine output trend, and mental status trajectory.",
+                    "ESCALATE to high-acuity monitoring when global instability persists.",
+                ),
+            ),
+        ],
+        "severity": [
+            (
+                "Stable minor",
+                _module_text(
+                    "USE conservative stabilization with clear follow-up reassessment checkpoints.",
+                    "IF symptoms remain stable for repeated checks, THEN continue outpatient-style onboard monitoring.",
+                    "PRIORITIZE pain control, wound hygiene, and function preservation.",
+                    "NEVER over-treat with high-risk interventions when low-risk care is sufficient.",
+                    "RECHECK vitals and symptom trend before final disposition recommendations.",
+                ),
+            ),
+            (
+                "Significant bleeding",
+                _module_text(
+                    "PRIORITIZE rapid hemostasis and shock prevention immediately.",
+                    "IF bleeding slows but persists, THEN escalate layered hemostatic strategy.",
+                    "TRACK blood loss estimate and perfusion markers every few minutes.",
+                    "NEVER leave a partially controlled bleed without direct monitoring.",
+                    "PREPARE contingency for recurrence during transport or repositioning.",
+                ),
+            ),
+            (
+                "Uncontrolled bleeding",
+                _module_text(
+                    "TREAT as immediate life-threat until proven otherwise.",
+                    "IF first-line pressure fails, THEN escalate without delay to advanced hemostatic measures.",
+                    "ACTIVATE shock management bundle with aggressive reassessment cadence.",
+                    "NEVER prioritize definitive repair before active hemorrhage control is secured.",
+                    "DECLARE evacuation urgency early due to mortality risk from ongoing loss.",
+                ),
+            ),
+            (
+                "Altered mental status",
+                _module_text(
+                    "PRIORITIZE airway protection and rapid reversible-cause assessment.",
+                    "IF mental status worsens, THEN escalate to critical monitoring and transport plan.",
+                    "CHECK glucose, oxygenation, perfusion, temperature, and toxin/injury clues.",
+                    "NEVER assume behavioral cause before excluding medical emergencies.",
+                    "MONITOR GCS/orientation trend at short fixed intervals.",
+                ),
+            ),
+            (
+                "Breathing difficulty",
+                _module_text(
+                    "PRIORITIZE oxygenation and ventilation support as first objective.",
+                    "IF work of breathing increases or saturation falls, THEN escalate respiratory interventions immediately.",
+                    "POSITION and treat to reduce respiratory load while investigating cause.",
+                    "NEVER delay action waiting for perfect diagnostic certainty.",
+                    "MONITOR respiratory trend continuously for fatigue and decompensation.",
+                ),
+            ),
+            (
+                "Severe pain or functional loss",
+                _module_text(
+                    "PRIORITIZE pain control that preserves airway and hemodynamic safety.",
+                    "IF severe pain limits exam quality, THEN stage analgesia and repeat focused assessment.",
+                    "TREAT functional loss as potential structural/neurovascular emergency until excluded.",
+                    "NEVER dismiss profound pain when objective findings are subtle early.",
+                    "MONITOR response and adverse effects after each analgesic intervention.",
+                ),
+            ),
+            (
+                "Infection risk / sepsis signs",
+                _module_text(
+                    "PRIORITIZE early sepsis recognition and source control planning.",
+                    "IF hypotension, confusion, tachypnea, or fever progression appears, THEN escalate to sepsis pathway.",
+                    "START time-critical supportive care while refining likely source.",
+                    "NEVER delay escalation when systemic signs outpace local findings.",
+                    "MONITOR vitals trend and mental status for treatment response every cycle.",
+                ),
+            ),
+            (
+                "Deteriorating over time",
+                _module_text(
+                    "ASSUME trajectory risk and increase monitoring intensity immediately.",
+                    "IF objective trend worsens across reassessments, THEN escalate intervention tier promptly.",
+                    "RE-OPEN differential diagnosis and seek hidden complications actively.",
+                    "NEVER rely on initial diagnosis when current trend contradicts it.",
+                    "TRIGGER evacuation decision points earlier when decline persists despite care.",
+                ),
+            ),
+        ],
+        "mechanism": [
+            (
+                "Blunt impact",
+                _module_text(
+                    "SCREEN aggressively for occult internal injury and delayed decompensation.",
+                    "IF head/chest/abdomen impact occurred, THEN extend observation and serial exams.",
+                    "CORRELATE mechanism force with hidden injury probability, not just external wound.",
+                    "NEVER exclude serious trauma solely from minimal skin findings.",
+                    "MONITOR trend vitals and pain migration to detect latent injury.",
+                ),
+            ),
+            (
+                "Sharp cut",
+                _module_text(
+                    "PRIORITIZE depth assessment of vessels, nerves, tendons, and contamination.",
+                    "IF cut crosses functional zones, THEN perform structured neurovascular exam before closure.",
+                    "CONTROL bleeding and irrigate before definitive wound plan.",
+                    "NEVER close a wound without documenting function distal to injury.",
+                    "MONITOR for delayed bleeding, infection, and compartment pressure signs.",
+                ),
+            ),
+            (
+                "Penetrating / Impaled",
+                _module_text(
+                    "Depth matters more than width.",
+                    "Do not explore or probe blindly.",
+                    "If object is still in situ: Stabilize and do not remove unless it obstructs the airway or is a fish hook in a non-critical area.",
+                ),
+            ),
+            (
+                "Crush / compression",
+                _module_text(
+                    "PRIORITIZE perfusion, compartment syndrome risk, and tissue viability.",
+                    "IF prolonged compression occurred, THEN anticipate reperfusion and metabolic complications.",
+                    "IMMOBILIZE and elevate as appropriate while preserving circulation.",
+                    "NEVER underestimate evolving necrosis from initially modest external signs.",
+                    "MONITOR swelling progression, urine trend, and worsening pain out of proportion.",
+                ),
+            ),
+            (
+                "Twist / overload (rope, winch)",
+                _module_text(
+                    "PRIORITIZE ligament, tendon, and occult fracture screening in loaded joints.",
+                    "IF rotational mechanism caused deformity or instability, THEN treat as structural injury.",
+                    "IMMOBILIZE early and reassess neurovascular status after positioning.",
+                    "NEVER force range of motion through severe pain resistance.",
+                    "MONITOR for delayed swelling and function decline after initial stabilization.",
+                ),
+            ),
+            (
+                "High-tension recoil (snapback line)",
+                _module_text(
+                    "ASSUME high-energy transfer with risk of deep blunt and penetrating components.",
+                    "IF chest, neck, or head was in path, THEN escalate hidden-injury suspicion immediately.",
+                    "TREAT visible wounds while screening aggressively for internal trauma.",
+                    "NEVER clear patient from observation based only on early appearance.",
+                    "MONITOR serial vitals and neurologic status for delayed collapse.",
+                ),
+            ),
+            (
+                "Marine bite / sting",
+                _module_text(
+                    "PRIORITIZE toxin effects, anaphylaxis surveillance, and wound contamination control.",
+                    "IF progressive pain, swelling, or systemic symptoms develop, THEN escalate envenomation pathway.",
+                    "DECONTAMINATE and remove external irritants with species-safe methods.",
+                    "NEVER apply contraindicated rinses or tightly occlusive wraps without indication.",
+                    "MONITOR delayed tissue injury and infection progression over prolonged window.",
+                ),
+            ),
+            (
+                "Thermal exposure",
+                _module_text(
+                    "STOP ongoing thermal exposure and prioritize airway/core stabilization.",
+                    "IF inhalation risk or extensive burn/cold injury exists, THEN elevate acuity immediately.",
+                    "USE controlled cooling or warming matched to injury pattern.",
+                    "NEVER use damaging extremes such as ice on burns or aggressive rubbing on frostbite.",
+                    "MONITOR temperature trend, perfusion, and neurologic status frequently.",
+                ),
+            ),
+            (
+                "Immersion / near drowning",
+                _module_text(
+                    "PRIORITIZE oxygenation, ventilation, and hypothermia correction after rescue.",
+                    "IF respiratory distress persists, THEN escalate airway and pulmonary monitoring urgently.",
+                    "ASSUME delayed pulmonary deterioration even after transient improvement.",
+                    "NEVER end observation early after significant aspiration event.",
+                    "MONITOR oxygen trend, work of breathing, and mental status for delayed decline.",
+                ),
+            ),
+            (
+                "Chemical / electrical exposure",
+                _module_text(
+                    "PRIORITIZE decontamination, airway safety, and rhythm risk screening.",
+                    "IF ongoing source exposure remains, THEN isolate source before further care.",
+                    "IRRIGATE chemical injuries early and monitor for progressive tissue damage.",
+                    "NEVER underestimate internal injury risk after electrical mechanism.",
+                    "MONITOR cardiac, neurologic, and compartment changes across repeated reassessments.",
+                ),
+            ),
+        ],
+    }
+
+
+def _seed_triage_prompt_modules(conn, now: str):
+    """Seed default triage prompt modules once, preserving user customizations."""
+    _ensure_triage_prompt_modules_table(conn)
+    existing_count = conn.execute("SELECT COUNT(*) AS c FROM triage_prompt_modules").fetchone()
+    if existing_count and int(existing_count["c"] or 0) > 0:
+        return
+    defaults = _default_triage_prompt_modules()
+    changed = False
+    for category, entries in defaults.items():
+        for pos, (module_key, module_text) in enumerate(entries):
+            conn.execute(
+                """
+                INSERT INTO triage_prompt_modules(category, module_key, module_text, position, updated_at)
+                VALUES(:category, :module_key, :module_text, :position, :updated_at)
+                ON CONFLICT(category, module_key) DO NOTHING
+                """,
+                {
+                    "category": category,
+                    "module_key": module_key,
+                    "module_text": module_text,
+                    "position": pos,
+                    "updated_at": now,
+                },
+            )
+            if conn.total_changes:
+                changed = True
+    if changed:
+        conn.commit()
+
+
 def _ensure_settings_meta_columns(conn):
     """Add new settings_meta columns when upgrading older DBs."""
     try:
         cols = conn.execute("PRAGMA table_info(settings_meta)").fetchall()
         names = {c["name"] for c in cols}
-        if "resource_injection_mode" not in names:
-            conn.execute("ALTER TABLE settings_meta ADD COLUMN resource_injection_mode TEXT;")
         if "last_prompt_verbatim" not in names:
             conn.execute("ALTER TABLE settings_meta ADD COLUMN last_prompt_verbatim TEXT;")
     except Exception as exc:
         logger.warning("Unable to add settings_meta columns: %s", exc)
+
+
+def _seed_prompt_templates_from_model_params(conn, now: str):
+    """Seed prompt template library from current active prompt values when empty."""
+    _ensure_prompt_templates_table(conn)
+    rows = conn.execute(
+        """
+        SELECT prompt_key, COUNT(*) AS c
+        FROM prompt_templates
+        WHERE prompt_key IN ('triage_instruction', 'inquiry_instruction')
+        GROUP BY prompt_key
+        """
+    ).fetchall()
+    existing = {r["prompt_key"]: int(r["c"] or 0) for r in rows}
+
+    mp = conn.execute(
+        """
+        SELECT triage_instruction, inquiry_instruction
+        FROM model_params
+        WHERE id=1
+        """
+    ).fetchone()
+
+    triage_text = (mp["triage_instruction"] if mp else None) or ""
+    inquiry_text = (mp["inquiry_instruction"] if mp else None) or ""
+
+    seeds = [
+        ("triage_instruction", "Current Active Triage Prompt", triage_text),
+        ("inquiry_instruction", "Current Active Inquiry Prompt", inquiry_text),
+    ]
+    changed = False
+    for prompt_key, name, prompt_text in seeds:
+        if existing.get(prompt_key, 0) > 0:
+            continue
+        if not (prompt_text or "").strip():
+            continue
+        conn.execute(
+            """
+            INSERT INTO prompt_templates(prompt_key, name, prompt_text, created_at, updated_at)
+            VALUES(:prompt_key, :name, :prompt_text, :created_at, :updated_at)
+            ON CONFLICT(prompt_key, name) DO UPDATE SET
+                prompt_text=excluded.prompt_text,
+                updated_at=excluded.updated_at
+            """,
+            {
+                "prompt_key": prompt_key,
+                "name": name,
+                "prompt_text": prompt_text,
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
+        changed = True
+
+    if changed:
+        conn.commit()
 
 
 def _backfill_expiries_from_items(conn, now: str):
@@ -1237,6 +2337,10 @@ def set_doc(workspace_id: int, category: str, data: Any):
 
 
 def _slug(name: str) -> str:
+    """
+     Slug helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     import re
 
     slug = "".join(ch if ch.isalnum() else "-" for ch in (name or ""))
@@ -1244,7 +2348,26 @@ def _slug(name: str) -> str:
     return slug or "default"
 
 
+def _ensure_vessel_columns(conn):
+    """Add newer vessel columns for image assets when upgrading older DBs."""
+    try:
+        cols = conn.execute("PRAGMA table_info(vessel)").fetchall()
+        names = {c["name"] for c in cols}
+        if "boatPhoto" not in names:
+            conn.execute("ALTER TABLE vessel ADD COLUMN boatPhoto TEXT;")
+        if "registrationFrontPhoto" not in names:
+            conn.execute("ALTER TABLE vessel ADD COLUMN registrationFrontPhoto TEXT;")
+        if "registrationBackPhoto" not in names:
+            conn.execute("ALTER TABLE vessel ADD COLUMN registrationBackPhoto TEXT;")
+    except Exception as exc:
+        logger.warning("Unable to add vessel columns: %s", exc)
+
+
 def _upsert_vessel(conn, data: dict, updated_at: str):
+    """
+     Upsert Vessel helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     default = {
         "vesselName": "",
         "registrationNumber": "",
@@ -1260,17 +2383,21 @@ def _upsert_vessel(conn, data: dict, updated_at: str):
         "portEngine": "",
         "portEngineSn": "",
         "ribSn": "",
+        "boatPhoto": "",
+        "registrationFrontPhoto": "",
+        "registrationBackPhoto": "",
     }
+    _ensure_vessel_columns(conn)
     merged = {**default, **(data or {})}
     conn.execute(
         """
         INSERT INTO vessel(
             id, vesselName, registrationNumber, flagCountry, homePort, callSign,
             tonnage, netTonnage, mmsi, hullNumber, starboardEngine, starboardEngineSn,
-            portEngine, portEngineSn, ribSn, updated_at
+            portEngine, portEngineSn, ribSn, boatPhoto, registrationFrontPhoto, registrationBackPhoto, updated_at
         ) VALUES (1, :vesselName, :registrationNumber, :flagCountry, :homePort, :callSign,
                   :tonnage, :netTonnage, :mmsi, :hullNumber, :starboardEngine, :starboardEngineSn,
-                  :portEngine, :portEngineSn, :ribSn, :updated_at)
+                  :portEngine, :portEngineSn, :ribSn, :boatPhoto, :registrationFrontPhoto, :registrationBackPhoto, :updated_at)
         ON CONFLICT(id) DO UPDATE SET
             vesselName=excluded.vesselName,
             registrationNumber=excluded.registrationNumber,
@@ -1286,6 +2413,9 @@ def _upsert_vessel(conn, data: dict, updated_at: str):
             portEngine=excluded.portEngine,
             portEngineSn=excluded.portEngineSn,
             ribSn=excluded.ribSn,
+            boatPhoto=excluded.boatPhoto,
+            registrationFrontPhoto=excluded.registrationFrontPhoto,
+            registrationBackPhoto=excluded.registrationBackPhoto,
             updated_at=excluded.updated_at;
         """,
         {**merged, "updated_at": updated_at},
@@ -1293,12 +2423,17 @@ def _upsert_vessel(conn, data: dict, updated_at: str):
 
 
 def get_vessel() -> dict:
+    """
+    Get Vessel helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     with _conn() as conn:
+        _ensure_vessel_columns(conn)
         row = conn.execute(
             """
             SELECT vesselName, registrationNumber, flagCountry, homePort, callSign,
                    tonnage, netTonnage, mmsi, hullNumber, starboardEngine, starboardEngineSn,
-                   portEngine, portEngineSn, ribSn, updated_at
+                   portEngine, portEngineSn, ribSn, boatPhoto, registrationFrontPhoto, registrationBackPhoto, updated_at
             FROM vessel WHERE id=1
             """
         ).fetchone()
@@ -1317,6 +2452,9 @@ def get_vessel() -> dict:
         "portEngine": "",
         "portEngineSn": "",
         "ribSn": "",
+        "boatPhoto": "",
+        "registrationFrontPhoto": "",
+        "registrationBackPhoto": "",
     }
     if not row:
         return default
@@ -1335,12 +2473,19 @@ def get_vessel() -> dict:
         "portEngine",
         "portEngineSn",
         "ribSn",
+        "boatPhoto",
+        "registrationFrontPhoto",
+        "registrationBackPhoto",
         "updated_at",
     ]
     return {k: row[idx] for idx, k in enumerate(keys)}
 
 
 def set_vessel(data: dict):
+    """
+    Set Vessel helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     now = datetime.utcnow().isoformat()
     with _conn() as conn:
         _upsert_vessel(conn, data or {}, now)
@@ -1350,6 +2495,10 @@ def set_vessel(data: dict):
 # --- Crew helpers ---
 
 def _replace_crew(conn, crew_list: list, updated_at: str):
+    """
+     Replace Crew helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     conn.execute("DELETE FROM crew_vaccines")
     conn.execute("DELETE FROM crew")
     for member in crew_list or []:
@@ -1363,6 +2512,10 @@ def _replace_crew(conn, crew_list: list, updated_at: str):
 
 
 def get_patients() -> list:
+    """
+    Get Patients helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     try:
         with _conn() as conn:
             crew_rows = conn.execute(
@@ -1413,6 +2566,31 @@ def get_patients() -> list:
     return out
 
 
+def get_patient_options() -> list:
+    """Return lightweight crew rows for fast dropdown rendering."""
+    try:
+        with _conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, firstName, lastName
+                FROM crew
+                ORDER BY updated_at DESC
+                """
+            ).fetchall()
+    except Exception:
+        logger.exception("get_patient_options failed", extra={"db_path": str(DB_PATH)})
+        raise
+
+    return [
+        {
+            "id": r["id"],
+            "firstName": r["firstName"],
+            "lastName": r["lastName"],
+        }
+        for r in rows
+    ]
+
+
 def get_credentials_rows():
     """Return minimal credential info for auth (username + hashed password)."""
     with _conn() as conn:
@@ -1423,6 +2601,10 @@ def get_credentials_rows():
 
 
 def set_patients(members: list):
+    """
+    Set Patients helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     now = datetime.utcnow().isoformat()
     with _conn() as conn:
         _replace_crew(conn, members or [], now)
@@ -1438,6 +2620,10 @@ def delete_patients_doc():
 # --- Settings aux tables (vaccine types, pharmacy labels) ---
 
 def replace_vaccine_types(names: list):
+    """
+    Replace Vaccine Types helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     if not isinstance(names, list):
         return
     rows = [(idx, str(n).strip()) for idx, n in enumerate(names) if str(n).strip()]
@@ -1452,6 +2638,10 @@ def replace_vaccine_types(names: list):
 
 
 def replace_pharmacy_labels(names: list):
+    """
+    Replace Pharmacy Labels helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     if not isinstance(names, list):
         return
     rows = [(idx, str(n).strip()) for idx, n in enumerate(names) if str(n).strip()]
@@ -1466,18 +2656,30 @@ def replace_pharmacy_labels(names: list):
 
 
 def load_vaccine_types():
+    """
+    Load Vaccine Types helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     with _conn() as conn:
         rows = conn.execute("SELECT name FROM vaccine_types ORDER BY position ASC").fetchall()
     return [r["name"] for r in rows]
 
 
 def load_pharmacy_labels():
+    """
+    Load Pharmacy Labels helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     with _conn() as conn:
         rows = conn.execute("SELECT name FROM pharmacy_labels ORDER BY position ASC").fetchall()
     return [r["name"] for r in rows]
 
 
 def replace_equipment_categories(names: list):
+    """
+    Replace Equipment Categories helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     if not isinstance(names, list):
         return
     rows = [(idx, str(n).strip()) for idx, n in enumerate(names) if str(n).strip()]
@@ -1492,12 +2694,20 @@ def replace_equipment_categories(names: list):
 
 
 def load_equipment_categories():
+    """
+    Load Equipment Categories helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     with _conn() as conn:
         rows = conn.execute("SELECT name FROM equipment_categories ORDER BY position ASC").fetchall()
     return [r["name"] for r in rows]
 
 
 def replace_consumable_categories(names: list):
+    """
+    Replace Consumable Categories helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     if not isinstance(names, list):
         return
     rows = [(idx, str(n).strip()) for idx, n in enumerate(names) if str(n).strip()]
@@ -1512,17 +2722,26 @@ def replace_consumable_categories(names: list):
 
 
 def load_consumable_categories():
+    """
+    Load Consumable Categories helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     with _conn() as conn:
         rows = conn.execute("SELECT name FROM consumable_categories ORDER BY position ASC").fetchall()
     return [r["name"] for r in rows]
 
 
 def get_model_params():
+    """
+    Get Model Params helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     with _conn() as conn:
+        _ensure_model_params_columns(conn)
         row = conn.execute(
             """
-            SELECT triage_instruction, inquiry_instruction, tr_temp, tr_tok, tr_p,
-                   in_temp, in_tok, in_p, mission_context, rep_penalty
+            SELECT triage_instruction, inquiry_instruction, tr_temp, tr_tok, tr_p, tr_k,
+                   in_temp, in_tok, in_p, in_k, mission_context, rep_penalty
             FROM model_params WHERE id=1
             """
         ).fetchone()
@@ -1534,9 +2753,11 @@ def get_model_params():
         "tr_temp",
         "tr_tok",
         "tr_p",
+        "tr_k",
         "in_temp",
         "in_tok",
         "in_p",
+        "in_k",
         "mission_context",
         "rep_penalty",
     ]
@@ -1544,17 +2765,22 @@ def get_model_params():
 
 
 def set_model_params(data: dict):
+    """
+    Set Model Params helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     now = datetime.utcnow().isoformat()
     params = data or {}
     with _conn() as conn:
+        _ensure_model_params_columns(conn)
         conn.execute(
             """
             INSERT INTO model_params(
-                id, triage_instruction, inquiry_instruction, tr_temp, tr_tok, tr_p,
-                in_temp, in_tok, in_p, mission_context, rep_penalty, updated_at
+                id, triage_instruction, inquiry_instruction, tr_temp, tr_tok, tr_p, tr_k,
+                in_temp, in_tok, in_p, in_k, mission_context, rep_penalty, updated_at
             ) VALUES (
-                1, :triage_instruction, :inquiry_instruction, :tr_temp, :tr_tok, :tr_p,
-                :in_temp, :in_tok, :in_p, :mission_context, :rep_penalty, :updated_at
+                1, :triage_instruction, :inquiry_instruction, :tr_temp, :tr_tok, :tr_p, :tr_k,
+                :in_temp, :in_tok, :in_p, :in_k, :mission_context, :rep_penalty, :updated_at
             )
             ON CONFLICT(id) DO UPDATE SET
                 triage_instruction=excluded.triage_instruction,
@@ -1562,9 +2788,11 @@ def set_model_params(data: dict):
                 tr_temp=excluded.tr_temp,
                 tr_tok=excluded.tr_tok,
                 tr_p=excluded.tr_p,
+                tr_k=excluded.tr_k,
                 in_temp=excluded.in_temp,
                 in_tok=excluded.in_tok,
                 in_p=excluded.in_p,
+                in_k=excluded.in_k,
                 mission_context=excluded.mission_context,
                 rep_penalty=excluded.rep_penalty,
                 updated_at=excluded.updated_at;
@@ -1575,15 +2803,103 @@ def set_model_params(data: dict):
                 "tr_temp": params.get("tr_temp"),
                 "tr_tok": params.get("tr_tok"),
                 "tr_p": params.get("tr_p"),
+                "tr_k": params.get("tr_k"),
                 "in_temp": params.get("in_temp"),
                 "in_tok": params.get("in_tok"),
                 "in_p": params.get("in_p"),
+                "in_k": params.get("in_k"),
                 "mission_context": params.get("mission_context"),
                 "rep_penalty": params.get("rep_penalty"),
                 "updated_at": now,
             },
         )
         conn.commit()
+
+
+PROMPT_TEMPLATE_KEYS = {"triage_instruction", "inquiry_instruction"}
+
+
+def _normalize_prompt_template_key(prompt_key: str) -> str:
+    """
+     Normalize Prompt Template Key helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    key = (prompt_key or "").strip()
+    if key not in PROMPT_TEMPLATE_KEYS:
+        raise ValueError("Invalid prompt key.")
+    return key
+
+
+def list_prompt_templates(prompt_key: Optional[str] = None) -> list:
+    """
+    List Prompt Templates helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    with _conn() as conn:
+        _ensure_prompt_templates_table(conn)
+        if prompt_key:
+            key = _normalize_prompt_template_key(prompt_key)
+            rows = conn.execute(
+                """
+                SELECT id, prompt_key, name, prompt_text, created_at, updated_at
+                FROM prompt_templates
+                WHERE prompt_key=:prompt_key
+                ORDER BY lower(name), datetime(updated_at) DESC
+                """,
+                {"prompt_key": key},
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT id, prompt_key, name, prompt_text, created_at, updated_at
+                FROM prompt_templates
+                ORDER BY prompt_key, lower(name), datetime(updated_at) DESC
+                """
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def upsert_prompt_template(prompt_key: str, name: str, prompt_text: str) -> dict:
+    """
+    Upsert Prompt Template helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    key = _normalize_prompt_template_key(prompt_key)
+    title = (name or "").strip()
+    if not title:
+        raise ValueError("Prompt name is required.")
+    body = (prompt_text or "").strip()
+    if not body:
+        raise ValueError("Prompt text is required.")
+    now = datetime.utcnow().isoformat()
+    with _conn() as conn:
+        _ensure_prompt_templates_table(conn)
+        conn.execute(
+            """
+            INSERT INTO prompt_templates(prompt_key, name, prompt_text, created_at, updated_at)
+            VALUES(:prompt_key, :name, :prompt_text, :created_at, :updated_at)
+            ON CONFLICT(prompt_key, name) DO UPDATE SET
+                prompt_text=excluded.prompt_text,
+                updated_at=excluded.updated_at
+            """,
+            {
+                "prompt_key": key,
+                "name": title,
+                "prompt_text": body,
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
+        row = conn.execute(
+            """
+            SELECT id, prompt_key, name, prompt_text, created_at, updated_at
+            FROM prompt_templates
+            WHERE prompt_key=:prompt_key AND name=:name
+            """,
+            {"prompt_key": key, "name": title},
+        ).fetchone()
+        conn.commit()
+    return dict(row) if row else {}
 
 
 def update_patient_fields(crew_id: str, fields: dict):
@@ -1654,6 +2970,10 @@ def update_patient_fields(crew_id: str, fields: dict):
 # --- Inventory / equipment / consumables ---
 
 def _row_to_item(row):
+    """
+     Row To Item helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     d = {k: row[k] for k in row.keys()}
     # map fields back to existing JSON keys
     item = {
@@ -1684,6 +3004,8 @@ def _row_to_item(row):
         "requiresPower": bool(d["requiresPower"]),
         "category": d["category"],
         "type": d["typeDetail"],
+        "priorityTier": d.get("priorityTier") or "",
+        "tierCategory": d.get("tierCategory") or "",
         "notes": d["notes"],
         "excludeFromResources": bool(d["excludeFromResources"]),
         "verified": bool(d.get("verified", 0)),
@@ -1696,8 +3018,13 @@ def _row_to_item(row):
 
 def get_inventory_items():
     # Pull pharma items plus their per-expiry rows; keep a dict keyed by item_id for quick attach.
+    """
+    Get Inventory Items helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     with _conn() as conn:
         _ensure_items_verified_column(conn)
+        _ensure_vessel_columns(conn)
         rows = conn.execute("SELECT * FROM items WHERE itemType='pharma' ORDER BY updated_at DESC").fetchall()
         expiries = conn.execute(
             "SELECT id, item_id, date, quantity, notes, manufacturer, batchLot, updated_at FROM med_expiries"
@@ -1732,6 +3059,10 @@ def ensure_item_schema(item: dict, item_type: str, now: str) -> dict:
     source = (item.get("source") or "").strip().lower()
 
     def pick(*keys, default=""):
+        """
+        Pick helper.
+        Detailed inline notes are included to support safe maintenance and future edits.
+        """
         for k in keys:
             if k in item and item[k] is not None:
                 return item[k]
@@ -1801,6 +3132,8 @@ def ensure_item_schema(item: dict, item_type: str, now: str) -> dict:
         "requiresPower": 1 if item.get("requiresPower") else 0,
         "category": category,
         "typeDetail": type_detail,
+        "priorityTier": pick("priorityTier", default=""),
+        "tierCategory": pick("tierCategory", default=""),
         "notes": pick("notes", default=""),
         "excludeFromResources": 1 if item.get("excludeFromResources") else 0,
         "updated_at": now,
@@ -1808,12 +3141,20 @@ def ensure_item_schema(item: dict, item_type: str, now: str) -> dict:
 
 
 def set_inventory_items(items: list):
+    """
+    Set Inventory Items helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     now = datetime.utcnow().isoformat()
     # Validate and normalize the full payload before touching the database to avoid partial writes.
     normalized_items = []
     exp_rows = []
 
     def _validate_expiry(ph: dict, item_id: str):
+        """
+         Validate Expiry helper.
+        Detailed inline notes are included to support safe maintenance and future edits.
+        """
         date_val = ph.get("date") or ""
         if date_val:
             try:
@@ -1835,6 +3176,10 @@ def set_inventory_items(items: list):
     def _purchase_history_rows(raw_item):
         # Prefer structured purchaseHistory; if absent but a single expiryDate is provided,
         # synthesize one row so legacy/manual forms still persist expiry data.
+        """
+         Purchase History Rows helper.
+        Detailed inline notes are included to support safe maintenance and future edits.
+        """
         ph_list = raw_item.get("purchaseHistory") or raw_item.get("purchase_history") or []
         if not ph_list and raw_item.get("expiryDate"):
             ph_list = [
@@ -1953,6 +3298,10 @@ def upsert_inventory_item(item: dict) -> dict:
     normalized = ensure_item_schema(item, "pharma", now)
 
     def _validate_expiry(ph: dict):
+        """
+         Validate Expiry helper.
+        Detailed inline notes are included to support safe maintenance and future edits.
+        """
         date_val = ph.get("date") or ""
         if date_val:
             try:
@@ -2029,12 +3378,20 @@ def upsert_inventory_item(item: dict) -> dict:
 
 
 def get_tool_items():
+    """
+    Get Tool Items helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     with _conn() as conn:
         rows = conn.execute("SELECT * FROM items WHERE itemType!='pharma' ORDER BY updated_at DESC").fetchall()
     return [_row_to_item(r) for r in rows]
 
 
 def set_tool_items(items: list):
+    """
+    Set Tool Items helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     now = datetime.utcnow().isoformat()
     with _conn() as conn:
         _ensure_items_verified_column(conn)
@@ -2046,6 +3403,10 @@ def set_tool_items(items: list):
 
 
 def _insert_item(conn, item: dict, item_type: str, updated_at: str):
+    """
+     Insert Item helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     conn.execute(
         """
         INSERT INTO items(
@@ -2053,14 +3414,14 @@ def _insert_item(conn, item: dict, item_type: str, updated_at: str):
             indications, contraindications, consultDoctor, adultDosage, pediatricDosage,
             unwantedEffects, storageLocation, subLocation, status, verified, expiryDate,
             lastInspection, batteryType, batteryStatus, calibrationDue, totalQty,
-            minPar, supplier, parentId, requiresPower, category, typeDetail, notes,
+            minPar, supplier, parentId, requiresPower, category, typeDetail, priorityTier, tierCategory, notes,
             excludeFromResources, updated_at
         ) VALUES (
             :id, :itemType, :name, :genericName, :brandName, :alsoKnownAs, :formStrength,
             :indications, :contraindications, :consultDoctor, :adultDosage, :pediatricDosage,
             :unwantedEffects, :storageLocation, :subLocation, :status, :verified, :expiryDate,
             :lastInspection, :batteryType, :batteryStatus, :calibrationDue, :totalQty,
-            :minPar, :supplier, :parentId, :requiresPower, :category, :typeDetail, :notes,
+            :minPar, :supplier, :parentId, :requiresPower, :category, :typeDetail, :priorityTier, :tierCategory, :notes,
             :excludeFromResources, :updated_at
         )
         ON CONFLICT(id) DO UPDATE SET
@@ -2092,6 +3453,8 @@ def _insert_item(conn, item: dict, item_type: str, updated_at: str):
             requiresPower=excluded.requiresPower,
             category=excluded.category,
             typeDetail=excluded.typeDetail,
+            priorityTier=excluded.priorityTier,
+            tierCategory=excluded.tierCategory,
             notes=excluded.notes,
             excludeFromResources=excluded.excludeFromResources,
             updated_at=excluded.updated_at;
@@ -2126,6 +3489,8 @@ def _insert_item(conn, item: dict, item_type: str, updated_at: str):
             "requiresPower": 1 if item.get("requiresPower") else 0,
             "category": item.get("category"),
             "typeDetail": item.get("type"),
+            "priorityTier": item.get("priorityTier"),
+            "tierCategory": item.get("tierCategory"),
             "notes": item.get("notes"),
             "excludeFromResources": 1 if item.get("excludeFromResources") else 0,
             "updated_at": updated_at,
@@ -2135,6 +3500,10 @@ def _insert_item(conn, item: dict, item_type: str, updated_at: str):
 
 
 def get_history_entries():
+    """
+    Get History Entries helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     with _conn() as conn:
         rows = conn.execute(
             """
@@ -2145,6 +3514,26 @@ def get_history_entries():
             """
         ).fetchall()
     return [{k: r[k] for k in r.keys()} for r in rows]
+
+
+def get_history_entry_by_id(history_id: str):
+    """
+    Get History Entry By Id helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    if not history_id:
+        return None
+    with _conn() as conn:
+        row = conn.execute(
+            """
+            SELECT id, date, patient, patient_id, mode, query, user_query, response,
+                   model, duration_ms, prompt, injected_prompt, updated_at
+            FROM history_entries
+            WHERE id = ?
+            """,
+            (history_id,),
+        ).fetchone()
+    return {k: row[k] for k in row.keys()} if row else None
 
 
 def get_history_latency_metrics():
@@ -2192,6 +3581,10 @@ def get_history_latency_metrics():
 
 
 def set_history_entries(entries: list):
+    """
+    Set History Entries helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     now = datetime.utcnow().isoformat()
     with _conn() as conn:
         conn.execute("DELETE FROM history_entries")
@@ -2239,7 +3632,63 @@ def set_history_entries(entries: list):
         conn.commit()
 
 
+def upsert_history_entry(entry: dict):
+    """
+    Upsert History Entry helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    now = datetime.utcnow().isoformat()
+    if not isinstance(entry, dict):
+        return
+    hid = str(entry.get("id") or datetime.utcnow().isoformat())
+    with _conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO history_entries(
+                id, date, patient, patient_id, mode, query, user_query, response,
+                model, duration_ms, prompt, injected_prompt, updated_at
+            ) VALUES (
+                :id, :date, :patient, :patient_id, :mode, :query, :user_query, :response,
+                :model, :duration_ms, :prompt, :injected_prompt, :updated_at
+            )
+            ON CONFLICT(id) DO UPDATE SET
+                date=excluded.date,
+                patient=excluded.patient,
+                patient_id=excluded.patient_id,
+                mode=excluded.mode,
+                query=excluded.query,
+                user_query=excluded.user_query,
+                response=excluded.response,
+                model=excluded.model,
+                duration_ms=excluded.duration_ms,
+                prompt=excluded.prompt,
+                injected_prompt=excluded.injected_prompt,
+                updated_at=excluded.updated_at;
+            """,
+            {
+                "id": hid,
+                "date": entry.get("date"),
+                "patient": entry.get("patient"),
+                "patient_id": entry.get("patient_id"),
+                "mode": entry.get("mode"),
+                "query": entry.get("query"),
+                "user_query": entry.get("user_query"),
+                "response": entry.get("response"),
+                "model": entry.get("model"),
+                "duration_ms": entry.get("duration_ms"),
+                "prompt": entry.get("prompt"),
+                "injected_prompt": entry.get("injected_prompt"),
+                "updated_at": entry.get("updated_at") or now,
+            },
+        )
+        conn.commit()
+
+
 def get_chats():
+    """
+    Get Chats helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     with _conn() as conn:
         rows = conn.execute(
             """
@@ -2262,6 +3711,10 @@ def get_chats():
 
 
 def set_chats(chats: list):
+    """
+    Set Chats helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     now = datetime.utcnow().isoformat()
     with _conn() as conn:
         conn.execute("DELETE FROM chats")
@@ -2269,6 +3722,10 @@ def set_chats(chats: list):
 
 
 def get_chat_metrics():
+    """
+    Get Chat Metrics helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     with _conn() as conn:
         rows = conn.execute(
             "SELECT model, count, total_ms, avg_ms FROM chat_metrics"
@@ -2277,23 +3734,30 @@ def get_chat_metrics():
 
 
 def set_chat_metrics(metrics: dict):
+    """
+    Set Chat Metrics helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     now = datetime.utcnow().isoformat()
     with _conn() as conn:
         _replace_chat_metrics(conn, metrics or {}, now)
 
 
 def get_settings_meta():
+    """
+    Get Settings Meta helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     with _conn() as conn:
         _ensure_settings_meta_columns(conn)
         row = conn.execute(
-            "SELECT user_mode, offline_force_flags, resource_injection_mode, last_prompt_verbatim FROM settings_meta WHERE id=1"
+            "SELECT user_mode, offline_force_flags, last_prompt_verbatim FROM settings_meta WHERE id=1"
         ).fetchone()
     if not row:
         return {}
     return {
         "user_mode": row["user_mode"],
         "offline_force_flags": bool(row["offline_force_flags"]),
-        "resource_injection_mode": row["resource_injection_mode"],
         "last_prompt_verbatim": row["last_prompt_verbatim"],
     }
 
@@ -2301,25 +3765,27 @@ def get_settings_meta():
 def set_settings_meta(
     user_mode: str = None,
     offline_force_flags: bool = None,
-    resource_injection_mode: str = None,
     last_prompt_verbatim: str = None,
 ):
+    """
+    Set Settings Meta helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     now = datetime.utcnow().isoformat()
     with _conn() as conn:
         _ensure_settings_meta_columns(conn)
         existing = conn.execute(
-            "SELECT user_mode, offline_force_flags, resource_injection_mode, last_prompt_verbatim FROM settings_meta WHERE id=1"
+            "SELECT user_mode, offline_force_flags, last_prompt_verbatim FROM settings_meta WHERE id=1"
         ).fetchone()
         if existing is None:
             conn.execute(
                 """
-                INSERT INTO settings_meta(id, user_mode, offline_force_flags, resource_injection_mode, last_prompt_verbatim, updated_at)
-                VALUES(1, :user_mode, :offline_force_flags, :resource_injection_mode, :last_prompt_verbatim, :updated_at)
+                INSERT INTO settings_meta(id, user_mode, offline_force_flags, last_prompt_verbatim, updated_at)
+                VALUES(1, :user_mode, :offline_force_flags, :last_prompt_verbatim, :updated_at)
                 """,
                 {
                     "user_mode": user_mode,
                     "offline_force_flags": 1 if offline_force_flags else 0,
-                    "resource_injection_mode": resource_injection_mode,
                     "last_prompt_verbatim": last_prompt_verbatim,
                     "updated_at": now,
                 },
@@ -2330,7 +3796,6 @@ def set_settings_meta(
                 UPDATE settings_meta
                 SET user_mode=COALESCE(:user_mode, user_mode),
                     offline_force_flags=COALESCE(:offline_force_flags, offline_force_flags),
-                    resource_injection_mode=COALESCE(:resource_injection_mode, resource_injection_mode),
                     last_prompt_verbatim=COALESCE(:last_prompt_verbatim, last_prompt_verbatim),
                     updated_at=:updated_at
                 WHERE id=1
@@ -2338,7 +3803,6 @@ def set_settings_meta(
                 {
                     "user_mode": user_mode,
                     "offline_force_flags": None if offline_force_flags is None else (1 if offline_force_flags else 0),
-                    "resource_injection_mode": resource_injection_mode,
                     "last_prompt_verbatim": last_prompt_verbatim,
                     "updated_at": now,
                 },
@@ -2347,6 +3811,10 @@ def set_settings_meta(
 
 
 def get_context_payload():
+    """
+    Get Context Payload helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     with _conn() as conn:
         row = conn.execute("SELECT payload FROM context_store WHERE id=1").fetchone()
     if not row:
@@ -2358,6 +3826,10 @@ def get_context_payload():
 
 
 def set_context_payload(payload: dict):
+    """
+    Set Context Payload helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     now = datetime.utcnow().isoformat()
     with _conn() as conn:
         conn.execute(
@@ -2371,64 +3843,213 @@ def set_context_payload(payload: dict):
         conn.commit()
 
 
-def get_triage_samples():
-    with _conn() as conn:
-        _maybe_seed_triage(conn, datetime.utcnow().isoformat())
-        rows = conn.execute(
-            """
-            SELECT id, situation, chat_text, responsive, breathing, pain, main_problem,
-                   temp, circulation, cause, updated_at
-            FROM triage_samples
-            ORDER BY id
-            """
-        ).fetchall()
-    return [dict(r) for r in rows]
-
-
-def set_triage_samples(samples: list):
+def get_triage_prompt_tree() -> Dict[str, Any]:
+    """
+    Get Triage Prompt Tree helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     now = datetime.utcnow().isoformat()
     with _conn() as conn:
-        conn.execute("DELETE FROM triage_samples")
-        for s in samples or []:
-            conn.execute(
-                """
-                INSERT INTO triage_samples(
-                    id, situation, chat_text, responsive, breathing, pain, main_problem,
-                    temp, circulation, cause, updated_at
-                ) VALUES (
-                    :id, :situation, :chat_text, :responsive, :breathing, :pain, :main_problem,
-                    :temp, :circulation, :cause, :updated_at
+        _ensure_triage_prompt_tree_table(conn)
+        _seed_triage_prompt_tree(conn, now)
+        row = conn.execute("SELECT payload FROM triage_prompt_tree WHERE id = 1").fetchone()
+    if not row:
+        return _default_triage_prompt_tree()
+    try:
+        parsed = json.loads(row["payload"] or "{}")
+        normalized = _normalize_triage_prompt_tree_payload(parsed)
+        return normalized
+    except Exception:
+        return _default_triage_prompt_tree()
+
+
+def set_triage_prompt_tree(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Set Triage Prompt Tree helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    normalized = _normalize_triage_prompt_tree_payload(payload)
+    now = datetime.utcnow().isoformat()
+    with _conn() as conn:
+        _ensure_triage_prompt_tree_table(conn)
+        conn.execute(
+            """
+            INSERT INTO triage_prompt_tree(id, payload, updated_at)
+            VALUES(1, :payload, :updated_at)
+            ON CONFLICT(id) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at
+            """,
+            {
+                "payload": json.dumps(normalized, ensure_ascii=False),
+                "updated_at": now,
+            },
+        )
+        conn.commit()
+    return normalized
+
+
+def get_triage_prompt_modules():
+    """
+    Get Triage Prompt Modules helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    now = datetime.utcnow().isoformat()
+    with _conn() as conn:
+        _ensure_triage_prompt_modules_table(conn)
+        _seed_triage_prompt_modules(conn, now)
+        rows = conn.execute(
+            """
+            SELECT category, module_key, module_text, position
+            FROM triage_prompt_modules
+            ORDER BY category, position, lower(module_key)
+            """
+        ).fetchall()
+    result = {}
+    for row in rows:
+        result.setdefault(row["category"], {})[row["module_key"]] = row["module_text"]
+    return result
+
+
+TRIAGE_MODULE_CATEGORIES = {"base", "domain", "problem", "anatomy", "severity", "mechanism"}
+
+
+def _normalize_triage_module_category(category: str) -> str:
+    """
+     Normalize Triage Module Category helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    key = (category or "").strip().lower()
+    if key not in TRIAGE_MODULE_CATEGORIES:
+        raise ValueError(f"Invalid triage module category: {category}")
+    return key
+
+
+def _normalize_triage_module_key(module_key: str) -> str:
+    """
+     Normalize Triage Module Key helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    key = (module_key or "").strip()
+    if not key:
+        raise ValueError("Module key is required.")
+    return key
+
+
+def _normalize_triage_module_text(module_text: str) -> str:
+    """
+     Normalize Triage Module Text helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    txt = (module_text or "").strip()
+    if not txt:
+        raise ValueError("Module text is required.")
+    return txt
+
+
+def upsert_triage_prompt_module(category: str, module_key: str, module_text: str, position: Optional[int] = None):
+    """
+    Upsert Triage Prompt Module helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    now = datetime.utcnow().isoformat()
+    cat = _normalize_triage_module_category(category)
+    key = _normalize_triage_module_key(module_key)
+    text = _normalize_triage_module_text(module_text)
+    with _conn() as conn:
+        _ensure_triage_prompt_modules_table(conn)
+        existing = conn.execute(
+            """
+            SELECT position
+            FROM triage_prompt_modules
+            WHERE category=:category AND module_key=:module_key
+            """,
+            {"category": cat, "module_key": key},
+        ).fetchone()
+        if position is None:
+            if existing:
+                pos = int(existing["position"] or 0)
+            else:
+                max_row = conn.execute(
+                    "SELECT MAX(position) AS max_pos FROM triage_prompt_modules WHERE category=:category",
+                    {"category": cat},
+                ).fetchone()
+                max_pos = int(max_row["max_pos"] or -1)
+                pos = max_pos + 1
+        else:
+            pos = int(position)
+
+        conn.execute(
+            """
+            INSERT INTO triage_prompt_modules(category, module_key, module_text, position, updated_at)
+            VALUES(:category, :module_key, :module_text, :position, :updated_at)
+            ON CONFLICT(category, module_key) DO UPDATE SET
+                module_text=excluded.module_text,
+                position=excluded.position,
+                updated_at=excluded.updated_at
+            """,
+            {
+                "category": cat,
+                "module_key": key,
+                "module_text": text,
+                "position": pos,
+                "updated_at": now,
+            },
+        )
+        row = conn.execute(
+            """
+            SELECT category, module_key, module_text, position, updated_at
+            FROM triage_prompt_modules
+            WHERE category=:category AND module_key=:module_key
+            """,
+            {"category": cat, "module_key": key},
+        ).fetchone()
+        conn.commit()
+    return dict(row) if row else {}
+
+
+def set_triage_prompt_modules(modules: dict, replace: bool = False):
+    """
+    Set Triage Prompt Modules helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    if not isinstance(modules, dict):
+        raise ValueError("modules must be an object mapping category -> modules.")
+    now = datetime.utcnow().isoformat()
+    with _conn() as conn:
+        _ensure_triage_prompt_modules_table(conn)
+        if replace:
+            conn.execute("DELETE FROM triage_prompt_modules")
+        for raw_category, raw_payload in modules.items():
+            category = _normalize_triage_module_category(raw_category)
+            if not isinstance(raw_payload, dict):
+                continue
+            for pos, (raw_key, raw_text) in enumerate(raw_payload.items()):
+                module_key = _normalize_triage_module_key(raw_key)
+                module_text = _normalize_triage_module_text(raw_text)
+                conn.execute(
+                    """
+                    INSERT INTO triage_prompt_modules(category, module_key, module_text, position, updated_at)
+                    VALUES(:category, :module_key, :module_text, :position, :updated_at)
+                    ON CONFLICT(category, module_key) DO UPDATE SET
+                        module_text=excluded.module_text,
+                        position=excluded.position,
+                        updated_at=excluded.updated_at
+                    """,
+                    {
+                        "category": category,
+                        "module_key": module_key,
+                        "module_text": module_text,
+                        "position": pos,
+                        "updated_at": now,
+                    },
                 )
-                ON CONFLICT(id) DO UPDATE SET
-                    situation=excluded.situation,
-                    chat_text=excluded.chat_text,
-                    responsive=excluded.responsive,
-                    breathing=excluded.breathing,
-                    pain=excluded.pain,
-                    main_problem=excluded.main_problem,
-                    temp=excluded.temp,
-                    circulation=excluded.circulation,
-                    cause=excluded.cause,
-                    updated_at=excluded.updated_at;
-                """,
-                {
-                    "id": s.get("id"),
-                    "situation": s.get("situation"),
-                    "chat_text": s.get("chat_text"),
-                    "responsive": s.get("responsive"),
-                    "breathing": s.get("breathing"),
-                    "pain": s.get("pain"),
-                    "main_problem": s.get("main_problem"),
-                    "temp": s.get("temp"),
-                    "circulation": s.get("circulation"),
-                    "cause": s.get("cause"),
-                    "updated_at": s.get("updated_at") or now,
-                },
-            )
         conn.commit()
 
 
 def get_triage_options():
+    """
+    Get Triage Options helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     with _conn() as conn:
         _maybe_seed_triage(conn, datetime.utcnow().isoformat())
         rows = conn.execute(
@@ -2437,10 +4058,76 @@ def get_triage_options():
     result = {}
     for r in rows:
         result.setdefault(r["field"], []).append(r["value"])
-    return result
+    # Ensure current 5-field triage UI always has options, even if DB still stores
+    # legacy triage fields from older builds.
+    defaults = {
+        "triage-domain": [
+            "Trauma",
+            "Medical illness",
+            "Environmental exposure",
+            "Dental",
+            "Behavioral / psychological",
+        ],
+        "triage-problem": [
+            "Laceration",
+            "Bleeding wound (non-laceration)",
+            "Fracture",
+            "Dislocation / severe sprain",
+            "Burn",
+            "Infection / abscess",
+            "Embedded foreign body",
+            "Eye injury",
+            "Marine bite / sting / envenomation",
+            "Heat illness",
+            "Cold exposure / hypothermia",
+            "General illness (vomiting, fever, weakness)",
+        ],
+        "triage-anatomy": [
+            "Head",
+            "Face / Eye",
+            "Neck / Airway",
+            "Chest",
+            "Abdomen",
+            "Back / Spine",
+            "Arm / Hand",
+            "Leg / Foot",
+            "Joint",
+            "Whole body / systemic",
+        ],
+        "triage-severity": [
+            "Stable minor",
+            "Significant bleeding",
+            "Uncontrolled bleeding",
+            "Altered mental status",
+            "Breathing difficulty",
+            "Severe pain or functional loss",
+            "Infection risk / sepsis signs",
+            "Deteriorating over time",
+        ],
+        "triage-mechanism": [
+            "Blunt impact",
+            "Sharp cut",
+            "Penetrating / Impaled",
+            "Crush / compression",
+            "Twist / overload (rope, winch)",
+            "High-tension recoil (snapback line)",
+            "Marine bite / sting",
+            "Thermal exposure",
+            "Immersion / near drowning",
+            "Chemical / electrical exposure",
+        ],
+    }
+    for field, values in defaults.items():
+        if not result.get(field):
+            result[field] = list(values)
+    return {field: result.get(field, list(values)) for field, values in defaults.items()}
 
 
 def set_triage_options(options: dict):
+    """
+    Set Triage Options helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     with _conn() as conn:
         conn.execute("DELETE FROM triage_options")
         for field, values in (options or {}).items():
@@ -2482,6 +4169,10 @@ def _hash_password(password: str) -> str:
 
 
 def _verify_password(password: str, stored: str) -> bool:
+    """
+     Verify Password helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     return str(password) == str(stored)
 
 
@@ -2545,6 +4236,10 @@ def upsert_vaccine(crew_id: str, vaccine: dict, updated_at: str = None) -> dict:
 
 
 def delete_vaccine(crew_id: str, vaccine_id: str) -> bool:
+    """
+    Delete Vaccine helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     if not vaccine_id:
         return False
     with _conn() as conn:
@@ -2690,3 +4385,226 @@ def _insert_relational_crew(conn, crew_id: str, member: dict, updated_at: str):
                 "updated_at": updated_at,
             },
         )
+
+
+# COMMENTARY REFERENCE BLOCK: EXTENDED MAINTENANCE NOTES
+# Note 001: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 002: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 003: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 004: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 005: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 006: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 007: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 008: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 009: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 010: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 011: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 012: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 013: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 014: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 015: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 016: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 017: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 018: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 019: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 020: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 021: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 022: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 023: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 024: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 025: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 026: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 027: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 028: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 029: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 030: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 031: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 032: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 033: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 034: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 035: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 036: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 037: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 038: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 039: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 040: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 041: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 042: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 043: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 044: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 045: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 046: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 047: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 048: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 049: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 050: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 051: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 052: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 053: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 054: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 055: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 056: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 057: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 058: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 059: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 060: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 061: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 062: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 063: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 064: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 065: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 066: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 067: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 068: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 069: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 070: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 071: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 072: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 073: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 074: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 075: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 076: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 077: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 078: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 079: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 080: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 081: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 082: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 083: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 084: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 085: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 086: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 087: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 088: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 089: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 090: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 091: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 092: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 093: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 094: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 095: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 096: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 097: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 098: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 099: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 100: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 101: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 102: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 103: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 104: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 105: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 106: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 107: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 108: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 109: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 110: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 111: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 112: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 113: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 114: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 115: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 116: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 117: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 118: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 119: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 120: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 121: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 122: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 123: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 124: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 125: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 126: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 127: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 128: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 129: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 130: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 131: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 132: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 133: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 134: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 135: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 136: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 137: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 138: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 139: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 140: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 141: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 142: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 143: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 144: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 145: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 146: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 147: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 148: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 149: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 150: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 151: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 152: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 153: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 154: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 155: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 156: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 157: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 158: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 159: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 160: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 161: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 162: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 163: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 164: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 165: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 166: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 167: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 168: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 169: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 170: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 171: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 172: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 173: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 174: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 175: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 176: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 177: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 178: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 179: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 180: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 181: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 182: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 183: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 184: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 185: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 186: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 187: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 188: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 189: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 190: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 191: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 192: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 193: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 194: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 195: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 196: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 197: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 198: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 199: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 200: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 201: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 202: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 203: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 204: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 205: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 206: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 207: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 208: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 209: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 210: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 211: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 212: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 213: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 214: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 215: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 216: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 217: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 218: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 219: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 220: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.

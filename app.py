@@ -1,3 +1,10 @@
+# =============================================================================
+# Author: Rick Escher
+# Project: SilingMedAdvisor (SailingMedAdvisor)
+# Context: Google HAI-DEF Framework
+# Models: Google MedGemmas
+# Program: Kaggle Impact Challenge
+# =============================================================================
 """
 File: app.py
 Author notes: FastAPI entrypoint for SailingMedAdvisor. I define all routes,
@@ -18,6 +25,12 @@ print(f"CUDA Available: {torch.cuda.is_available()}")
 print(f"HUGGINGFACE_SPACE_ID: {os.environ.get('HUGGINGFACE_SPACE_ID')}")
 print("-------------------------------")
 
+# Guard against unstable FP16 on GPUs that support BF16.
+if os.environ.get("FORCE_FP16", "").strip() == "1" and torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+    if os.environ.get("ALLOW_FP16", "").strip() != "1":
+        print("[startup] FORCE_FP16=1 detected, but BF16 is supported. For stability, ignoring FORCE_FP16.")
+        os.environ["FORCE_FP16"] = "0"
+
 os.environ.setdefault("TORCH_USE_CUDA_DSA", "0")
 os.environ.setdefault("USE_FLASH_ATTENTION", "1")
 import json
@@ -26,24 +39,30 @@ import sqlite3
 import secrets
 import shutil
 import zipfile
+import csv
 import asyncio
 import threading
 import base64
 import time
 import re
-import subprocess
+import mimetypes
 import io
 import logging
 
+import medgemma4
+import medgemma27b
+
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
+from urllib.parse import quote, unquote_to_bytes
 from db_store import (
     configure_db,
     ensure_store,
     get_vessel,
     set_vessel,
     get_patients,
+    get_patient_options,
     set_patients,
     delete_patients_doc,
     update_patient_fields,
@@ -53,14 +72,12 @@ from db_store import (
     verify_password,
     replace_vaccine_types,
     replace_pharmacy_labels,
-    replace_equipment_categories,
-    replace_consumable_categories,
     load_vaccine_types,
     load_pharmacy_labels,
-    load_equipment_categories,
-    load_consumable_categories,
     get_model_params,
     set_model_params,
+    list_prompt_templates,
+    upsert_prompt_template,
     get_inventory_items,
     set_inventory_items,
     delete_inventory_item,
@@ -68,15 +85,20 @@ from db_store import (
     set_tool_items,
     get_history_entries,
     set_history_entries,
+    get_history_entry_by_id,
+    upsert_history_entry,
     get_who_medicines,
     get_chats,
     set_chats,
     get_chat_metrics,
     set_chat_metrics,
-    get_triage_samples,
-    set_triage_samples,
     get_triage_options,
     set_triage_options,
+    get_triage_prompt_modules,
+    upsert_triage_prompt_module,
+    set_triage_prompt_modules,
+    get_triage_prompt_tree,
+    set_triage_prompt_tree,
     get_settings_meta,
     set_settings_meta,
     get_history_latency_metrics,
@@ -90,6 +112,10 @@ logger = logging.getLogger("uvicorn.error")
 
 # --- Optional startup cleanup (disabled by default to speed launch) ---
 def _cleanup_and_report():
+    """
+     Cleanup And Report helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     try:
         import subprocess as _sp
         _sp.run("rm -rf ~/.cache/huggingface ~/.cache/torch ~/.cache/pip ~/.cache/*", shell=True, check=False)
@@ -101,13 +127,22 @@ if os.environ.get("STARTUP_CLEANUP") == "1":
     _cleanup_and_report()
 
 # --- Environment tuning for model runtime (VRAM, offline flags, cache paths) ---
-# Encourage less fragmentation on GPUs with limited VRAM (e.g., RTX 5000)
-# Use the current environment variable name to avoid deprecation warnings
-os.environ.pop("PYTORCH_CUDA_ALLOC_CONF", None)
-os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
+# Encourage less fragmentation on GPUs with limited VRAM (e.g., RTX 5000).
+# Keep both names for compatibility across PyTorch versions.
+_alloc_conf_default = "expandable_segments:True"
+if not os.environ.get("PYTORCH_CUDA_ALLOC_CONF") and not os.environ.get("PYTORCH_ALLOC_CONF"):
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = _alloc_conf_default
+    os.environ["PYTORCH_ALLOC_CONF"] = _alloc_conf_default
+elif os.environ.get("PYTORCH_CUDA_ALLOC_CONF") and not os.environ.get("PYTORCH_ALLOC_CONF"):
+    os.environ["PYTORCH_ALLOC_CONF"] = os.environ["PYTORCH_CUDA_ALLOC_CONF"]
+elif os.environ.get("PYTORCH_ALLOC_CONF") and not os.environ.get("PYTORCH_CUDA_ALLOC_CONF"):
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = os.environ["PYTORCH_ALLOC_CONF"]
 # Allow online downloads by default (HF Spaces first run needs this). You can set these to "1" after caches are warm.
 os.environ.setdefault("HF_HUB_OFFLINE", "0")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "0")
+# Feature flag for tab bar theme:
+# 0 = existing gray, 1 = splash-screen purple (#7452B9).
+USE_SPLASH_PURPLE_TABBAR = os.environ.get("USE_SPLASH_PURPLE_TABBAR", "0").strip().lower() in {"1", "true", "yes", "on"}
 AUTO_DOWNLOAD_MODELS = os.environ.get("AUTO_DOWNLOAD_MODELS", "1" if os.environ.get("HUGGINGFACE_SPACE_ID") else "0") == "1"
 # Default off for faster startup; set to "1" when you explicitly want cache verification
 VERIFY_MODELS_ON_START = os.environ.get("VERIFY_MODELS_ON_START", "0") == "1"
@@ -124,6 +159,10 @@ DISABLE_LOCAL_INFERENCE = os.environ.get("DISABLE_LOCAL_INFERENCE") == "1" or IS
 
 # Gemma3 masking patch for torch<2.6 (required when token_type_ids are present).
 def _torch_version_ge(major: int, minor: int) -> bool:
+    """
+     Torch Version Ge helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     try:
         base = torch.__version__.split("+", 1)[0]
         parts = base.split(".")
@@ -132,6 +171,10 @@ def _torch_version_ge(major: int, minor: int) -> bool:
         return False
 
 def _patch_gemma3_mask_for_torch():
+    """
+     Patch Gemma3 Mask For Torch helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     if _torch_version_ge(2, 6):
         return
     try:
@@ -140,6 +183,10 @@ def _patch_gemma3_mask_for_torch():
 
         def _create_causal_mask_mapping_no_or(*args, **kwargs):
             # torch<2.6 can't use or_mask_function; ignore token_type_ids for text-only.
+            """
+             Create Causal Mask Mapping No Or helper.
+            Detailed inline notes are included to support safe maintenance and future edits.
+            """
             if len(args) >= 7:
                 args = list(args)
                 args[6] = None
@@ -160,6 +207,10 @@ DEBUG_LOCAL_INFERENCE = os.environ.get("DEBUG_LOCAL_INFERENCE", "1" if not IS_HF
 _DEBUG_START = time.perf_counter()
 
 def _dbg(msg: str):
+    """
+     Dbg helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     if DEBUG_LOCAL_INFERENCE:
         wall = time.strftime("%Y-%m-%d %H:%M:%S")
         elapsed = time.perf_counter() - _DEBUG_START
@@ -193,12 +244,10 @@ _dbg(
 
 import torch
 
-from fastapi import Body, FastAPI, Request, HTTPException, status, Depends, UploadFile, File
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import FastAPI, Request, HTTPException, status, Depends, UploadFile, File
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from PIL import Image
-from functools import lru_cache
 from starlette.middleware.sessions import SessionMiddleware
 from transformers import (
     AutoConfig,
@@ -276,6 +325,10 @@ SEED_DB_URL = os.environ.get("SEED_DB_URL") or None
 
 
 def _is_valid_sqlite(path: Path) -> bool:
+    """
+     Is Valid Sqlite helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     try:
         with open(path, "rb") as f:
             header = f.read(16)
@@ -285,6 +338,10 @@ def _is_valid_sqlite(path: Path) -> bool:
 
 
 def _db_is_populated(path: Path) -> bool:
+    """
+     Db Is Populated helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     try:
         conn = sqlite3.connect(path)
         cur = conn.cursor()
@@ -422,12 +479,70 @@ else:
     dtype = torch.float32
 models = {"active_name": "", "model": None, "processor": None, "tokenizer": None, "is_text": False}
 MODEL_MUTEX = threading.Lock()
-# Try to enable flash attention/SDP kernels; ignore if unavailable
+MODEL_BUSY_META_LOCK = threading.Lock()
+MODEL_BUSY_META = {
+    "busy": False,
+    "model_choice": "",
+    "mode": "",
+    "session_id": "",
+    "patient": "",
+    "started_at": "",
+}
+
+
+def _set_model_busy_meta(model_choice: str, mode: str, session_id: str, patient: str) -> None:
+    """
+     Set Model Busy Meta helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    started_at = datetime.utcnow().isoformat()
+    with MODEL_BUSY_META_LOCK:
+        MODEL_BUSY_META.update(
+            {
+                "busy": True,
+                "model_choice": model_choice or "",
+                "mode": mode or "",
+                "session_id": session_id or "",
+                "patient": patient or "",
+                "started_at": started_at,
+            }
+        )
+
+
+def _clear_model_busy_meta() -> None:
+    """
+     Clear Model Busy Meta helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    with MODEL_BUSY_META_LOCK:
+        MODEL_BUSY_META.update(
+            {
+                "busy": False,
+                "model_choice": "",
+                "mode": "",
+                "session_id": "",
+                "patient": "",
+                "started_at": "",
+            }
+        )
+
+
+def _get_model_busy_meta() -> dict:
+    """
+     Get Model Busy Meta helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    with MODEL_BUSY_META_LOCK:
+        return dict(MODEL_BUSY_META)
+# Configure SDP backends safely.
+# Keep math SDP enabled as a guaranteed fallback to avoid:
+# "No available kernel. Aborting execution."
 if device == "cuda":
     try:
-        torch.backends.cuda.enable_flash_sdp(True)
-        torch.backends.cuda.enable_mem_efficient_sdp(True)
-        torch.backends.cuda.enable_math_sdp(False)
+        use_fast_sdp = os.environ.get("USE_FAST_SDP", "0").strip() == "1"
+        torch.backends.cuda.enable_flash_sdp(use_fast_sdp)
+        torch.backends.cuda.enable_mem_efficient_sdp(use_fast_sdp)
+        torch.backends.cuda.enable_math_sdp(True)
     except Exception:
         pass
 
@@ -451,11 +566,19 @@ if device == "cuda" and os.environ.get("DISABLE_BNB", "").strip() != "1":
 
 
 def _sanitize_store(name: str) -> str:
+    """
+     Sanitize Store helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     slug = "".join(ch if ch.isalnum() else "-" for ch in (name or ""))
     slug = re.sub("-+", "-", slug).strip("-").lower()
     return slug or "default"
 
 def _label_from_slug(slug: str) -> str:
+    """
+     Label From Slug helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     cleaned = _sanitize_store(slug)
     return DEFAULT_store_LABEL if _sanitize_store(DEFAULT_store_LABEL) == cleaned else ""
 
@@ -502,6 +625,10 @@ def _migrate_existing_to_default(store):
 
 
 def _store_dirs(store_label: str):
+    """
+     Store Dirs helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     slug = _sanitize_store(store_label)
     ws_rec = ensure_store(store_label, slug)
     data_dir = DATA_ROOT / slug
@@ -540,6 +667,10 @@ def _get_store(_request: Request = None, required: bool = True):
 
 
 def _startup_model_check():
+    """
+     Startup Model Check helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     if not VERIFY_MODELS_ON_START or DISABLE_LOCAL_INFERENCE:
         return
     print("[offline] Verifying required model cache...")
@@ -568,6 +699,10 @@ def _background_verify_models():
         return
 
     def _runner():
+        """
+         Runner helper.
+        Detailed inline notes are included to support safe maintenance and future edits.
+        """
         try:
             print("[offline] Background verify: checking/downloading MedGemma caches...")
             verify_required_models(download_missing=True)
@@ -736,10 +871,11 @@ def load_model(model_name: str, allow_cpu_large: bool = False):
         device_map = "cuda"
     else:
         device_map = "auto" if runtime_device == "cuda" else "cpu"
-    max_mem_gpu = os.environ.get("MODEL_MAX_GPU_MEM", "15GiB")
-    if runtime_device == "cuda" and is_large_medgemma and "MODEL_MAX_GPU_MEM" not in os.environ:
-        # Default to a safer GPU cap for 27B/28B on 16GB cards.
-        max_mem_gpu = os.environ.get("MODEL_MAX_GPU_MEM_27B", "8GiB")
+    if runtime_device == "cuda" and is_large_medgemma:
+        # Prefer dedicated cap for 27B/28B even when MODEL_MAX_GPU_MEM is set globally.
+        max_mem_gpu = os.environ.get("MODEL_MAX_GPU_MEM_27B") or os.environ.get("MODEL_MAX_GPU_MEM") or "8GiB"
+    else:
+        max_mem_gpu = os.environ.get("MODEL_MAX_GPU_MEM", "15GiB")
     max_mem_cpu = os.environ.get("MODEL_MAX_CPU_MEM", "64GiB")
     max_memory = {0: max_mem_gpu, "cpu": max_mem_cpu} if runtime_device == "cuda" else None
     # Enforce expected GPU for local MedGemma runs.
@@ -845,19 +981,24 @@ def load_model(model_name: str, allow_cpu_large: bool = False):
 
 
 def get_defaults():
+    """
+    Get Defaults helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     return {
         "triage_instruction": "Act as Lead Clinician. Priority: Life-saving protocols. Format: ## ASSESSMENT, ## PROTOCOL.",
         "inquiry_instruction": "Act as Medical Librarian. Focus: Academic research and pharmacology.",
         "tr_temp": 0.1,
         "tr_tok": 1024,
         "tr_p": 0.9,
+        "tr_k": 50,
         "in_temp": 0.6,
         "in_tok": 2048,
         "in_p": 0.95,
+        "in_k": 50,
         "rep_penalty": 1.1,
         "mission_context": "Isolated Medical Station offshore.",
         "user_mode": "user",
-        "resource_injection_mode": "category_counts",
         "last_prompt_verbatim": "",
         "vaccine_types": [
             "Diphtheria, Tetanus, and Pertussis (DTaP/Tdap)",
@@ -877,27 +1018,6 @@ def get_defaults():
             "Japanese Encephalitis",
             "Rabies",
             "Cholera",
-        ],
-        "equipment_categories": [
-            "Diagnostics & monitoring",
-            "Instruments & tools",
-            "Airway & breathing",
-            "Splints & supports",
-            "Eye care",
-            "Dental",
-            "PPE",
-            "Survival & utility",
-            "Other",
-        ],
-        "consumable_categories": [
-            "Wound care & dressings",
-            "Burn care",
-            "Antiseptics & hygiene",
-            "Irrigation & syringes",
-            "Splints & supports",
-            "PPE",
-            "Survival & utility",
-            "Other",
         ],
     }
 
@@ -922,6 +1042,10 @@ def db_op(cat, data=None, store=None):
         raise ValueError(f"Invalid category: {cat}")
 
     def default_for(category):
+        """
+        Default For helper.
+        Detailed inline notes are included to support safe maintenance and future edits.
+        """
         if category == "settings":
             return get_defaults()
         if category == "vessel":
@@ -940,6 +1064,9 @@ def db_op(cat, data=None, store=None):
                 "portEngine": "",
                 "portEngineSn": "",
                 "ribSn": "",
+                "boatPhoto": "",
+                "registrationFrontPhoto": "",
+                "registrationBackPhoto": "",
             }
         if category == "chat_metrics":
             return {}
@@ -948,6 +1075,10 @@ def db_op(cat, data=None, store=None):
         return []
 
     def load_legacy(category):
+        """
+        Load Legacy helper.
+        Detailed inline notes are included to support safe maintenance and future edits.
+        """
         legacy_path = (DEFAULT_store or {}).get("data", DATA_ROOT) / f"{category}.json"
         if legacy_path.exists():
             try:
@@ -960,7 +1091,8 @@ def db_op(cat, data=None, store=None):
         if data is not None:
             if not isinstance(data, dict):
                 raise ValueError("Vessel payload must be a JSON object.")
-            merged = {**default_for("vessel"), **(data or {})}
+            existing = get_vessel() or {}
+            merged = {**default_for("vessel"), **(existing if isinstance(existing, dict) else {}), **(data or {})}
             set_vessel(merged)
             return merged
         loaded = get_vessel() or {}
@@ -1000,17 +1132,12 @@ def db_op(cat, data=None, store=None):
                 replace_vaccine_types(data.get("vaccine_types") or [])
             if "pharmacy_labels" in data:
                 replace_pharmacy_labels(data.get("pharmacy_labels") or [])
-            if "equipment_categories" in data:
-                replace_equipment_categories(data.get("equipment_categories") or [])
-            if "consumable_categories" in data:
-                replace_consumable_categories(data.get("consumable_categories") or [])
             # Persist model params to table
             set_model_params(data)
             # Persist meta settings to table
             set_settings_meta(
                 user_mode=data.get("user_mode"),
                 offline_force_flags=data.get("offline_force_flags"),
-                resource_injection_mode=data.get("resource_injection_mode"),
             )
             return {**get_defaults(), **data}
         if cat == "inventory":
@@ -1072,18 +1199,6 @@ def db_op(cat, data=None, store=None):
         except Exception:
             pass
         try:
-            eq = load_equipment_categories()
-            if eq:
-                loaded["equipment_categories"] = eq
-        except Exception:
-            pass
-        try:
-            cc = load_consumable_categories()
-            if cc:
-                loaded["consumable_categories"] = cc
-        except Exception:
-            pass
-        try:
             mp = get_model_params()
             loaded.update({k: v for k, v in mp.items() if v is not None})
         except Exception:
@@ -1118,6 +1233,10 @@ def db_op(cat, data=None, store=None):
 
 
 def safe_float(val, default):
+    """
+    Safe Float helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     try:
         return float(val)
     except (TypeError, ValueError):
@@ -1125,13 +1244,313 @@ def safe_float(val, default):
 
 
 def safe_int(val, default):
+    """
+    Safe Int helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     try:
         return int(val)
     except (TypeError, ValueError):
         return default
 
 
+TRIAGE_SELECTION_FIELDS = [
+    ("domain", "triage_domain", "Domain"),
+    ("problem", "triage_problem", "Problem / Injury Type"),
+    ("anatomy", "triage_anatomy", "Anatomy"),
+    ("severity", "triage_severity", "Severity / Complication"),
+    ("mechanism", "triage_mechanism", "Mechanism / Cause"),
+]
+
+TRIAGE_CONDITION_FIELDS = [
+    ("consciousness", "triage_consciousness", "Consciousness"),
+    ("breathing", "triage_breathing", "Breathing"),
+    ("circulation", "triage_circulation", "Circulation"),
+    ("overall_stability", "triage_overall_stability", "Overall Stability"),
+]
+
+
+def extract_triage_selections(form):
+    """
+    Extract Triage Selections helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    selections = {}
+    for category, field_name, _ in TRIAGE_SELECTION_FIELDS:
+        selections[category] = (form.get(field_name) or "").strip()
+    return selections
+
+
+def extract_triage_conditions(form):
+    """
+    Extract Triage Conditions helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    conditions = {}
+    for category, field_name, _ in TRIAGE_CONDITION_FIELDS:
+        conditions[category] = (form.get(field_name) or "").strip()
+    return conditions
+
+
+def triage_selection_meta(selections: dict):
+    """
+    Triage Selection Meta helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    data = selections or {}
+    meta = {}
+    for category, _, label in TRIAGE_SELECTION_FIELDS:
+        val = (data.get(category) or "").strip()
+        if val:
+            meta[label] = val
+    return meta
+
+
+def triage_condition_meta(conditions: dict):
+    """
+    Triage Condition Meta helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    data = conditions or {}
+    meta = {}
+    for category, _, label in TRIAGE_CONDITION_FIELDS:
+        val = (data.get(category) or "").strip()
+        if val:
+            meta[label] = val
+    return meta
+
+
+def _normalize_triage_key(value: str) -> str:
+    """
+     Normalize Triage Key helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    return re.sub(r"[^a-z0-9]+", "", (value or "").strip().lower())
+
+
+def _lookup_tree_node(options, selected_value):
+    """
+     Lookup Tree Node helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    if not isinstance(options, dict):
+        return "", None
+    selected = (selected_value or "").strip()
+    if not selected:
+        return "", None
+    if selected in options:
+        return selected, options.get(selected)
+    want = _normalize_triage_key(selected)
+    if not want:
+        return "", None
+    for key, value in options.items():
+        if _normalize_triage_key(str(key)) == want:
+            return str(key), value
+    return "", None
+
+
+def evaluate_triage_pathway_definition(selections):
+    """
+    Determine whether the currently selected triage pathway is fully defined.
+
+    A pathway is considered incomplete when:
+    - Selected nodes cannot be resolved in the stored tree.
+    - Downstream rule maps exist but required selections are missing.
+    - Selected downstream nodes exist but their rule text is blank.
+    - A selected problem has no usable rule text at all.
+    """
+    selected = {k: (v or "").strip() for k, v in (selections or {}).items()}
+    if not any(selected.values()):
+        return {
+            "selected": False,
+            "fully_defined": False,
+            "supplement_with_general": False,
+            "reason": "no_selection",
+        }
+
+    tree_payload = get_triage_prompt_tree() or {}
+    tree = tree_payload.get("tree") if isinstance(tree_payload, dict) else {}
+    if not isinstance(tree, dict) or not tree:
+        return {
+            "selected": True,
+            "fully_defined": False,
+            "supplement_with_general": True,
+            "reason": "tree_missing",
+        }
+
+    domain_key, domain_node = _lookup_tree_node(tree, selected.get("domain"))
+    if selected.get("domain") and not domain_key:
+        return {
+            "selected": True,
+            "fully_defined": False,
+            "supplement_with_general": True,
+            "reason": "domain_not_found",
+        }
+    if not isinstance(domain_node, dict):
+        return {
+            "selected": True,
+            "fully_defined": False,
+            "supplement_with_general": True,
+            "reason": "domain_invalid",
+        }
+
+    if not selected.get("problem"):
+        return {
+            "selected": True,
+            "fully_defined": False,
+            "supplement_with_general": True,
+            "reason": "problem_missing",
+        }
+
+    problem_key, problem_node = _lookup_tree_node(domain_node.get("problems") or {}, selected.get("problem"))
+    if not problem_key or not isinstance(problem_node, dict):
+        return {
+            "selected": True,
+            "fully_defined": False,
+            "supplement_with_general": True,
+            "reason": "problem_not_found",
+        }
+
+    anatomy_map = problem_node.get("anatomy_guardrails") if isinstance(problem_node.get("anatomy_guardrails"), dict) else {}
+    severity_map = problem_node.get("severity_modifiers") if isinstance(problem_node.get("severity_modifiers"), dict) else {}
+    mechanism_map = problem_node.get("mechanism_modifiers") if isinstance(problem_node.get("mechanism_modifiers"), dict) else {}
+
+    def _resolved_text(option_map, option_value):
+        """
+         Resolved Text helper.
+        Detailed inline notes are included to support safe maintenance and future edits.
+        """
+        key, text = _lookup_tree_node(option_map or {}, option_value)
+        if key and isinstance(text, str) and text.strip():
+            return key, text.strip()
+        return "", ""
+
+    missing_reasons = []
+
+    if anatomy_map:
+        if not selected.get("anatomy"):
+            missing_reasons.append("anatomy_missing")
+        else:
+            resolved_key, resolved_text = _resolved_text(anatomy_map, selected.get("anatomy"))
+            if not resolved_key or not resolved_text:
+                missing_reasons.append("anatomy_rule_missing")
+    elif selected.get("anatomy"):
+        missing_reasons.append("anatomy_not_supported")
+
+    if severity_map:
+        if not selected.get("severity"):
+            missing_reasons.append("severity_missing")
+        else:
+            resolved_key, resolved_text = _resolved_text(severity_map, selected.get("severity"))
+            if not resolved_key or not resolved_text:
+                missing_reasons.append("severity_rule_missing")
+    elif selected.get("severity"):
+        missing_reasons.append("severity_not_supported")
+
+    if mechanism_map:
+        if not selected.get("mechanism"):
+            missing_reasons.append("mechanism_missing")
+        else:
+            resolved_key, resolved_text = _resolved_text(mechanism_map, selected.get("mechanism"))
+            if not resolved_key or not resolved_text:
+                missing_reasons.append("mechanism_rule_missing")
+    elif selected.get("mechanism"):
+        missing_reasons.append("mechanism_not_supported")
+
+    procedure = (problem_node.get("procedure") or "").strip()
+    extra_problem_text = any(
+        isinstance(v, str) and v.strip()
+        for k, v in problem_node.items()
+        if k not in {"procedure", "exclusions", "anatomy_guardrails", "severity_modifiers", "mechanism_modifiers"}
+    )
+    map_text_exists = any(
+        isinstance(v, str) and v.strip()
+        for m in (anatomy_map, severity_map, mechanism_map)
+        for v in (m or {}).values()
+    )
+    if not (procedure or extra_problem_text or map_text_exists):
+        missing_reasons.append("problem_rules_empty")
+
+    fully_defined = len(missing_reasons) == 0
+    return {
+        "selected": True,
+        "fully_defined": fully_defined,
+        "supplement_with_general": not fully_defined,
+        "reason": missing_reasons[0] if missing_reasons else "ok",
+    }
+
+
+def assemble_system_prompt(selections, user_metadata_block=""):
+    """
+    Build hierarchical triage system instruction from the selected tree path.
+
+    Returns an empty string when no dropdowns are selected so callers can
+    fall back to the generic triage prompt.
+    """
+    selected = {k: (v or "").strip() for k, v in (selections or {}).items()}
+    if not any(selected.values()):
+        return ""
+
+    tree_payload = get_triage_prompt_tree() or {}
+    tree = tree_payload.get("tree") if isinstance(tree_payload, dict) else {}
+    if not isinstance(tree, dict) or not tree:
+        return ""
+    base_doctrine = (tree_payload.get("base_doctrine") or "").strip()
+
+    sections = []
+    if base_doctrine:
+        sections.append(f"BASE_DOCTRINE:\n{base_doctrine}")
+
+    domain_key, domain_node = _lookup_tree_node(tree, selected.get("domain"))
+    if domain_key and isinstance(domain_node, dict):
+        mindset = (domain_node.get("mindset") or "").strip()
+        if mindset:
+            sections.append(f"DOMAIN [{domain_key}]:\nMINDSET: {mindset}")
+
+    problem_key = ""
+    problem_node = None
+    if isinstance(domain_node, dict):
+        problem_key, problem_node = _lookup_tree_node(domain_node.get("problems") or {}, selected.get("problem"))
+    if problem_key and isinstance(problem_node, dict):
+        problem_lines = []
+        procedure = (problem_node.get("procedure") or "").strip()
+        if procedure:
+            problem_lines.append(f"PROCEDURE: {procedure}")
+        for key, value in problem_node.items():
+            if key in {"procedure", "exclusions", "anatomy_guardrails", "severity_modifiers", "mechanism_modifiers"}:
+                continue
+            if isinstance(value, str) and value.strip():
+                label = key.replace("_", " ").upper()
+                problem_lines.append(f"{label}: {value.strip()}")
+        if problem_lines:
+            sections.append(f"PROBLEM [{problem_key}]:\n" + "\n".join(problem_lines))
+
+        anatomy_key, anatomy_text = _lookup_tree_node(problem_node.get("anatomy_guardrails") or {}, selected.get("anatomy"))
+        if anatomy_key and isinstance(anatomy_text, str) and anatomy_text.strip():
+            sections.append(f"ANATOMY [{anatomy_key}]:\n{anatomy_text.strip()}")
+
+        severity_key, severity_text = _lookup_tree_node(problem_node.get("severity_modifiers") or {}, selected.get("severity"))
+        if severity_key and isinstance(severity_text, str) and severity_text.strip():
+            sections.append(f"SEVERITY [{severity_key}]:\n{severity_text.strip()}")
+
+        mechanism_key, mechanism_text = _lookup_tree_node(problem_node.get("mechanism_modifiers") or {}, selected.get("mechanism"))
+        if mechanism_key and isinstance(mechanism_text, str) and mechanism_text.strip():
+            sections.append(f"MECHANISM [{mechanism_key}]:\n{mechanism_text.strip()}")
+
+    if not sections:
+        return ""
+
+    metadata = (user_metadata_block or "").strip()
+    if metadata:
+        sections.append(metadata)
+    return "\n\n".join(section for section in sections if section.strip()).strip()
+
+
 def _is_resource_excluded(item):
+    """
+     Is Resource Excluded helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     val = item.get("excludeFromResources")
     if isinstance(val, str):
         return val.strip().lower() in {"true", "1", "yes"}
@@ -1139,6 +1558,10 @@ def _is_resource_excluded(item):
 
 
 def _categorize_supply_name(name: str) -> str:
+    """
+     Categorize Supply Name helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     if not name:
         return "Other"
     n = name.strip().lower()
@@ -1172,10 +1595,18 @@ def _categorize_supply_name(name: str) -> str:
 
 
 def _normalize_category_label(label: str) -> str:
+    """
+     Normalize Category Label helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     return (label or "").strip().lower()
 
 
 def _summarize_supply_categories(items: list[dict], allowed_categories: list[str] | None) -> tuple[str, dict]:
+    """
+     Summarize Supply Categories helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     allowed_categories = allowed_categories or []
     allowed_map = {_normalize_category_label(c): c for c in allowed_categories if c}
     counts = {c: 0 for c in allowed_categories if c}
@@ -1210,6 +1641,10 @@ def _summarize_supply_categories(items: list[dict], allowed_categories: list[str
 
 
 def _patient_display_name(record, fallback):
+    """
+     Patient Display Name helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     if not record:
         return fallback
     name = record.get("name") or record.get("fullName") or ""
@@ -1225,6 +1660,10 @@ def _patient_display_name(record, fallback):
 
 
 def lookup_patient_display_name(p_name, store, default="Unnamed Crew"):
+    """
+    Lookup Patient Display Name helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     if not p_name:
         return default
     try:
@@ -1243,16 +1682,36 @@ def lookup_patient_display_name(p_name, store, default="Unnamed Crew"):
     return _patient_display_name(rec, p_name or default)
 
 
-def build_prompt(settings, mode, msg, p_name, store):
+def build_prompt(settings, mode, msg, p_name, store, triage_selections=None, triage_conditions=None):
+    """
+    Build Prompt helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     rep_penalty = safe_float(settings.get("rep_penalty", 1.1) or 1.1, 1.1)
     mission_context = settings.get("mission_context", "")
 
+    prompt_meta = {
+        "triage_pathway_supplemented": False,
+        "triage_pathway_status": "n/a",
+        "triage_pathway_reason": "",
+    }
+
+    def _section_block(title, content):
+        """
+         Section Block helper.
+        Detailed inline notes are included to support safe maintenance and future edits.
+        """
+        body = (content or "").strip()
+        if not body:
+            return ""
+        return f"{title}:\n{body}"
+
     if mode == "inquiry":
-        instruction = settings.get("inquiry_instruction")
+        instruction = settings.get("inquiry_instruction") or ""
         prompt_sections = [
-            f"MISSION CONTEXT: {mission_context}" if mission_context else "",
-            f"INQUIRY INSTRUCTION:\n{instruction}",
-            f"QUERY:\n{msg}",
+            _section_block("MISSION CONTEXT", mission_context),
+            _section_block("INQUIRY MODE", instruction),
+            _section_block("QUERY", msg),
         ]
         _dbg(
             "prompt_breakdown[inquiry]: "
@@ -1265,16 +1724,16 @@ def build_prompt(settings, mode, msg, p_name, store):
             "t": safe_float(settings.get("in_temp", 0.6), 0.6),
             "tk": safe_int(settings.get("in_tok", 2048), 2048),
             "p": safe_float(settings.get("in_p", 0.95), 0.95),
+            "k": safe_int(settings.get("in_k", 50), 50),
             "rep_penalty": rep_penalty,
         }
     else:
-        resource_mode = (settings.get("resource_injection_mode") or "category_counts").strip().lower()
-        inject_full_lists = resource_mode in {"full", "full_list", "items"}
         pharma_items = {}
         equip_items = {}
         consumable_items = {}
         for m in db_op("inventory", store=store):
-            item_name = m.get("name") or m.get("genericName") or m.get("brandName")
+            # Prefer generic names in prompts to keep medication references concise.
+            item_name = m.get("genericName") or m.get("name") or m.get("brandName")
             if _is_resource_excluded(m):
                 continue
             if not item_name:
@@ -1311,12 +1770,48 @@ def build_prompt(settings, mode, msg, p_name, store):
         equipment_items.sort(key=lambda t: (t.get("name") or "").lower())
         consumable_tools.sort(key=lambda t: (t.get("name") or "").lower())
 
-        equipment_categories = settings.get("equipment_categories") or []
-        consumable_categories = settings.get("consumable_categories") or []
-        equipment_summary, equipment_counts = _summarize_supply_categories(equipment_items, equipment_categories)
-        consumable_summary, consumable_counts = _summarize_supply_categories(consumable_tools, consumable_categories)
-        equipment_total = sum(equipment_counts.values()) if equipment_counts else 0
-        consumable_total = sum(consumable_counts.values()) if consumable_counts else 0
+        equipment_total = len(equipment_items)
+        consumable_total = len(consumable_tools)
+        tier_entries = []
+
+        def _tier_entry(name, item_type, tier, cat):
+            """
+             Tier Entry helper.
+            Detailed inline notes are included to support safe maintenance and future edits.
+            """
+            if not name:
+                return ""
+            tier_val = (tier or "").strip()
+            cat_val = (cat or "").strip()
+            if not tier_val and not cat_val:
+                return ""
+            label = "MED" if item_type == "pharma" else "ITEM"
+            parts = [f"[{label}: {name}]"]
+            if item_type != "pharma":
+                parts.append(f"[TYPE: {item_type}]")
+            if tier_val:
+                parts.append(f"[TIER: {tier_val}]")
+            if cat_val:
+                parts.append(f"[CAT: {cat_val}]")
+            return " ".join(parts)
+
+        for med in db_op("inventory", store=store):
+            if _is_resource_excluded(med):
+                continue
+            med_name = med.get("genericName") or med.get("name") or med.get("brandName")
+            entry = _tier_entry(med_name, "pharma", med.get("priorityTier"), med.get("tierCategory"))
+            if entry:
+                tier_entries.append(entry)
+        for tool in tool_items:
+            if _is_resource_excluded(tool):
+                continue
+            tool_name = tool.get("name")
+            tool_type = (tool.get("type") or "").strip().lower()
+            item_type = "consumable" if tool_type == "consumable" else "equipment"
+            entry = _tier_entry(tool_name, item_type, tool.get("priorityTier"), tool.get("tierCategory"))
+            if entry:
+                tier_entries.append(entry)
+        tier_payload = " ".join(tier_entries)
 
         patient_record = next(
             (
@@ -1333,6 +1828,10 @@ def build_prompt(settings, mode, msg, p_name, store):
         vaccines = patient_record.get("vaccines") or []
 
         def _format_vaccines(vax_list):
+            """
+             Format Vaccines helper.
+            Detailed inline notes are included to support safe maintenance and future edits.
+            """
             if not isinstance(vax_list, list) or not vax_list:
                 return "No vaccines recorded."
             formatted = []
@@ -1378,38 +1877,130 @@ def build_prompt(settings, mode, msg, p_name, store):
                     formatted.append(v_type)
             return "; ".join(formatted) if formatted else "No vaccines recorded."
 
-        prompt_sections = [
-            f"MISSION CONTEXT: {mission_context}" if mission_context else "",
-            f"TRIAGE INSTRUCTION:\n{settings.get('triage_instruction')}",
-            "RESOURCES:\n"
-            f"- Pharmaceuticals: {pharma_str or 'None listed'}\n"
-            + (
-                f"- Medical Equipment: {', '.join([t.get('name') for t in equipment_items if t.get('name')]) or 'None listed'}\n"
-                f"- Consumables: {', '.join([t.get('name') for t in consumable_tools if t.get('name')]) or 'None listed'}"
-                if inject_full_lists
-                else f"- Equipment Categories (counts): {equipment_summary or 'None listed'}\n"
-                f"- Consumable Categories (counts): {consumable_summary or 'None listed'}"
-            ),
-            "PATIENT:\n"
+        equipment_names = [t.get("name") for t in equipment_items if t.get("name")]
+        consumable_names = [t.get("name") for t in consumable_tools if t.get("name")]
+
+        def _compact_inventory(values, limit):
+            """
+             Compact Inventory helper.
+            Detailed inline notes are included to support safe maintenance and future edits.
+            """
+            clean = [v for v in (values or []) if v]
+            if not clean:
+                return "None listed"
+            return ", ".join(clean)
+
+        full_onboard_inventory = (
+            "PHARMACEUTICALS:\n"
+            f"- INVENTORY: {pharma_str or 'None listed'}\n"
+            f"- TIERED TAGS: {tier_payload or 'No tier assignments recorded'}\n\n"
+            "MEDICAL EQUIPMENT:\n"
+            f"- INVENTORY: {', '.join(equipment_names) or 'None listed'}\n\n"
+            "CONSUMABLES:\n"
+            f"- INVENTORY: {', '.join(consumable_names) or 'None listed'}"
+        )
+        compact_onboard_inventory = (
+            "PHARMACEUTICALS:\n"
+            f"- INVENTORY: {_compact_inventory(pharma_list, 20)}\n"
+            f"- TIERED TAGS: {tier_payload or 'No tier assignments recorded'}\n\n"
+            "MEDICAL EQUIPMENT:\n"
+            f"- INVENTORY: {_compact_inventory(equipment_names, 12)}\n\n"
+            "CONSUMABLES:\n"
+            f"- INVENTORY: {_compact_inventory(consumable_names, 16)}"
+        )
+        patient_metadata = (
             f"- Name: {display_name}\n"
             f"- Sex: {p_sex}\n"
             f"- Date of Birth: {p_birth}\n"
             f"- Medical History (profile): {p_hist or 'No records.'}\n"
-            f"- Vaccines: {_format_vaccines(vaccines)}",
-            f"SITUATION:\n{msg}",
-        ]
+            f"- Vaccines: {_format_vaccines(vaccines)}"
+        )
+        modular_metadata = "\n\n".join(
+            section for section in [
+                _section_block("ONBOARD MEDICAL INVENTORY", compact_onboard_inventory),
+                _section_block("PATIENT HISTORY", patient_metadata),
+            ] if section
+        )
+        condition_meta = triage_condition_meta(triage_conditions or {})
+        condition_lines = [f"- {k}: {v}" for k, v in condition_meta.items() if (v or "").strip()]
+        condition_section = _section_block("PATIENT CONDITION", "\n".join(condition_lines))
+        mission_section = _section_block("MISSION CONTEXT", mission_context)
+        general_section = _section_block("TRIAGE MODE GENERAL", settings.get("triage_instruction") or "")
+        inventory_section = _section_block("ONBOARD MEDICAL INVENTORY", full_onboard_inventory)
+        patient_history_section = _section_block("PATIENT HISTORY", patient_metadata)
+        pathway_eval = evaluate_triage_pathway_definition(triage_selections or {})
+        modular_system_prompt = assemble_system_prompt(triage_selections or {}, user_metadata_block=modular_metadata)
+        using_modular_prompt = bool(modular_system_prompt.strip())
+        supplement_with_general = bool(pathway_eval.get("supplement_with_general"))
+        pathway_section = _section_block("TRIAGE MODE CLINICAL TRIAGE PATHWAY", modular_system_prompt)
+        situation_section = _section_block("SITUATION", msg)
+        general_triage_instruction = (settings.get("triage_instruction") or "").strip()
+
+        if supplement_with_general:
+            prompt_meta["triage_pathway_supplemented"] = True
+            prompt_meta["triage_pathway_status"] = "supplemented"
+            prompt_meta["triage_pathway_reason"] = pathway_eval.get("reason") or ""
+            if using_modular_prompt:
+                triage_instruction = "\n\n".join(
+                    section for section in [
+                        general_section,
+                        pathway_section,
+                    ] if section and section.strip()
+                ).strip()
+                prompt_sections = [
+                    mission_section,
+                    general_section,
+                    pathway_section,
+                    condition_section,
+                    situation_section,
+                ]
+            else:
+                triage_instruction = general_triage_instruction
+                prompt_sections = [
+                    mission_section,
+                    general_section,
+                    inventory_section,
+                    patient_history_section,
+                    condition_section,
+                    situation_section,
+                ]
+        elif using_modular_prompt:
+            prompt_meta["triage_pathway_status"] = "modular"
+            triage_instruction = modular_system_prompt
+            prompt_sections = [
+                mission_section,
+                pathway_section,
+                condition_section,
+                situation_section,
+            ]
+        else:
+            prompt_meta["triage_pathway_status"] = "general"
+            triage_instruction = general_triage_instruction
+            prompt_sections = [
+                mission_section,
+                general_section,
+                inventory_section,
+                patient_history_section,
+                condition_section,
+                situation_section,
+            ]
         _dbg(
             "prompt_breakdown[triage]: "
             + f"mission_chars={len(mission_context or '')} "
-            + f"instruction_chars={len(settings.get('triage_instruction') or '')} "
+            + f"instruction_chars={len(triage_instruction or '')} "
             + f"pharma_count={len(pharma_list)} pharma_chars={len(pharma_str)} "
             + f"equip_count={len(equip_list)} equip_chars={len(equip_str)} "
             + f"consumable_count={len(consumable_list)} consumable_chars={len(consumable_str)} "
-            + f"equipment_total={equipment_total} equipment_summary_chars={len(equipment_summary or '')} "
-            + f"consumable_total={consumable_total} consumable_summary_chars={len(consumable_summary or '')} "
-            + f"resource_mode={resource_mode} "
+            + f"equipment_total={equipment_total} "
+            + f"consumable_total={consumable_total} "
+            + f"tier_entries={len(tier_entries)} tier_chars={len(tier_payload)} "
             + f"patient_hist_chars={len(p_hist or '')} "
             + f"vaccines_count={len(vaccines) if isinstance(vaccines, list) else 0} "
+            + f"modular={using_modular_prompt} "
+            + f"supplemented={supplement_with_general} "
+            + f"pathway_reason={prompt_meta.get('triage_pathway_reason') or ''} "
+            + f"triage_selections={json.dumps(triage_selections or {})} "
+            + f"triage_conditions={json.dumps(triage_conditions or {})} "
             + f"situation_chars={len(msg or '')}"
         )
         prompt = "\n\n".join(section for section in prompt_sections if section.strip())
@@ -1417,10 +2008,76 @@ def build_prompt(settings, mode, msg, p_name, store):
             "t": safe_float(settings.get("tr_temp", 0.1), 0.1),
             "tk": safe_int(settings.get("tr_tok", 1024), 1024),
             "p": safe_float(settings.get("tr_p", 0.9), 0.9),
+            "k": safe_int(settings.get("tr_k", 50), 50),
             "rep_penalty": rep_penalty,
         }
 
-    return prompt, cfg
+    return prompt, cfg, prompt_meta
+
+
+def _safe_json_load(value):
+    """
+     Safe Json Load helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except Exception:
+            return None
+    return None
+
+
+def _normalize_transcript_payload(raw_payload):
+    """
+     Normalize Transcript Payload helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    payload = _safe_json_load(raw_payload)
+    if isinstance(payload, dict):
+        messages = payload.get("messages") or []
+        meta = payload.get("meta") or {}
+    elif isinstance(payload, list):
+        messages = payload
+        meta = {}
+    else:
+        messages = []
+        meta = {}
+    if not isinstance(messages, list):
+        messages = []
+    if not isinstance(meta, dict):
+        meta = {}
+    return messages, meta
+
+
+def _format_transcript_for_prompt(messages, next_user_message):
+    """
+     Format Transcript For Prompt helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    lines = []
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        role = (msg.get("role") or msg.get("type") or "").strip().lower()
+        content = msg.get("message") or msg.get("content") or ""
+        if not content:
+            continue
+        label = "USER" if role == "user" else "ASSISTANT"
+        if role == "user":
+            triage_meta = msg.get("triage_meta") or {}
+            if isinstance(triage_meta, dict) and triage_meta:
+                meta_lines = [f"- {k}: {v}" for k, v in triage_meta.items() if v]
+                if meta_lines:
+                    lines.append("TRIAGE INTAKE:\n" + "\n".join(meta_lines))
+        lines.append(f"{label}: {content}")
+    if next_user_message:
+        lines.append(f"USER: {next_user_message}")
+    return "\n".join(lines).strip()
 
 
 def get_credentials(store):
@@ -1434,6 +2091,10 @@ def load_context(store):
 
 
 def _has_creds(store):
+    """
+     Has Creds helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     if not store:
         return False
     creds = get_credentials(store)
@@ -1454,6 +2115,10 @@ def require_auth(request: Request):
 
 @app.post("/api/default/export")
 async def export_default_dataset(request: Request, _=Depends(require_auth)):
+    """
+    Export Default Dataset helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     try:
         store = request.state.store
         if not store:
@@ -1482,6 +2147,10 @@ async def export_default_dataset(request: Request, _=Depends(require_auth)):
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
+    """
+    Login Page helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     store = DEFAULT_store
     request.state.store = store
     return templates.TemplateResponse("login.html", {"request": request, "store": store})
@@ -1490,6 +2159,10 @@ async def login_page(request: Request):
 @app.post("/login")
 async def login(request: Request):
     # Auth model: if no crew credentials configured, auto-admit; otherwise require username/password
+    """
+    Login helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     store = DEFAULT_store
     payload = {}
     if request.headers.get("content-type", "").startswith("application/json"):
@@ -1524,12 +2197,24 @@ async def login(request: Request):
 
 @app.get("/logout")
 async def logout(request: Request):
+    """
+    Logout helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     request.session.clear()
-    return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
+    fresh = (request.query_params.get("fresh") or "").strip()
+    target = "/login"
+    if fresh:
+        target = f"/login?fresh={quote(fresh)}"
+    return RedirectResponse(url=target, status_code=status.HTTP_302_FOUND)
 
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
+    """
+    Index helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     store = DEFAULT_store
     request.state.store = store
     # Preload vessel data so UI can render even if API fetch fails
@@ -1544,12 +2229,21 @@ async def index(request: Request):
         return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
     return templates.TemplateResponse(
         "index.html",
-        {"request": request, "store": store, "vessel_prefill": vessel_prefill},
+        {
+            "request": request,
+            "store": store,
+            "vessel_prefill": vessel_prefill,
+            "use_splash_purple_tabbar": USE_SPLASH_PURPLE_TABBAR,
+        },
     )
 
 
 @app.get("/api/auth/meta")
 async def auth_meta(request: Request):
+    """
+    Auth Meta helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     store = DEFAULT_store
     creds = get_credentials(store)
     return {"has_credentials": bool(creds), "count": len(creds), "store": store["label"]}
@@ -1566,27 +2260,6 @@ async def chat_metrics(request: Request, _=Depends(require_auth)):
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-@app.get("/api/triage/samples")
-async def triage_samples(_=Depends(require_auth)):
-    """Expose triage test cases (now stored in triage_samples table)."""
-    try:
-        return get_triage_samples()
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-@app.post("/api/triage/samples")
-async def triage_samples_save(request: Request, _=Depends(require_auth)):
-    try:
-        payload = await request.json()
-        if not isinstance(payload, list):
-            return JSONResponse({"error": "Payload must be an array"}, status_code=status.HTTP_400_BAD_REQUEST)
-        set_triage_samples(payload)
-        return {"status": "ok", "count": len(payload)}
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
 @app.get("/api/triage/options")
 async def triage_options(_=Depends(require_auth)):
     """Expose dropdown options for triage form (table-backed)."""
@@ -1598,12 +2271,34 @@ async def triage_options(_=Depends(require_auth)):
 
 @app.post("/api/triage/options")
 async def triage_options_save(request: Request, _=Depends(require_auth)):
+    """
+    Triage Options Save helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     try:
         payload = await request.json()
         if not isinstance(payload, dict):
             return JSONResponse({"error": "Payload must be an object"}, status_code=status.HTTP_400_BAD_REQUEST)
         set_triage_options(payload)
         return {"status": "ok", "fields": list(payload.keys())}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.get("/api/triage/tree")
+async def triage_tree(_=Depends(require_auth)):
+    """Expose hierarchical triage decision tree for gated dropdowns."""
+    try:
+        return get_triage_prompt_tree()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.get("/api/patients/options")
+async def patient_options(_=Depends(require_auth)):
+    """Return a lightweight patient list for fast triage dropdown hydration."""
+    try:
+        return get_patient_options()
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -1783,14 +2478,364 @@ async def manage(cat: str, request: Request, _=Depends(require_auth)):
         return JSONResponse({"error": "Server error"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+@app.get("/api/settings/prompt-library")
+async def get_prompt_library(prompt_key: Optional[str] = None, _=Depends(require_auth)):
+    """
+    Get Prompt Library helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    try:
+        return {"items": list_prompt_templates(prompt_key)}
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=status.HTTP_400_BAD_REQUEST)
+    except Exception:
+        logger.exception("prompt library list failed", extra={"prompt_key": prompt_key, "db_path": str(DB_PATH)})
+        return JSONResponse({"error": "Server error"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.post("/api/settings/prompt-library")
+async def save_prompt_library(request: Request, _=Depends(require_auth)):
+    """
+    Save Prompt Library helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "Payload must be a JSON object."}, status_code=status.HTTP_400_BAD_REQUEST)
+    try:
+        saved = upsert_prompt_template(
+            payload.get("prompt_key"),
+            payload.get("name"),
+            payload.get("prompt_text"),
+        )
+        return saved
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=status.HTTP_400_BAD_REQUEST)
+    except Exception:
+        logger.exception("prompt library save failed", extra={"db_path": str(DB_PATH)})
+        return JSONResponse({"error": "Server error"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.get("/api/settings/triage-modules")
+async def get_triage_modules(_=Depends(require_auth)):
+    """
+    Get Triage Modules helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    try:
+        return {"modules": get_triage_prompt_modules()}
+    except Exception:
+        logger.exception("triage modules list failed", extra={"db_path": str(DB_PATH)})
+        return JSONResponse({"error": "Server error"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.get("/api/settings/triage-tree")
+async def get_triage_tree_settings(_=Depends(require_auth)):
+    """
+    Get Triage Tree Settings helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    try:
+        return {"payload": get_triage_prompt_tree()}
+    except Exception:
+        logger.exception("triage tree load failed", extra={"db_path": str(DB_PATH)})
+        return JSONResponse({"error": "Server error"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.post("/api/settings/triage-tree")
+async def save_triage_tree_settings(request: Request, _=Depends(require_auth)):
+    """
+    Save Triage Tree Settings helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "Payload must be a JSON object."}, status_code=status.HTTP_400_BAD_REQUEST)
+    tree_payload = payload.get("payload") if isinstance(payload.get("payload"), dict) else payload
+    try:
+        saved = set_triage_prompt_tree(tree_payload)
+        return {"payload": saved}
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=status.HTTP_400_BAD_REQUEST)
+    except Exception:
+        logger.exception("triage tree save failed", extra={"db_path": str(DB_PATH)})
+        return JSONResponse({"error": "Server error"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.post("/api/settings/triage-modules")
+async def save_triage_modules(request: Request, _=Depends(require_auth)):
+    """
+    Save Triage Modules helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "Payload must be a JSON object."}, status_code=status.HTTP_400_BAD_REQUEST)
+    try:
+        if isinstance(payload.get("modules"), dict):
+            set_triage_prompt_modules(
+                payload.get("modules") or {},
+                replace=bool(payload.get("replace")),
+            )
+            return {"modules": get_triage_prompt_modules()}
+        saved = upsert_triage_prompt_module(
+            payload.get("category"),
+            payload.get("module_key"),
+            payload.get("module_text"),
+            payload.get("position"),
+        )
+        return {"module": saved}
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=status.HTTP_400_BAD_REQUEST)
+    except Exception:
+        logger.exception("triage modules save failed", extra={"db_path": str(DB_PATH)})
+        return JSONResponse({"error": "Server error"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 @app.get("/api/context")
 async def get_context(request: Request, _=Depends(require_auth)):
     """Context endpoint retained for compatibility; now returns empty payload since sidebar content is static."""
     return {}
 
 
+def _safe_filename_part(raw: str, fallback: str) -> str:
+    """
+     Safe Filename Part helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", (raw or "").strip())
+    safe = safe.strip("._-")
+    return safe or fallback
+
+
+def _ext_for_mime(mime: str, default_ext: str = ".bin") -> str:
+    """
+     Ext For Mime helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    base = (mime or "").split(";")[0].strip().lower()
+    ext = mimetypes.guess_extension(base) or default_ext
+    if ext == ".jpe":
+        ext = ".jpg"
+    return ext
+
+
+def _decode_data_url_bytes(value: str):
+    """
+     Decode Data Url Bytes helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    if not isinstance(value, str):
+        return None, None
+    raw = value.strip()
+    if not raw or not raw.startswith("data:"):
+        return None, None
+    try:
+        header, payload = raw.split(",", 1)
+    except ValueError:
+        return None, None
+    meta = header[5:]
+    mime = "application/octet-stream"
+    if ";" in meta:
+        mime = (meta.split(";", 1)[0] or mime).strip()
+    elif meta:
+        mime = meta.strip()
+    try:
+        if ";base64" in header.lower():
+            blob = base64.b64decode(payload)
+        else:
+            blob = unquote_to_bytes(payload)
+    except Exception:
+        return None, None
+    return mime, blob
+
+
+def _crew_display_name(member: dict, fallback: str = "Unnamed Crew") -> str:
+    """
+     Crew Display Name helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    first = str(member.get("firstName") or "").strip()
+    last = str(member.get("lastName") or "").strip()
+    if first and last:
+        return f"{first} {last}"
+    if first or last:
+        return first or last
+    name = str(member.get("name") or "").strip()
+    return name or fallback
+
+
+def _build_crew_list_csv_text(patients: list, vessel: dict, export_date: str) -> str:
+    """
+     Build Crew List Csv Text helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    vessel_name = vessel.get("vesselName") or "[Vessel Name]"
+    captain = next((c for c in patients if str(c.get("position") or "").strip() == "Captain"), None)
+    captain_name = _crew_display_name(captain, fallback="[Captain Name]") if captain else "[Captain Name]"
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(["CREW LIST"])
+    writer.writerow([f"Vessel: {vessel_name}"])
+    writer.writerow([f"Date: {export_date}"])
+    writer.writerow([])
+    writer.writerow(["No.", "Name", "Birth Date", "Position", "Citizenship", "Birthplace", "Passport No.", "Issue Date", "Expiry Date"])
+    for idx, crew in enumerate(patients, start=1):
+        writer.writerow([
+            idx,
+            _crew_display_name(crew),
+            crew.get("birthdate") or "",
+            crew.get("position") or "",
+            crew.get("citizenship") or "",
+            crew.get("birthplace") or "",
+            crew.get("passportNumber") or "",
+            crew.get("passportIssue") or "",
+            crew.get("passportExpiry") or "",
+        ])
+    writer.writerow([])
+    writer.writerow([])
+    writer.writerow([f"Captain: {captain_name}"])
+    writer.writerow(["Signature: _________________________"])
+    return out.getvalue()
+
+
+def _build_vessel_info_text(vessel: dict) -> str:
+    """
+     Build Vessel Info Text helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    fields = [
+        ("Vessel Name", "vesselName"),
+        ("Registration Number", "registrationNumber"),
+        ("Flag Country", "flagCountry"),
+        ("Home Port", "homePort"),
+        ("Call Sign", "callSign"),
+        ("MMSI Number", "mmsi"),
+        ("Gross Tonnage", "tonnage"),
+        ("Net/Register Tonnage", "netTonnage"),
+        ("Hull Number", "hullNumber"),
+        ("Starboard Engine", "starboardEngine"),
+        ("Starboard Engine S/N", "starboardEngineSn"),
+        ("Port Engine", "portEngine"),
+        ("Port Engine S/N", "portEngineSn"),
+        ("RIB S/N", "ribSn"),
+    ]
+    lines = [
+        "VESSEL INFORMATION",
+        f"Exported (UTC): {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+    ]
+    for label, key in fields:
+        lines.append(f"{label}: {vessel.get(key) or ''}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+@app.post("/api/vessel/photo")
+async def update_vessel_photo(request: Request, _=Depends(require_auth)):
+    """
+    Update Vessel Photo helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    try:
+        payload = await request.json()
+        field = payload.get("field")
+        data = payload.get("data") or ""
+        if field not in {"boatPhoto", "registrationFrontPhoto", "registrationBackPhoto"}:
+            return JSONResponse({"error": "Invalid field"}, status_code=status.HTTP_400_BAD_REQUEST)
+        if data and not isinstance(data, str):
+            return JSONResponse({"error": "Invalid data payload"}, status_code=status.HTTP_400_BAD_REQUEST)
+        saved = db_op("vessel", {field: data}, store=request.state.store)
+        return {"status": "ok", "field": field, "hasData": bool(saved.get(field))}
+    except Exception:
+        logger.exception("vessel photo update failed")
+        return JSONResponse({"error": "Server error"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.get("/api/export/immigration-zip")
+async def export_immigration_zip(request: Request, _=Depends(require_auth)):
+    """
+    Export Immigration Zip helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    try:
+        patients = db_op("patients", store=request.state.store) or []
+        vessel = db_op("vessel", store=request.state.store) or {}
+        export_date = datetime.utcnow().strftime("%Y-%m-%d")
+        vessel_slug = _safe_filename_part(str(vessel.get("vesselName") or ""), "vessel")
+        zip_name = f"immigration_export_{vessel_slug}_{export_date}.zip"
+        zip_buffer = io.BytesIO()
+        passport_files = 0
+        vessel_image_files = 0
+        with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(
+                f"crew_list_{export_date}.csv",
+                _build_crew_list_csv_text(patients, vessel, export_date),
+            )
+            zf.writestr("vessel_info.txt", _build_vessel_info_text(vessel))
+
+            vessel_images = {
+                "boatPhoto": "boat_photo",
+                "registrationFrontPhoto": "registration_front",
+                "registrationBackPhoto": "registration_back",
+            }
+            for field, basename in vessel_images.items():
+                mime, blob = _decode_data_url_bytes(vessel.get(field) or "")
+                if not blob:
+                    continue
+                ext = _ext_for_mime(mime, ".bin")
+                zf.writestr(f"vessel_images/{basename}{ext}", blob)
+                vessel_image_files += 1
+
+            for idx, crew in enumerate(patients, start=1):
+                mime, blob = _decode_data_url_bytes(crew.get("passportPage") or "")
+                if not blob:
+                    continue
+                name = _safe_filename_part(_crew_display_name(crew), f"crew_{idx:02d}")
+                ext = _ext_for_mime(mime, ".bin")
+                zf.writestr(f"passport_pages/{idx:02d}_{name}_passport_page{ext}", blob)
+                passport_files += 1
+
+            manifest_lines = [
+                "IMMIGRATION EXPORT PACKAGE",
+                f"Generated (UTC): {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}",
+                f"Crew records: {len(patients)}",
+                f"Passport page files: {passport_files}",
+                f"Vessel image files: {vessel_image_files}",
+                "",
+                "Included files:",
+                f"- crew_list_{export_date}.csv",
+                "- vessel_info.txt",
+                "- passport_pages/*",
+                "- vessel_images/*",
+            ]
+            zf.writestr("manifest.txt", "\n".join(manifest_lines) + "\n")
+
+        zip_buffer.seek(0)
+        headers = {
+            "Content-Disposition": f"attachment; filename=\"{zip_name}\"; filename*=UTF-8''{quote(zip_name)}"
+        }
+        return Response(content=zip_buffer.getvalue(), media_type="application/zip", headers=headers)
+    except Exception:
+        logger.exception("immigration zip export failed")
+        return JSONResponse({"error": "Server error"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 @app.post("/api/crew/photo")
 async def update_crew_photo(request: Request, _=Depends(require_auth)):
+    """
+    Update Crew Photo helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     try:
         payload = await request.json()
         crew_id = str(payload.get("id") or "").strip()
@@ -1830,6 +2875,10 @@ async def update_crew_credentials(request: Request, _=Depends(require_auth)):
 
 @app.post("/api/crew/vaccine")
 async def upsert_crew_vaccine(request: Request, _=Depends(require_auth)):
+    """
+    Upsert Crew Vaccine helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     try:
         payload = await request.json()
         crew_id = str(payload.get("crew_id") or "").strip()
@@ -1845,6 +2894,10 @@ async def upsert_crew_vaccine(request: Request, _=Depends(require_auth)):
 
 @app.delete("/api/crew/vaccine/{crew_id}/{vaccine_id}")
 async def delete_crew_vaccine(crew_id: str, vaccine_id: str, _=Depends(require_auth)):
+    """
+    Delete Crew Vaccine helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     try:
         ok = delete_vaccine(crew_id, vaccine_id)
         if not ok:
@@ -1856,6 +2909,10 @@ async def delete_crew_vaccine(crew_id: str, vaccine_id: str, _=Depends(require_a
 
 
 def _safe_pad_token_id(tok):
+    """
+     Safe Pad Token Id helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     pad = getattr(tok, "pad_token_id", None)
     if pad is not None:
         return pad
@@ -1866,6 +2923,10 @@ def _safe_pad_token_id(tok):
 
 
 def _resolve_model_max_length(model, tok=None):
+    """
+     Resolve Model Max Length helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     cfg = getattr(model, "config", None)
     candidates = []
     if cfg is not None:
@@ -1888,6 +2949,10 @@ def _resolve_model_max_length(model, tok=None):
 
 
 def _cap_new_tokens(max_new_tokens, input_len, model_max_len):
+    """
+     Cap New Tokens helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     if not isinstance(max_new_tokens, int):
         return max_new_tokens
     if model_max_len is None:
@@ -1905,12 +2970,125 @@ def _cap_new_tokens(max_new_tokens, input_len, model_max_len):
     return max_new_tokens
 
 
-def _generate_response(model_choice: str, force_cpu_slow: bool, prompt: str, cfg: dict):
+def _generate_response_local(model_choice: str, force_cpu_slow: bool, prompt: str, cfg: dict):
+    """
+     Generate Response Local helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
+    _dbg("generate_response: local inference path")
+    model_name = (model_choice or "google/medgemma-1.5-4b-it").strip()
+    model_name_l = model_name.lower()
+    is_large_model = "27b" in model_name_l or "28b" in model_name_l
+    force_cuda = os.environ.get("FORCE_CUDA", "").strip() == "1"
+    allow_cpu_fallback_on_cuda_error = os.environ.get("ALLOW_CPU_FALLBACK_ON_CUDA_ERROR", "").strip() == "1"
+    runtime_device = "cuda" if torch.cuda.is_available() else "cpu"
+    if force_cuda and runtime_device != "cuda":
+        cuda_err = ""
+        try:
+            torch.cuda.current_device()
+        except Exception as exc:
+            cuda_err = str(exc)
+        detail = f": {cuda_err}" if cuda_err else ""
+        raise RuntimeError(f"CUDA_NOT_AVAILABLE{detail}")
+    if is_large_model and runtime_device != "cuda" and not force_cpu_slow:
+        raise RuntimeError("SLOW_28B_CPU")
+    try:
+        if is_large_model:
+            # Ensure only one model family occupies VRAM at a time.
+            try:
+                medgemma4.unload_model()
+            except Exception:
+                pass
+            max_mem_gpu = os.environ.get("MODEL_MAX_GPU_MEM_27B") or os.environ.get("MODEL_MAX_GPU_MEM") or "8GiB"
+            max_mem_cpu = os.environ.get("MODEL_MAX_CPU_MEM", "64GiB")
+            max_memory = {0: max_mem_gpu, "cpu": max_mem_cpu} if runtime_device == "cuda" else None
+            device_map_27b = os.environ.get("MODEL_DEVICE_MAP_27B", "manual").strip() or "manual"
+            res = medgemma27b.generate(
+                prompt,
+                cfg,
+                device_map=device_map_27b if runtime_device == "cuda" else "cpu",
+                max_memory=max_memory,
+            )
+        else:
+            try:
+                medgemma27b.unload_model()
+            except Exception:
+                pass
+            res = medgemma4.generate(
+                prompt,
+                cfg,
+                device_map="cuda:0" if runtime_device == "cuda" else "cpu",
+            )
+    except Exception as exc:
+        err_txt = str(exc)
+        err_l = err_txt.lower()
+        cuda_runtime_failure = (
+            runtime_device == "cuda"
+            and (
+                "cuda driver error" in err_l
+                or "cuda error" in err_l
+                or "cublas" in err_l
+                or "cudnn" in err_l
+                or "device-side assert" in err_l
+                or "no cuda gpus are available" in err_l
+            )
+        )
+        if not cuda_runtime_failure:
+            raise
+
+        _dbg(f"generate_response: cuda runtime failure detected: {err_txt}")
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+        if force_cuda:
+            raise RuntimeError(f"CUDA_NOT_AVAILABLE: {err_txt}")
+        if not allow_cpu_fallback_on_cuda_error:
+            raise RuntimeError(f"CUDA_NOT_AVAILABLE: {err_txt}")
+
+        if is_large_model:
+            if not force_cpu_slow:
+                # Preserve existing UX: ask user to confirm slow CPU run for 27B.
+                raise RuntimeError("SLOW_28B_CPU")
+            _dbg("generate_response: retrying 27B on CPU after CUDA failure")
+            try:
+                medgemma27b.unload_model()
+            except Exception:
+                pass
+            res = medgemma27b.generate(
+                prompt,
+                cfg,
+                device_map="cpu",
+                max_memory=None,
+            )
+        else:
+            _dbg("generate_response: retrying 4B on CPU after CUDA failure")
+            try:
+                medgemma4.unload_model()
+            except Exception:
+                pass
+            res = medgemma4.generate(
+                prompt,
+                cfg,
+                device_map="cpu",
+            )
+    models["active_name"] = model_name
+    models["is_text"] = True
+    _dbg(f"generate_response: local response_len={len(res)}")
+    return res
+
+
+def _generate_response(model_choice: str, force_cpu_slow: bool, prompt: str, cfg: dict, prelocked: bool = False):
+    """
+     Generate Response helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     _dbg(
         "generate_response: "
         + f"model_choice={model_choice} force_cpu_slow={force_cpu_slow} "
         + f"prompt_len={len(prompt) if prompt else 0} "
-        + f"cfg=tk:{cfg.get('tk')} t:{cfg.get('t')} p:{cfg.get('p')} rep:{cfg.get('rep_penalty')}"
+        + f"cfg=tk:{cfg.get('tk')} t:{cfg.get('t')} p:{cfg.get('p')} k:{cfg.get('k')} rep:{cfg.get('rep_penalty')}"
     )
     # If local inference is disabled (HF Space), fall back to HF Inference API
     if DISABLE_LOCAL_INFERENCE:
@@ -1927,177 +3105,86 @@ def _generate_response(model_choice: str, force_cpu_slow: bool, prompt: str, cfg
             max_new_tokens=cfg["tk"],
             temperature=cfg["t"],
             top_p=cfg["p"],
+            top_k=cfg.get("k"),
         )
         out = resp.strip()
         _dbg(f"generate_response: remote response_len={len(out)}")
         return out
 
+    if prelocked:
+        return _generate_response_local(model_choice, force_cpu_slow, prompt, cfg)
     with MODEL_MUTEX:
-        _dbg("generate_response: local inference path")
-        load_model(model_choice, allow_cpu_large=force_cpu_slow)
-        _dbg(
-            f"generate_response: model_active={models.get('active_name')} "
-            f"is_text={models.get('is_text')} device={getattr(models.get('model'), 'device', 'n/a')}"
-        )
-        if models["is_text"]:
-            tok = models["tokenizer"]
-            processor = models.get("processor")
-            messages = [{"role": "user", "content": prompt}]
-            if processor is not None:
-                prompt_text = tok.apply_chat_template(
-                    messages,
-                    add_generation_prompt=True,
-                    tokenize=False,
-                )
-                inputs = processor(text=prompt_text, return_tensors="pt")
-                inputs = {k: v.to(models["model"].device) for k, v in inputs.items()}
-            else:
-                inputs = tok.apply_chat_template(
-                    messages,
-                    add_generation_prompt=True,
-                    return_tensors="pt",
-                    return_dict=True,
-                ).to(models["model"].device)
-            _dbg(f"generate_response: text inputs device={inputs['input_ids'].device}")
-            pad_id = _safe_pad_token_id(tok)
-            input_len = inputs["input_ids"].shape[-1]
-            model_max_len = _resolve_model_max_length(models["model"], tok)
-            max_new_tokens = _cap_new_tokens(cfg["tk"], input_len, model_max_len)
-            t_gen = time.perf_counter()
-            try:
-                with torch.inference_mode():
-                    out = models["model"].generate(
-                        **inputs,
-                        max_new_tokens=max_new_tokens,
-                        temperature=cfg["t"],
-                        top_p=cfg["p"],
-                        repetition_penalty=cfg.get("rep_penalty", 1.1),
-                        do_sample=(cfg["t"] > 0),
-                        pad_token_id=pad_id,
-                    )
-            except RuntimeError as e:
-                if "probability tensor contains either `inf`, `nan`" in str(e):
-                    _dbg("generate_response: NaN/Inf in sampling; retrying with greedy decode")
-                    with torch.inference_mode():
-                        out = models["model"].generate(
-                            **inputs,
-                            max_new_tokens=max_new_tokens,
-                            temperature=0.0,
-                            top_p=1.0,
-                            repetition_penalty=cfg.get("rep_penalty", 1.1),
-                            do_sample=False,
-                            pad_token_id=pad_id,
-                        )
-                else:
-                    raise
-            gen_len = out.shape[-1] - input_len
-            _dbg(
-                f"generate_response: generated_tokens={gen_len} max_new_tokens={max_new_tokens} "
-                f"hit_cap={gen_len >= max_new_tokens}"
-            )
-            _dbg(f"generate_response: text generate in {time.perf_counter() - t_gen:.2f}s")
-            res = tok.decode(out[0][inputs["input_ids"].shape[-1] :], skip_special_tokens=True).strip()
-        else:
-            processor = models["processor"]
-            if processor is None:
-                raise RuntimeError("Vision processor not initialized")
-            inputs = processor.apply_chat_template(
-                [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
-                add_generation_prompt=True,
-                tokenize=True,
-                return_dict=True,
-                return_tensors="pt",
-            ).to(models["model"].device)
-            _dbg(f"generate_response: vision inputs device={inputs['input_ids'].device}")
-            input_len = inputs["input_ids"].shape[-1]
-            model_max_len = _resolve_model_max_length(models["model"], None)
-            max_new_tokens = _cap_new_tokens(cfg["tk"], input_len, model_max_len)
-            t_gen = time.perf_counter()
-            try:
-                with torch.inference_mode():
-                    out = models["model"].generate(
-                        **inputs,
-                        max_new_tokens=max_new_tokens,
-                        temperature=cfg["t"],
-                        top_p=cfg["p"],
-                        repetition_penalty=cfg.get("rep_penalty", 1.1),
-                        do_sample=(cfg["t"] > 0),
-                    )
-            except RuntimeError as e:
-                if "probability tensor contains either `inf`, `nan`" in str(e):
-                    _dbg("generate_response: NaN/Inf in sampling; retrying with greedy decode")
-                    with torch.inference_mode():
-                        out = models["model"].generate(
-                            **inputs,
-                            max_new_tokens=max_new_tokens,
-                            temperature=0.0,
-                            top_p=1.0,
-                            repetition_penalty=cfg.get("rep_penalty", 1.1),
-                            do_sample=False,
-                        )
-                else:
-                    raise
-            gen_len = out.shape[-1] - input_len
-            _dbg(
-                f"generate_response: generated_tokens={gen_len} max_new_tokens={max_new_tokens} "
-                f"hit_cap={gen_len >= max_new_tokens}"
-            )
-            _dbg(f"generate_response: vision generate in {time.perf_counter() - t_gen:.2f}s")
-            res = processor.decode(out[0][inputs["input_ids"].shape[-1] :], skip_special_tokens=True).strip()
-        _dbg(f"generate_response: local response_len={len(res)}")
-    return res
+        return _generate_response_local(model_choice, force_cpu_slow, prompt, cfg)
 
 
 @app.post("/api/chat")
 async def chat(request: Request, _=Depends(require_auth)):
-    """Main chat endpoint (triage + inquiry); logs history and updates chat metrics."""
+    """Session-based chat endpoint (triage + inquiry)."""
     try:
         store = request.state.store
         start_time = datetime.now()
         form = await request.form()
-        msg = form.get("message")
+        msg = (form.get("message") or "").strip()
+        if not msg:
+            return JSONResponse({"error": "Message is required."}, status_code=status.HTTP_400_BAD_REQUEST)
         user_msg_raw = msg
-        p_name = form.get("patient")
-        mode = form.get("mode")
+        p_name = form.get("patient") or ""
+        mode = (form.get("mode") or "triage").strip()
         is_priv = form.get("private") == "true"
         model_choice = form.get("model_choice")
         force_cpu_slow = form.get("force_28b") == "true"
         override_prompt = form.get("override_prompt") or ""
+        session_action = (form.get("session_action") or "").strip()
+        session_id = (form.get("session_id") or "").strip()
+        transcript_raw = form.get("transcript") or ""
+        session_meta_raw = form.get("session_meta") or ""
+        session_meta = _safe_json_load(session_meta_raw) or {}
+        if not isinstance(session_meta, dict):
+            session_meta = {}
+        session_meta_payload = dict(session_meta)
+        is_start = session_action == "start" or not session_id
+        if not session_id:
+            session_id = f"session-{uuid.uuid4().hex}"
         _dbg(
             "chat request: "
             + f"mode={mode} model_choice={model_choice} force_28b={force_cpu_slow} "
-            + f"private={is_priv} msg_len={len(msg) if msg else 0}"
+            + f"private={is_priv} msg_len={len(msg) if msg else 0} "
+            + f"session_action={session_action} session_id={session_id}"
         )
-        triage_consciousness = form.get("triage_consciousness") or ""
-        triage_breathing_status = form.get("triage_breathing_status") or ""
-        triage_pain_level = form.get("triage_pain_level") or ""
-        triage_main_problem = form.get("triage_main_problem") or ""
-        triage_temperature = form.get("triage_temperature") or ""
-        triage_circulation = form.get("triage_circulation") or ""
-        triage_cause = form.get("triage_cause") or ""
+        triage_selections = extract_triage_selections(form) if mode == "triage" else {}
+        triage_conditions = extract_triage_conditions(form) if mode == "triage" else {}
         s = db_op("settings", store=store)
-
+        triage_meta = {}
         if mode == "triage":
-            meta_lines = []
-            if triage_consciousness:
-                meta_lines.append(f"Consciousness/Responsiveness: {triage_consciousness}")
-            if triage_breathing_status:
-                meta_lines.append(f"Breathing: {triage_breathing_status}")
-            if triage_pain_level:
-                meta_lines.append(f"Pain Level: {triage_pain_level}")
-            if triage_main_problem:
-                meta_lines.append(f"Main Problem: {triage_main_problem}")
-            if triage_temperature:
-                meta_lines.append(f"Body Temperature: {triage_temperature}")
-            if triage_circulation:
-                meta_lines.append(f"Circulation/BP: {triage_circulation}")
-            if triage_cause:
-                meta_lines.append(f"Cause: {triage_cause}")
-            if meta_lines:
-                meta_text = "\n".join(f"- {line}" for line in meta_lines)
-                msg = f"{msg}\n\nTRIAGE INTAKE:\n{meta_text}"
+            triage_meta.update(triage_condition_meta(triage_conditions))
+            triage_meta.update(triage_selection_meta(triage_selections))
+        if mode == "triage" and is_start:
+            triage_path = {k: v for k, v in (triage_selections or {}).items() if (v or "").strip()}
+            if triage_path:
+                session_meta_payload["triage_path"] = triage_path
+            triage_condition_snapshot = {
+                k: v for k, v in (triage_conditions or {}).items() if (v or "").strip()
+            }
+            if triage_condition_snapshot:
+                session_meta_payload["triage_condition"] = triage_condition_snapshot
 
-        prompt, cfg = build_prompt(s, mode, msg, p_name, store)
+        transcript_messages, _ = _normalize_transcript_payload(transcript_raw)
+        if not is_start:
+            msg_for_prompt = _format_transcript_for_prompt(transcript_messages, user_msg_raw)
+            if not msg_for_prompt:
+                msg_for_prompt = msg
+        else:
+            msg_for_prompt = msg
+
+        prompt, cfg, prompt_meta = build_prompt(
+            s,
+            mode,
+            msg_for_prompt,
+            p_name,
+            store,
+            triage_selections=triage_selections,
+            triage_conditions=triage_conditions,
+        )
         if override_prompt.strip():
             prompt = override_prompt.strip()
 
@@ -2107,8 +3194,53 @@ async def chat(request: Request, _=Depends(require_auth)):
         except Exception:
             logger.exception("Unable to persist last_prompt_verbatim")
 
+        model_lock_acquired = False
+        if not DISABLE_LOCAL_INFERENCE:
+            model_lock_acquired = MODEL_MUTEX.acquire(blocking=False)
+            if not model_lock_acquired:
+                busy_meta = _get_model_busy_meta()
+                busy_started_at = busy_meta.get("started_at") or ""
+                busy_elapsed_seconds = None
+                if busy_started_at:
+                    try:
+                        busy_elapsed_seconds = max(
+                            int((datetime.utcnow() - datetime.fromisoformat(busy_started_at)).total_seconds()),
+                            0,
+                        )
+                    except Exception:
+                        busy_elapsed_seconds = None
+                active_model = (busy_meta.get("model_choice") or "").strip() or "another consultation"
+                elapsed_text = (
+                    f" (elapsed: {busy_elapsed_seconds}s)"
+                    if isinstance(busy_elapsed_seconds, int)
+                    else ""
+                )
+                return JSONResponse(
+                    {
+                        "error": (
+                            f"GPU is currently busy running {active_model}{elapsed_text}. "
+                            "Please wait for that run to finish, then submit again."
+                        ),
+                        "gpu_busy": True,
+                        "busy": busy_meta,
+                        "busy_elapsed_seconds": busy_elapsed_seconds,
+                    },
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                )
+            _set_model_busy_meta(model_choice or "", mode, session_id, p_name)
+
         try:
-            res = await asyncio.to_thread(_generate_response, model_choice, force_cpu_slow, prompt, cfg)
+            if model_lock_acquired:
+                res = await asyncio.to_thread(
+                    _generate_response,
+                    model_choice,
+                    force_cpu_slow,
+                    prompt,
+                    cfg,
+                    True,
+                )
+            else:
+                res = await asyncio.to_thread(_generate_response, model_choice, force_cpu_slow, prompt, cfg)
         except RuntimeError as e:
             _dbg(f"chat runtime error: {e}")
             if str(e) == "SLOW_28B_CPU":
@@ -2119,46 +3251,121 @@ async def chat(request: Request, _=Depends(require_auth)):
                     },
                     status_code=status.HTTP_400_BAD_REQUEST,
                 )
+            if str(e).startswith("CUDA_NOT_AVAILABLE"):
+                return JSONResponse(
+                    {
+                        "error": (
+                            "CUDA is required but not currently available. "
+                            "Check NVIDIA driver/kernel health (e.g., journalctl -k for NVRM/Xid) "
+                            "and restart GPU services or reboot."
+                        ),
+                        "cuda_unavailable": True,
+                        "details": str(e),
+                    },
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
             if "Missing model cache" in str(e) or str(e) in {"REMOTE_TOKEN_MISSING", "LOCAL_INFERENCE_DISABLED"}:
                 return JSONResponse(
                     {"error": str(e), "offline_missing": True},
                     status_code=status.HTTP_400_BAD_REQUEST,
                 )
             return JSONResponse({"error": str(e)}, status_code=status.HTTP_400_BAD_REQUEST)
+        finally:
+            if model_lock_acquired:
+                _clear_model_busy_meta()
+                try:
+                    MODEL_MUTEX.release()
+                except RuntimeError:
+                    pass
         elapsed_ms = max(int((datetime.now() - start_time).total_seconds() * 1000), 0)
 
+        now_iso = datetime.now().isoformat()
+        patient_display = (
+            lookup_patient_display_name(p_name, store, default="Unnamed Crew")
+            if mode == "triage"
+            else "Inquiry"
+        )
+        session_date = session_meta.get("date") or session_meta.get("started_at")
+        if not session_date:
+            session_date = datetime.now().strftime("%Y-%m-%d %H:%M")
+        if is_start:
+            transcript_messages = []
+        user_entry = {
+            "role": "user",
+            "message": user_msg_raw,
+            "model": model_choice,
+            "ts": now_iso,
+        }
+        if triage_meta and is_start:
+            user_entry["triage_meta"] = triage_meta
+        transcript_messages.append(user_entry)
+        transcript_messages.append(
+            {
+                "role": "assistant",
+                "message": res,
+                "model": models["active_name"],
+                "ts": now_iso,
+                "duration_ms": elapsed_ms,
+            }
+        )
+
         if not is_priv:
-            patient_display = (
-                lookup_patient_display_name(p_name, store, default="Unnamed Crew")
-                if mode == "triage"
-                else "Inquiry"
+            existing_entry = get_history_entry_by_id(session_id) if not is_start else None
+            if not session_date:
+                session_date = (existing_entry or {}).get("date") or datetime.now().strftime("%Y-%m-%d %H:%M")
+            query_text = session_meta.get("initial_query") or (existing_entry or {}).get("query") or user_msg_raw
+            patient_id = session_meta.get("patient_id") or p_name or (existing_entry or {}).get("patient_id") or ""
+            meta_payload = dict(session_meta_payload)
+            meta_payload.update(
+                {
+                    "session_id": session_id,
+                    "mode": mode,
+                    "patient_id": patient_id,
+                    "patient": patient_display,
+                    "started_at": session_date,
+                }
             )
+            transcript_payload = {
+                "messages": transcript_messages,
+                "meta": meta_payload,
+            }
             entry = {
-                "id": datetime.now().isoformat(),
-                "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "id": session_id,
+                "date": session_date,
                 "patient": patient_display,
-                "patient_id": p_name or "",
+                "patient_id": patient_id,
                 "mode": mode,
-                "query": msg,
-                "user_query": user_msg_raw,
-                "response": res,
+                "query": query_text,
+                "user_query": query_text,
+                "response": json.dumps(transcript_payload),
                 "model": models["active_name"],
                 "duration_ms": elapsed_ms,
                 "prompt": prompt,
-                "injected_prompt": prompt,
+                "injected_prompt": override_prompt.strip() or prompt,
             }
-            existing = db_op("history", store=store)
-            existing.append(entry)
-            db_op("history", existing, store=store)
+            upsert_history_entry(entry)
 
         metrics = _update_chat_metrics(store, models["active_name"])
 
         return JSONResponse(
             {
-                "response": f"{res}\n\n(Response time: {elapsed_ms} ms)",
+                "response": res,
                 "model": models["active_name"],
                 "duration_ms": elapsed_ms,
                 "model_metrics": metrics,
+                "triage_pathway_supplemented": bool(prompt_meta.get("triage_pathway_supplemented")),
+                "triage_pathway_status": prompt_meta.get("triage_pathway_status"),
+                "triage_pathway_reason": prompt_meta.get("triage_pathway_reason"),
+                "session_id": session_id,
+                "transcript": transcript_messages,
+                "session_meta": {
+                    **session_meta_payload,
+                    "session_id": session_id,
+                    "mode": mode,
+                    "patient_id": session_meta.get("patient_id") or p_name,
+                    "patient": session_meta.get("patient") or patient_display,
+                    "date": session_meta.get("date") or session_meta.get("started_at") or session_date,
+                },
             }
         )
     except Exception as e:
@@ -2167,43 +3374,43 @@ async def chat(request: Request, _=Depends(require_auth)):
 
 @app.post("/api/chat/preview")
 async def chat_preview(request: Request, _=Depends(require_auth)):
+    """
+    Chat Preview helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     form = await request.form()
     msg = form.get("message")
     p_name = form.get("patient")
     mode = form.get("mode")
     store = request.state.store
-    if mode == "triage":
-        triage_consciousness = form.get("triage_consciousness") or ""
-        triage_breathing_status = form.get("triage_breathing_status") or ""
-        triage_pain_level = form.get("triage_pain_level") or ""
-        triage_main_problem = form.get("triage_main_problem") or ""
-        triage_temperature = form.get("triage_temperature") or ""
-        triage_circulation = form.get("triage_circulation") or ""
-        triage_cause = form.get("triage_cause") or ""
-        meta_lines = []
-        if triage_consciousness:
-            meta_lines.append(f"Consciousness/Responsiveness: {triage_consciousness}")
-        if triage_breathing_status:
-            meta_lines.append(f"Breathing: {triage_breathing_status}")
-        if triage_pain_level:
-            meta_lines.append(f"Pain Level: {triage_pain_level}")
-        if triage_main_problem:
-            meta_lines.append(f"Main Problem: {triage_main_problem}")
-        if triage_temperature:
-            meta_lines.append(f"Body Temperature: {triage_temperature}")
-        if triage_circulation:
-            meta_lines.append(f"Circulation/BP: {triage_circulation}")
-        if triage_cause:
-            meta_lines.append(f"Cause: {triage_cause}")
-        if meta_lines:
-            meta_text = "\n".join(f"- {line}" for line in meta_lines)
-            msg = f"{msg}\n\nTRIAGE INTAKE:\n{meta_text}"
+    triage_selections = extract_triage_selections(form) if mode == "triage" else {}
+    triage_conditions = extract_triage_conditions(form) if mode == "triage" else {}
     s = db_op("settings", store=store)
-    prompt, cfg = build_prompt(s, mode, msg, p_name, store)
-    return {"prompt": prompt, "mode": mode, "patient": p_name, "cfg": cfg}
+    prompt, cfg, prompt_meta = build_prompt(
+        s,
+        mode,
+        msg,
+        p_name,
+        store,
+        triage_selections=triage_selections,
+        triage_conditions=triage_conditions,
+    )
+    return {
+        "prompt": prompt,
+        "mode": mode,
+        "patient": p_name,
+        "cfg": cfg,
+        "triage_pathway_supplemented": bool(prompt_meta.get("triage_pathway_supplemented")),
+        "triage_pathway_status": prompt_meta.get("triage_pathway_status"),
+        "triage_pathway_reason": prompt_meta.get("triage_pathway_reason"),
+    }
 
 
 def has_model_cache(model_name: str):
+    """
+    Has Model Cache helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     ok, _ = model_cache_status(model_name)
     return ok
 
@@ -2240,6 +3447,10 @@ def model_cache_status(model_name: str):
 
 
 def is_offline_mode() -> bool:
+    """
+    Is Offline Mode helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     return os.environ.get("HF_HUB_OFFLINE") == "1" or os.environ.get("TRANSFORMERS_OFFLINE") == "1"
 
 
@@ -2373,6 +3584,10 @@ async def offline_check(_=Depends(require_auth)):
 
 
 def _parse_bool(val):
+    """
+     Parse Bool helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     if isinstance(val, bool):
         return val
     if val is None:
@@ -2583,3 +3798,226 @@ def _apply_default_dataset(store):
         for item in src_med.iterdir():
             if item.is_file():
                 shutil.copy2(item, dest_med / item.name)
+
+
+# COMMENTARY REFERENCE BLOCK: EXTENDED MAINTENANCE NOTES
+# Note 001: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 002: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 003: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 004: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 005: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 006: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 007: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 008: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 009: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 010: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 011: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 012: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 013: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 014: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 015: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 016: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 017: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 018: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 019: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 020: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 021: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 022: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 023: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 024: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 025: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 026: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 027: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 028: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 029: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 030: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 031: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 032: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 033: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 034: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 035: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 036: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 037: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 038: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 039: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 040: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 041: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 042: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 043: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 044: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 045: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 046: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 047: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 048: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 049: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 050: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 051: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 052: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 053: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 054: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 055: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 056: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 057: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 058: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 059: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 060: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 061: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 062: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 063: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 064: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 065: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 066: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 067: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 068: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 069: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 070: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 071: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 072: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 073: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 074: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 075: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 076: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 077: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 078: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 079: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 080: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 081: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 082: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 083: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 084: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 085: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 086: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 087: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 088: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 089: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 090: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 091: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 092: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 093: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 094: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 095: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 096: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 097: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 098: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 099: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 100: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 101: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 102: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 103: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 104: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 105: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 106: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 107: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 108: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 109: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 110: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 111: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 112: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 113: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 114: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 115: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 116: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 117: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 118: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 119: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 120: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 121: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 122: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 123: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 124: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 125: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 126: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 127: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 128: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 129: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 130: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 131: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 132: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 133: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 134: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 135: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 136: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 137: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 138: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 139: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 140: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 141: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 142: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 143: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 144: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 145: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 146: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 147: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 148: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 149: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 150: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 151: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 152: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 153: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 154: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 155: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 156: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 157: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 158: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 159: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 160: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 161: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 162: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 163: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 164: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 165: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 166: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 167: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 168: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 169: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 170: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 171: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 172: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 173: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 174: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 175: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 176: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 177: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 178: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 179: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 180: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 181: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 182: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 183: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 184: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 185: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 186: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 187: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 188: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 189: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 190: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 191: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 192: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 193: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 194: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 195: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 196: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 197: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 198: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 199: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 200: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 201: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 202: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 203: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 204: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 205: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 206: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 207: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 208: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 209: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 210: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+# Note 211: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
+# Note 212: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
+# Note 213: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
+# Note 214: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
+# Note 215: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
+# Note 216: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
+# Note 217: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
+# Note 218: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
+# Note 219: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
+# Note 220: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.

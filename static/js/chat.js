@@ -1,3 +1,10 @@
+/* =============================================================================
+ * Author: Rick Escher
+ * Project: SilingMedAdvisor (SailingMedAdvisor)
+ * Context: Google HAI-DEF Framework
+ * Models: Google MedGemmas
+ * Program: Kaggle Impact Challenge
+ * ========================================================================== */
 /*
 File: static/js/chat.js
 Author notes: Front-end controller for MedGemma AI chat interface.
@@ -7,16 +14,15 @@ Key Responsibilities:
 - Dynamic prompt composition with patient context injection
 - Privacy/logging toggle (saves history or runs ephemeral)
 - Model selection and performance metrics tracking
-- Chat history reactivation (resume previous conversations)
+- Chat session restoration (resume previous consultations)
 - Triage-specific metadata fields (consciousness, breathing, pain, etc.)
-- Test case samples for triage validation
 - LocalStorage persistence of chat state across sessions
 - Real-time prompt preview with edit capability
 - Integration with crew/patient selection from crew.js
 
 Chat Modes:
 1. TRIAGE MODE: Medical emergency assessment with structured fields
-   - Requires: consciousness, breathing, pain, main problem, temp, circulation, cause
+   - Includes: patient condition snapshot + clinical triage pathway selectors
    - Optimized for rapid emergency decision support
    - Visual: Red theme (#ffecec background)
 
@@ -41,7 +47,6 @@ LocalStorage Keys:
 - sailingmed:lastChatMode: Current mode (triage/inquiry)
 - sailingmed:loggingOff: Privacy toggle state (1=off, 0=on)
 - sailingmed:promptPreviewOpen: Prompt editor expanded state
-- sailingmed:promptPreviewContent: Custom prompt text
 - sailingmed:chatState: Per-mode input field persistence
 - sailingmed:skipLastChat: Flag to skip restoring last chat on load
 
@@ -53,6 +58,11 @@ Integration Points:
 
 // HTML escaping utility (from utils.js or fallback)
 const escapeHtml = (window.Utils && window.Utils.escapeHtml) ? window.Utils.escapeHtml : (str) => str;
+const renderAssistantMarkdownChat = (window.Utils && window.Utils.renderAssistantMarkdown)
+    ? window.Utils.renderAssistantMarkdown
+    : (txt) => (window.marked && typeof window.marked.parse === 'function')
+        ? window.marked.parse(txt || '', { gfm: true, breaks: true })
+        : escapeHtml(txt || '').replace(/\n/g, '<br>');
 
 // ============================================================================
 // STATE MANAGEMENT
@@ -70,6 +80,37 @@ let isProcessing = false;
 // Current chat mode: 'triage' or 'inquiry'
 let currentMode = 'triage';
 
+// Active consultation session state, tracked independently by mode.
+function createEmptyModeSession() {
+    return {
+        sessionId: null,
+        sessionMeta: null,
+        transcript: [],
+        promptBase: '',
+    };
+}
+
+const modeSessions = {
+    triage: createEmptyModeSession(),
+    inquiry: createEmptyModeSession(),
+};
+
+/**
+ * normalizeMode: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function normalizeMode(mode) {
+    return mode === 'inquiry' ? 'inquiry' : 'triage';
+}
+
+/**
+ * getModeSession: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function getModeSession(mode = currentMode) {
+    return modeSessions[normalizeMode(mode)];
+}
+
 // LocalStorage persistence keys
 const LAST_PROMPT_KEY = 'sailingmed:lastPrompt';
 const LAST_PATIENT_KEY = 'sailingmed:lastPatient';
@@ -79,15 +120,54 @@ const PROMPT_PREVIEW_STATE_KEY = 'sailingmed:promptPreviewOpen';
 const PROMPT_PREVIEW_CONTENT_KEY = 'sailingmed:promptPreviewContent';
 const CHAT_STATE_KEY = 'sailingmed:chatState';
 const SKIP_LAST_CHAT_KEY = 'sailingmed:skipLastChat';
+const EMPTY_RESPONSE_PLACEHOLDER_TEXT = 'No consultation response yet. Expand "Start New Triage Consultation" above and submit to generate guidance.';
 
-// Triage test samples loaded from server
-let triageSamples = [];
+/**
+ * buildEmptyResponsePlaceholderHtml: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function buildEmptyResponsePlaceholderHtml() {
+    return `<div class="chat-empty-state">${escapeHtml(EMPTY_RESPONSE_PLACEHOLDER_TEXT)}</div>`;
+}
 
 // Model performance tracking: { model: {count, total_ms, avg_ms} }
 let chatMetrics = {};
 
-// Dynamic triage field options loaded from server
-let triageOptions = {};
+// Hierarchical triage decision tree loaded from server
+let triageDecisionTree = null;
+
+const TRIAGE_PATHWAY_FIELD_IDS = [
+    'triage-domain',
+    'triage-problem',
+    'triage-anatomy',
+    'triage-severity',
+    'triage-mechanism',
+];
+const TRIAGE_CONDITION_FIELD_IDS = [
+    'triage-consciousness',
+    'triage-breathing',
+    'triage-circulation',
+    'triage-overall-stability',
+];
+const TRIAGE_FIELD_IDS = [
+    ...TRIAGE_CONDITION_FIELD_IDS,
+    ...TRIAGE_PATHWAY_FIELD_IDS,
+];
+const TRIAGE_FIELD_WRAPPERS = {
+    'triage-domain': 'triage-domain-field',
+    'triage-problem': 'triage-problem-field',
+    'triage-anatomy': 'triage-anatomy-field',
+    'triage-severity': 'triage-severity-field',
+    'triage-mechanism': 'triage-mechanism-field',
+    'triage-consciousness': 'triage-consciousness-field',
+    'triage-breathing': 'triage-breathing-field',
+    'triage-circulation': 'triage-circulation-field',
+    'triage-overall-stability': 'triage-overall-stability-field',
+};
+
+let promptRefreshTimer = null;
+let blockerCountdownTimer = null;
+let triageSupplementDialogShownThisStart = false;
 
 /**
  * Load chat performance metrics from server.
@@ -126,155 +206,220 @@ async function loadChatMetrics() {
 }
 
 /**
- * Load triage test case samples from server.
- * 
- * Test samples allow quick testing of triage functionality with pre-defined
- * scenarios. Each sample includes situation text and all triage metadata fields.
- * 
- * Populates the "Select a Test Case" dropdown in triage mode for rapid testing.
- * 
- * Sample Structure:
- * ```javascript
- * {
- *   id: 1,
- *   situation: "Crew member fell from mast",
- *   chat_text: "John fell 15 feet, unconscious...",
- *   responsive: "Unconscious",
- *   breathing: "Labored breathing",
- *   pain: "Unable to assess",
- *   main_problem: "Head trauma",
- *   temp: "Normal",
- *   circulation: "Weak pulse",
- *   cause: "Trauma/Injury"
- * }
- * ```
- * 
- * @returns {Promise<Array>} Array of triage sample objects
+ * normalizeTriageNodeKey: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
  */
-async function loadTriageSamples() {
-    if (triageSamples.length) return triageSamples;
-    try {
-        const res = await fetch('/api/triage/samples', { cache: 'no-store', credentials: 'same-origin' });
-        if (!res.ok) throw new Error(`Status ${res.status}`);
-        triageSamples = await res.json();
-        const select = document.getElementById('triage-sample-select');
-        if (select && Array.isArray(triageSamples)) {
-            select.innerHTML = '<option value=\"\">Select a Test Case</option>';
-            triageSamples.forEach((s) => {
-                const opt = document.createElement('option');
-                opt.value = String(s.id);
-                opt.textContent = `${s.id}. ${s.situation}`;
-                select.appendChild(opt);
-            });
-        }
-    } catch (err) {
-        console.warn('Unable to load triage samples', err);
-    }
-    return triageSamples;
+function normalizeTriageNodeKey(value) {
+    return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
 
 /**
- * Load dynamic triage field options from server.
- * 
- * Allows customization of triage dropdown options via settings without
- * code changes. Populates all triage metadata select fields.
- * 
- * Fields Populated:
- * - triage-consciousness: Patient responsiveness level
- * - triage-breathing-status: Breathing quality/pattern
- * - triage-pain-level: Pain severity (1-10 or descriptive)
- * - triage-main-problem: Primary complaint category
- * - triage-temperature: Body temperature status
- * - triage-circulation: Blood circulation/pulse status
- * - triage-cause: Injury/illness cause category
- * 
- * Falls back to existing options if server load fails.
- * 
- * @returns {Promise<Object>} Map of field IDs to option arrays
+ * formatTriageOptionLabel: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
  */
-async function loadTriageOptions() {
-    if (Object.keys(triageOptions).length) return triageOptions;
-    try {
-        const res = await fetch('/api/triage/options', { credentials: 'same-origin', cache: 'no-store' });
-        if (!res.ok) throw new Error(`Status ${res.status}`);
-        triageOptions = await res.json();
-    } catch (err) {
-        console.warn('Unable to load triage options', err);
-        triageOptions = {};
+function formatTriageOptionLabel(value) {
+    return String(value || '').replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * lookupTriageNode: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function lookupTriageNode(options, selectedValue) {
+    if (!options || typeof options !== 'object') return { key: '', node: null };
+    const selected = String(selectedValue || '').trim();
+    if (!selected) return { key: '', node: null };
+    if (Object.prototype.hasOwnProperty.call(options, selected)) {
+        return { key: selected, node: options[selected] };
     }
-    const fields = [
-        'triage-consciousness',
-        'triage-breathing-status',
-        'triage-pain-level',
-        'triage-main-problem',
-        'triage-temperature',
-        'triage-circulation',
-        'triage-cause',
-    ];
-    fields.forEach((field) => {
-        const select = document.getElementById(field);
-        if (!select) return;
-        const opts = triageOptions[field] || Array.from(select.options).map((o) => o.value).filter(Boolean);
-        select.innerHTML = '<option value=\"\">Select...</option>';
-        opts.forEach((val) => {
-            const opt = document.createElement('option');
-            opt.value = val;
-            opt.textContent = val;
-            select.appendChild(opt);
-        });
+    const wanted = normalizeTriageNodeKey(selected);
+    if (!wanted) return { key: '', node: null };
+    const matchKey = Object.keys(options).find((key) => normalizeTriageNodeKey(key) === wanted);
+    if (!matchKey) return { key: '', node: null };
+    return { key: matchKey, node: options[matchKey] };
+}
+
+/**
+ * setTriageSelectOptions: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function setTriageSelectOptions(selectId, values, placeholder = 'Select...') {
+    const select = document.getElementById(selectId);
+    if (!select) return;
+    const safeValues = Array.isArray(values) ? values.filter((v) => String(v || '').trim()) : [];
+    const previous = select.value || '';
+    select.innerHTML = `<option value="">${placeholder}</option>`;
+    safeValues.forEach((val) => {
+        const opt = document.createElement('option');
+        opt.value = val;
+        opt.textContent = formatTriageOptionLabel(val);
+        select.appendChild(opt);
     });
-    return triageOptions;
+    if (safeValues.includes(previous)) {
+        select.value = previous;
+    } else {
+        select.value = '';
+    }
 }
 
 /**
- * Safely set a select element's value, creating option if needed.
- * 
- * Handles edge case where sample data contains custom values not in
- * the current option list. Creates a new option dynamically to avoid
- * silently failing to apply the sample data.
- * 
- * @param {HTMLSelectElement} selectEl - The select element to update
- * @param {string} value - The value to set
+ * setTriageFieldVisibility: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
  */
-function setSelectValue(selectEl, value) {
-    if (!selectEl) return;
-    const match = Array.from(selectEl.options).find(o => o.value === value || o.textContent === value);
-    if (match) {
-        selectEl.value = match.value;
-        return;
-    }
-    const opt = new Option(value, value, true, true);
-    selectEl.add(opt);
-    selectEl.value = value;
+function setTriageFieldVisibility(selectId, visible) {
+    const wrap = document.getElementById(TRIAGE_FIELD_WRAPPERS[selectId]);
+    if (!wrap) return;
+    wrap.style.display = visible ? '' : 'none';
 }
 
 /**
- * Apply a triage test sample to all form fields.
- * 
- * Fills both the main message textarea and all triage metadata dropdowns
- * with pre-defined test data. Useful for quick testing and demonstrations.
- * 
- * Triggers input events to ensure prompt preview updates reflect the changes.
- * 
- * @param {string|number} sampleId - ID of the sample to apply
+ * setTriageFieldEnabled: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
  */
-function applyTriageSample(sampleId) {
-    if (!sampleId) return;
-    const sample = triageSamples.find((s) => String(s.id) === String(sampleId));
-    if (!sample) return;
-    const msgTextarea = document.getElementById('msg');
-    if (msgTextarea) {
-        msgTextarea.value = sample.chat_text || '';
-        msgTextarea.dispatchEvent(new Event('input', { bubbles: true }));
+function setTriageFieldEnabled(selectId, enabled) {
+    const select = document.getElementById(selectId);
+    if (!select) return;
+    select.disabled = !enabled;
+}
+
+/**
+ * sortTriageLabels: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function sortTriageLabels(values) {
+    return (Array.isArray(values) ? values.slice() : []).sort((a, b) =>
+        String(a || '').localeCompare(String(b || ''), undefined, { sensitivity: 'base' })
+    );
+}
+
+/**
+ * syncTriageTreeSelections: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function syncTriageTreeSelections() {
+    const tree = triageDecisionTree?.tree;
+    if (!tree || typeof tree !== 'object') return;
+
+    const domainKeys = sortTriageLabels(Object.keys(tree));
+    setTriageSelectOptions('triage-domain', domainKeys);
+    setTriageFieldVisibility('triage-domain', true);
+    setTriageFieldEnabled('triage-domain', true);
+
+    const domainSelect = document.getElementById('triage-domain');
+    const domainMatch = lookupTriageNode(tree, domainSelect?.value || '');
+    if (domainSelect && !domainMatch.key) {
+        domainSelect.value = '';
     }
-    setSelectValue(document.getElementById('triage-consciousness'), sample.responsive || '');
-    setSelectValue(document.getElementById('triage-breathing-status'), sample.breathing || '');
-    setSelectValue(document.getElementById('triage-pain-level'), sample.pain || '');
-    setSelectValue(document.getElementById('triage-main-problem'), sample.main_problem || '');
-    setSelectValue(document.getElementById('triage-temperature'), sample.temp || '');
-    setSelectValue(document.getElementById('triage-circulation'), sample.circulation || '');
-    setSelectValue(document.getElementById('triage-cause'), sample.cause || '');
-    persistChatState();
+    const domainNode = (domainMatch.node && typeof domainMatch.node === 'object') ? domainMatch.node : {};
+
+    const problemMap = (domainNode && typeof domainNode.problems === 'object') ? domainNode.problems : {};
+    const problemKeys = sortTriageLabels(Object.keys(problemMap));
+    setTriageSelectOptions('triage-problem', problemKeys);
+    setTriageFieldVisibility('triage-problem', true);
+    setTriageFieldEnabled('triage-problem', !!domainMatch.key);
+
+    const problemSelect = document.getElementById('triage-problem');
+    const problemMatch = lookupTriageNode(problemMap, problemSelect?.value || '');
+    if (problemSelect && !problemMatch.key) {
+        problemSelect.value = '';
+    }
+    const problemNode = (problemMatch.node && typeof problemMatch.node === 'object') ? problemMatch.node : {};
+
+    const anatomyMap = (problemNode && typeof problemNode.anatomy_guardrails === 'object') ? problemNode.anatomy_guardrails : {};
+    const severityMap = (problemNode && typeof problemNode.severity_modifiers === 'object') ? problemNode.severity_modifiers : {};
+    const mechanismMap = (problemNode && typeof problemNode.mechanism_modifiers === 'object') ? problemNode.mechanism_modifiers : {};
+
+    const anatomyKeys = sortTriageLabels(Object.keys(anatomyMap));
+    const severityKeys = sortTriageLabels(Object.keys(severityMap));
+    const mechanismKeys = sortTriageLabels(Object.keys(mechanismMap));
+
+    setTriageSelectOptions('triage-anatomy', anatomyKeys, 'Select...');
+    setTriageSelectOptions('triage-severity', severityKeys, 'Select...');
+    setTriageSelectOptions('triage-mechanism', mechanismKeys, 'Select...');
+
+    const anatomyVisible = anatomyKeys.length > 0;
+    const severityVisible = severityKeys.length > 0;
+    const mechanismVisible = mechanismKeys.length > 0;
+    setTriageFieldVisibility('triage-anatomy', true);
+    setTriageFieldVisibility('triage-severity', true);
+    setTriageFieldVisibility('triage-mechanism', true);
+
+    const anatomySelect = document.getElementById('triage-anatomy');
+    const severitySelect = document.getElementById('triage-severity');
+    const mechanismSelect = document.getElementById('triage-mechanism');
+
+    if (!anatomyVisible && anatomySelect) anatomySelect.value = '';
+    if (!severityVisible && severitySelect) severitySelect.value = '';
+    if (!mechanismVisible && mechanismSelect) mechanismSelect.value = '';
+
+    const canChooseProblem = !!domainMatch.key;
+    if (!canChooseProblem && problemSelect) {
+        problemSelect.value = '';
+    }
+    setTriageFieldEnabled('triage-problem', canChooseProblem);
+
+    const canChooseAnatomy = !!domainMatch.key && !!problemMatch.key && anatomyVisible;
+    if (!canChooseAnatomy && anatomySelect) {
+        anatomySelect.value = '';
+    }
+    setTriageFieldEnabled('triage-anatomy', canChooseAnatomy);
+
+    const anatomySatisfied = !anatomyVisible || !!(anatomySelect?.value || '');
+    const canChooseSeverity = !!domainMatch.key && !!problemMatch.key && severityVisible && anatomySatisfied;
+    if (!canChooseSeverity && severitySelect) {
+        severitySelect.value = '';
+    }
+    setTriageFieldEnabled('triage-severity', canChooseSeverity);
+
+    const severitySatisfied = !severityVisible || !!(severitySelect?.value || '');
+    const canChooseMechanism = !!domainMatch.key && !!problemMatch.key && mechanismVisible && anatomySatisfied && severitySatisfied;
+    if (!canChooseMechanism && mechanismSelect) {
+        mechanismSelect.value = '';
+    }
+    setTriageFieldEnabled('triage-mechanism', canChooseMechanism);
+}
+
+async function loadTriageDecisionTree(force = false) {
+    if (triageDecisionTree && !force) return triageDecisionTree;
+    try {
+        const res = await fetch('/api/triage/tree', { credentials: 'same-origin', cache: 'no-store' });
+        if (!res.ok) throw new Error(`Status ${res.status}`);
+        const payload = await res.json();
+        if (!payload || typeof payload !== 'object' || typeof payload.tree !== 'object') {
+            throw new Error('Invalid tree payload');
+        }
+        triageDecisionTree = payload;
+    } catch (err) {
+        console.warn('[chat] unable to load triage tree', err);
+        triageDecisionTree = null;
+    }
+    syncTriageTreeSelections();
+    return triageDecisionTree;
+}
+
+/**
+ * schedulePromptRefresh: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function schedulePromptRefresh(delayMs = 140) {
+    if (promptRefreshTimer) {
+        clearTimeout(promptRefreshTimer);
+    }
+    promptRefreshTimer = setTimeout(() => {
+        promptRefreshTimer = null;
+        refreshPromptPreview();
+    }, delayMs);
+}
+
+/**
+ * clearBlockerCountdown: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function clearBlockerCountdown() {
+    if (blockerCountdownTimer) {
+        clearInterval(blockerCountdownTimer);
+        blockerCountdownTimer = null;
+    }
 }
 
 /**
@@ -284,7 +429,7 @@ function applyTriageSample(sampleId) {
  * 1. Binds click/keyboard handlers to toggle expansion
  * 2. Tracks manual edits to prevent auto-refresh overwrites
  * 3. Restores previous state (expanded/collapsed) from localStorage
- * 4. Pre-populates with cached or default prompt
+ * 4. Pre-populates with default prompt
  * 5. Binds input handlers to all fields for state persistence
  * 
  * The prompt editor allows users to:
@@ -296,7 +441,6 @@ function applyTriageSample(sampleId) {
  * Auto-fill Logic:
  * - If user has manually edited (dataset.autofilled = 'false'), preserve edits
  * - If no manual edits, auto-refresh when patient/mode/fields change
- * - Restore from localStorage on page load
  * 
  * Called on DOMContentLoaded to ensure all elements exist.
  */
@@ -322,7 +466,6 @@ function setupPromptInjectionPanel() {
         promptBox.dataset.inputBound = 'true';
         promptBox.addEventListener('input', () => {
             promptBox.dataset.autofilled = 'false';
-            try { localStorage.setItem(PROMPT_PREVIEW_CONTENT_KEY, promptBox.value || ''); } catch (err) { /* ignore */ }
         });
     }
     const msgTextarea = document.getElementById('msg');
@@ -330,6 +473,7 @@ function setupPromptInjectionPanel() {
         msgTextarea.dataset.stateBound = 'true';
         msgTextarea.addEventListener('input', () => {
             persistChatState();
+            schedulePromptRefresh();
         });
     }
 
@@ -341,16 +485,6 @@ function setupPromptInjectionPanel() {
         togglePromptPreviewArrow(promptHeader, shouldOpen);
     }
 
-    // Pre-populate with the default prompt from settings so users can edit immediately
-    if (promptBox) {
-        try {
-            const cached = localStorage.getItem(PROMPT_PREVIEW_CONTENT_KEY);
-            if (cached && promptBox.dataset.autofilled !== 'false') {
-                promptBox.value = cached;
-                promptBox.dataset.autofilled = 'false';
-            }
-        } catch (err) { /* ignore */ }
-    }
     if (promptBox && promptBox.dataset.autofilled !== 'false' && (!promptBox.value || !promptBox.value.trim())) {
         refreshPromptPreview();
     }
@@ -359,11 +493,13 @@ function setupPromptInjectionPanel() {
 if (document.readyState !== 'loading') {
     setupPromptInjectionPanel();
     bindTriageMetaRefresh();
+    loadTriageDecisionTree().catch(() => {});
     applyChatState(currentMode);
     loadChatMetrics().catch(() => {});
 } else {
     document.addEventListener('DOMContentLoaded', setupPromptInjectionPanel, { once: true });
     document.addEventListener('DOMContentLoaded', bindTriageMetaRefresh, { once: true });
+    document.addEventListener('DOMContentLoaded', () => loadTriageDecisionTree().catch(() => {}), { once: true });
     document.addEventListener('DOMContentLoaded', () => applyChatState(currentMode), { once: true });
     document.addEventListener('DOMContentLoaded', () => loadChatMetrics().catch(() => {}), { once: true });
 }
@@ -381,7 +517,354 @@ document.addEventListener('DOMContentLoaded', () => {
         btn.style.border = isPrivate ? '2px solid #fff' : '1px solid #222';
         btn.innerText = isPrivate ? 'LOGGING: OFF' : 'LOGGING: ON';
     }
+    const blocker = document.getElementById('chat-blocker');
+    if (blocker) blocker.classList.remove('active');
 });
+
+/**
+ * isSessionActive: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function isSessionActive(modeOverride = currentMode) {
+    const modeSession = getModeSession(modeOverride);
+    return !!modeSession.sessionId;
+}
+
+/**
+ * isAdvancedMode: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function isAdvancedMode() {
+    return document.body.classList.contains('mode-advanced') || document.body.classList.contains('mode-developer');
+}
+
+/**
+ * getStartPanelExpanded: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function getStartPanelExpanded() {
+    const body = document.getElementById('query-form-body');
+    if (!body) return false;
+    return body.style.display === '' || body.style.display === 'block';
+}
+
+/**
+ * setStartPanelExpanded: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function setStartPanelExpanded(expanded) {
+    const header = document.getElementById('query-form-header');
+    const body = document.getElementById('query-form-body');
+    if (!header || !body) return;
+    const nextExpanded = !!expanded;
+    body.style.display = nextExpanded ? 'block' : 'none';
+    const icon = header.querySelector('.detail-icon');
+    if (icon) icon.textContent = nextExpanded ? '▾' : '▸';
+    if (header.dataset?.prefKey) {
+        try { localStorage.setItem(header.dataset.prefKey, nextExpanded.toString()); } catch (err) { /* ignore */ }
+    }
+    updateStartPanelTitle();
+}
+
+/**
+ * updateStartPanelTitle: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function updateStartPanelTitle() {
+    const queryTitle = document.getElementById('query-form-title');
+    if (!queryTitle) return;
+    const expanded = getStartPanelExpanded();
+    const modeLabel = currentMode === 'triage' ? 'Triage' : 'Inquiry';
+    queryTitle.innerText = expanded
+        ? `Start New ${modeLabel} Consultation`
+        : `Expand to Start a New ${modeLabel} Consultation`;
+}
+
+/**
+ * resetStartForm: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function resetStartForm() {
+    const msg = document.getElementById('msg');
+    if (msg) msg.value = '';
+    const patientSelect = document.getElementById('p-select');
+    if (patientSelect) patientSelect.value = '';
+    const ids = [
+        ...TRIAGE_FIELD_IDS,
+    ];
+    ids.forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+    });
+    try { localStorage.removeItem(LAST_PATIENT_KEY); } catch (err) { /* ignore */ }
+    persistChatState();
+    resetPromptPreviewToDefault();
+}
+
+/**
+ * resetConsultationUiForDemo: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function resetConsultationUiForDemo() {
+    if (promptRefreshTimer) {
+        clearTimeout(promptRefreshTimer);
+        promptRefreshTimer = null;
+    }
+    clearBlockerCountdown();
+    isProcessing = false;
+    triageSupplementDialogShownThisStart = false;
+
+    Object.assign(modeSessions.triage, createEmptyModeSession());
+    Object.assign(modeSessions.inquiry, createEmptyModeSession());
+
+    currentMode = 'triage';
+
+    const display = document.getElementById('display');
+    if (display) display.innerHTML = '';
+    renderTranscript([]);
+
+    const chatInput = document.getElementById('chat-input');
+    if (chatInput) chatInput.value = '';
+    const msgInput = document.getElementById('msg');
+    if (msgInput) msgInput.value = '';
+
+    const patientSelect = document.getElementById('p-select');
+    if (patientSelect) patientSelect.value = '';
+
+    TRIAGE_FIELD_IDS.forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+    });
+    syncTriageTreeSelections();
+
+    const modelSelect = document.getElementById('model-select');
+    if (modelSelect && modelSelect.options.length) {
+        modelSelect.selectedIndex = 0;
+    }
+    const chatModelSelect = document.getElementById('chat-model-select');
+    if (chatModelSelect) {
+        if (modelSelect && modelSelect.value) {
+            chatModelSelect.value = modelSelect.value;
+        } else if (chatModelSelect.options.length) {
+            chatModelSelect.selectedIndex = 0;
+        }
+    }
+
+    const modeSelect = document.getElementById('mode-select');
+    if (modeSelect) modeSelect.value = 'triage';
+
+    const promptBox = document.getElementById('prompt-preview');
+    if (promptBox) {
+        promptBox.value = '';
+        promptBox.dataset.autofilled = 'true';
+    }
+    const promptHeader = document.getElementById('prompt-preview-header');
+    const promptContainer = document.getElementById('prompt-preview-container');
+    const promptInline = document.getElementById('prompt-refresh-inline');
+    if (promptHeader) {
+        promptHeader.setAttribute('aria-expanded', 'false');
+        const icon = promptHeader.querySelector('.detail-icon');
+        if (icon) icon.textContent = '▸';
+    }
+    if (promptContainer) promptContainer.style.display = 'none';
+    if (promptInline) promptInline.style.display = 'none';
+
+    isPrivate = false;
+
+    try {
+        localStorage.removeItem(LAST_PROMPT_KEY);
+        localStorage.removeItem(LAST_PATIENT_KEY);
+        localStorage.removeItem(LAST_CHAT_MODE_KEY);
+        localStorage.removeItem(CHAT_STATE_KEY);
+        localStorage.removeItem(PROMPT_PREVIEW_CONTENT_KEY);
+        localStorage.removeItem(PROMPT_PREVIEW_STATE_KEY);
+        localStorage.setItem(LOGGING_MODE_KEY, '0');
+        localStorage.setItem(SKIP_LAST_CHAT_KEY, '1');
+    } catch (err) { /* ignore */ }
+
+    setStartPanelExpanded(true);
+    updateUI();
+    syncStartPanelWithConsultationState();
+}
+
+/**
+ * hasPreviousConsultationResponseOnScreen: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function hasPreviousConsultationResponseOnScreen(modeOverride = currentMode) {
+    if (isSessionActive(modeOverride)) return true;
+    const display = document.getElementById('display');
+    if (!display) return false;
+    const hasStructuredContent = !!display.querySelector('.chat-message, .response-block');
+    if (!hasStructuredContent) return false;
+    const text = (display.textContent || '').trim();
+    if (!text) return false;
+    return text !== EMPTY_RESPONSE_PLACEHOLDER_TEXT;
+}
+
+/**
+ * restorePromptDefaultsForCurrentMode: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function restorePromptDefaultsForCurrentMode() {
+    const modeSession = getModeSession(currentMode);
+    modeSession.promptBase = '';
+    resetPromptPreviewToDefault();
+}
+
+/**
+ * clearConsultationForNewStart: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function clearConsultationForNewStart({ setSkipLastChat = true } = {}) {
+    if (isSessionActive(currentMode)) {
+        endActiveSession({ clearDisplay: true, mode: currentMode });
+    } else {
+        const modeSession = getModeSession(currentMode);
+        modeSession.sessionId = null;
+        modeSession.sessionMeta = null;
+        modeSession.transcript = [];
+        modeSession.promptBase = '';
+        syncCurrentModeTranscriptView();
+        const chatInput = document.getElementById('chat-input');
+        if (chatInput) chatInput.value = '';
+    }
+    resetStartForm();
+    if (setSkipLastChat) {
+        try { localStorage.setItem(SKIP_LAST_CHAT_KEY, '1'); } catch (err) { /* ignore */ }
+    }
+}
+
+/**
+ * handleStartPanelToggle: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function handleStartPanelToggle(expanded) {
+    const isExpanded = !!expanded;
+    if (!isExpanded) {
+        updateStartPanelTitle();
+        return;
+    }
+    const hadPrevious = hasPreviousConsultationResponseOnScreen(currentMode);
+    if (hadPrevious) {
+        clearConsultationForNewStart({ setSkipLastChat: true });
+        const msg = isPrivate
+            ? 'Previous consultation response was cleared from the screen. Logging is OFF, so it was not saved to the Consultation Log.'
+            : 'Previous consultation response was saved to the Consultation Log and cleared from the screen.';
+        alert(msg);
+    }
+    restorePromptDefaultsForCurrentMode();
+    updateStartPanelTitle();
+}
+
+/**
+ * syncStartPanelWithConsultationState: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function syncStartPanelWithConsultationState() {
+    const hasPrevious = hasPreviousConsultationResponseOnScreen(currentMode);
+    setStartPanelExpanded(!hasPrevious);
+}
+
+/**
+ * syncCurrentModeTranscriptView: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function syncCurrentModeTranscriptView() {
+    const modeSession = getModeSession(currentMode);
+    if (isSessionActive(currentMode)) {
+        renderTranscript(modeSession.transcript || []);
+    } else {
+        renderTranscript([]);
+    }
+}
+
+/**
+ * endActiveSession: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function endActiveSession({ clearDisplay = true, mode = currentMode } = {}) {
+    const modeSession = getModeSession(mode);
+    modeSession.sessionId = null;
+    modeSession.sessionMeta = null;
+    modeSession.transcript = [];
+    modeSession.promptBase = '';
+    if (clearDisplay && normalizeMode(mode) === normalizeMode(currentMode)) {
+        syncCurrentModeTranscriptView();
+    }
+    if (normalizeMode(mode) === normalizeMode(currentMode)) {
+        const chatInput = document.getElementById('chat-input');
+        if (chatInput) chatInput.value = '';
+    }
+    updateUI();
+}
+
+/**
+ * capturePromptBaseForSession: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function capturePromptBaseForSession() {
+    if (!isAdvancedMode()) return '';
+    const promptBox = document.getElementById('prompt-preview');
+    if (!promptBox) return '';
+    if (promptBox.dataset.autofilled === 'false' && promptBox.value.trim()) {
+        return cleanPromptWhitespace(promptBox.value);
+    }
+    return '';
+}
+
+/**
+ * setStartFormDisabled: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function setStartFormDisabled(disabled) {
+    const ids = [
+        'p-select',
+        'model-select',
+        'msg',
+        ...TRIAGE_FIELD_IDS,
+        'priv-btn',
+        'prompt-preview',
+    ];
+    ids.forEach((id) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        if (disabled) {
+            el.setAttribute('disabled', 'disabled');
+        } else {
+            el.removeAttribute('disabled');
+        }
+    });
+}
+
+/**
+ * syncModelSelects: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function syncModelSelects(sourceId) {
+    const primary = document.getElementById('model-select');
+    const chatModel = document.getElementById('chat-model-select');
+    if (!primary || !chatModel) return;
+    if (sourceId === 'model-select') {
+        chatModel.value = primary.value;
+    } else if (sourceId === 'chat-model-select') {
+        primary.value = chatModel.value;
+    } else if (!chatModel.value && primary.value) {
+        chatModel.value = primary.value;
+    } else if (!primary.value && chatModel.value) {
+        primary.value = chatModel.value;
+    }
+}
+
+/**
+ * updateChatComposerVisibility: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function updateChatComposerVisibility() {
+    const composer = document.getElementById('chat-composer');
+    if (!composer) return;
+    composer.style.display = isSessionActive() ? 'flex' : 'none';
+}
 
 /**
  * Update all UI elements to reflect current mode and privacy state.
@@ -411,7 +894,6 @@ function updateUI() {
     const modeSelect = document.getElementById('mode-select');
     const privBtn = document.getElementById('priv-btn');
     const msg = document.getElementById('msg');
-    const queryTitle = document.getElementById('query-form-title');
     const runBtn = document.getElementById('run-btn');
     const modelSelect = document.getElementById('model-select');
     const promptRefreshInline = document.getElementById('prompt-refresh-inline');
@@ -435,14 +917,21 @@ function updateUI() {
     if (modeSelect) {
         modeSelect.value = currentMode;
         modeSelect.style.background = currentMode === 'triage' ? '#ffecec' : '#e6f5ec';
+        modeSelect.disabled = false;
+    }
+    const triageConditionContainer = document.getElementById('triage-condition-container');
+    if (triageConditionContainer) {
+        triageConditionContainer.style.display = currentMode === 'triage' ? 'block' : 'none';
+    }
+    const triagePathwayContainer = document.getElementById('triage-pathway-container');
+    if (triagePathwayContainer) {
+        triagePathwayContainer.style.display = currentMode === 'triage' ? 'block' : 'none';
     }
     const triageMeta = document.getElementById('triage-meta-selects');
     if (triageMeta) {
         triageMeta.style.display = currentMode === 'triage' ? 'grid' : 'none';
     }
-    if (queryTitle) {
-        queryTitle.innerText = currentMode === 'triage' ? 'Triage Consultation Entry' : 'Inquiry Consultation Entry';
-    }
+    updateStartPanelTitle();
 
     if (privBtn) {
         privBtn.classList.toggle('is-private', isPrivate);
@@ -455,7 +944,9 @@ function updateUI() {
         msg.placeholder = currentMode === 'triage' ? "What is the situation?" : "Ask your question";
     }
     if (runBtn) {
-        runBtn.innerText = currentMode === 'triage' ? 'SUBMIT FOR TRIAGE' : 'SUBMIT INQUIRY';
+        runBtn.innerText = currentMode === 'triage'
+            ? 'Submit to Start Triage Consultation'
+            : 'Submit to Start Inquiry Consultation';
         runBtn.style.background = currentMode === 'triage' ? 'var(--triage)' : 'var(--inquiry)';
     }
     if (promptRefreshInline) {
@@ -473,6 +964,9 @@ function updateUI() {
     if (modelSelect && !modelSelect.value) {
         modelSelect.value = 'google/medgemma-1.5-4b-it';
     }
+    syncModelSelects();
+    updateChatComposerVisibility();
+    setStartFormDisabled(isSessionActive());
 }
 
 /**
@@ -485,31 +979,28 @@ function updateUI() {
  * Uses dataset flag (tmodeBound) to prevent duplicate binding.
  * 
  * Fields Monitored:
- * - Consciousness level
- * - Breathing status
- * - Pain level
- * - Main problem
- * - Temperature
+ * - Consciousness
+ * - Breathing
  * - Circulation
- * - Cause of injury/illness
+ * - Overall Stability
+ * - Domain
+ * - Problem / Injury Type
+ * - Anatomy
+ * - Severity / Complication
+ * - Mechanism / Cause
  */
 function bindTriageMetaRefresh() {
-    const ids = [
-        'triage-consciousness',
-        'triage-breathing-status',
-        'triage-pain-level',
-        'triage-main-problem',
-        'triage-temperature',
-        'triage-circulation',
-        'triage-cause',
-    ];
+    const ids = [...TRIAGE_FIELD_IDS];
     ids.forEach((id) => {
         const el = document.getElementById(id);
         if (el && !el.dataset.tmodeBound) {
             el.dataset.tmodeBound = 'true';
             el.addEventListener('change', () => {
+                if (TRIAGE_PATHWAY_FIELD_IDS.includes(id)) {
+                    syncTriageTreeSelections();
+                }
                 persistChatState();
-                refreshPromptPreview();
+                schedulePromptRefresh(0);
             });
         }
     });
@@ -527,8 +1018,9 @@ function bindTriageMetaRefresh() {
  *   triage: {
  *     msg: "Patient fell from mast...",
  *     fields: {
- *       "triage-consciousness": "Unconscious",
- *       "triage-breathing-status": "Labored",
+ *       "triage-domain": "Trauma",
+ *       "triage-problem": "Fracture",
+ *       "triage-anatomy": "Leg / Foot",
  *       // ... other triage fields
  *     }
  *   },
@@ -568,18 +1060,17 @@ function persistChatState(modeOverride) {
     const mode = modeOverride || currentMode;
     const state = loadChatState();
     const msgEl = document.getElementById('msg');
+    const patientEl = document.getElementById('p-select');
+    const modelEl = document.getElementById('model-select');
+    const chatModelEl = document.getElementById('chat-model-select');
     state[mode] = state[mode] || {};
     state[mode].msg = msgEl ? msgEl.value : '';
+    state[mode].patient = patientEl ? patientEl.value : '';
+    state[mode].start_model = modelEl ? modelEl.value : '';
+    state[mode].chat_model = chatModelEl ? chatModelEl.value : '';
+    state[mode].is_private = !!isPrivate;
     if (mode === 'triage') {
-        const ids = [
-            'triage-consciousness',
-            'triage-breathing-status',
-            'triage-pain-level',
-            'triage-main-problem',
-            'triage-temperature',
-            'triage-circulation',
-            'triage-cause',
-        ];
+        const ids = [...TRIAGE_FIELD_IDS];
         state[mode].fields = {};
         ids.forEach((id) => {
             const el = document.getElementById(id);
@@ -606,15 +1097,63 @@ function applyChatState(modeOverride) {
     const state = loadChatState();
     const modeState = state[mode] || {};
     const msgEl = document.getElementById('msg');
-    if (msgEl && typeof modeState.msg === 'string') {
-        msgEl.value = modeState.msg;
+    if (msgEl) {
+        msgEl.value = typeof modeState.msg === 'string' ? modeState.msg : '';
     }
-    if (mode === 'triage' && modeState.fields && typeof modeState.fields === 'object') {
-        Object.entries(modeState.fields).forEach(([id, val]) => {
+    if (mode === 'triage') {
+        TRIAGE_FIELD_IDS.forEach((id) => {
             const el = document.getElementById(id);
-            if (el) el.value = val;
+            if (el) el.value = '';
         });
+        syncTriageTreeSelections();
+        if (modeState.fields && typeof modeState.fields === 'object') {
+            const orderedIds = [
+                'triage-consciousness',
+                'triage-breathing',
+                'triage-circulation',
+                'triage-overall-stability',
+                'triage-domain',
+                'triage-problem',
+                'triage-anatomy',
+                'triage-severity',
+                'triage-mechanism',
+            ];
+            orderedIds.forEach((id) => {
+                const el = document.getElementById(id);
+                if (el && typeof modeState.fields[id] === 'string') {
+                    el.value = modeState.fields[id];
+                    syncTriageTreeSelections();
+                }
+            });
+        }
     }
+
+    const patientEl = document.getElementById('p-select');
+    if (patientEl && typeof modeState.patient === 'string') {
+        const hasValue = Array.from(patientEl.options).some((o) => o.value === modeState.patient);
+        if (hasValue) {
+            patientEl.value = modeState.patient;
+        }
+    }
+    const modelEl = document.getElementById('model-select');
+    if (modelEl && typeof modeState.start_model === 'string') {
+        const hasValue = Array.from(modelEl.options).some((o) => o.value === modeState.start_model);
+        if (hasValue) {
+            modelEl.value = modeState.start_model;
+        }
+    }
+    const chatModelEl = document.getElementById('chat-model-select');
+    if (chatModelEl && typeof modeState.chat_model === 'string') {
+        const hasValue = Array.from(chatModelEl.options).some((o) => o.value === modeState.chat_model);
+        if (hasValue) {
+            chatModelEl.value = modeState.chat_model;
+        }
+    }
+    if (typeof modeState.is_private === 'boolean') {
+        isPrivate = modeState.is_private;
+        try { localStorage.setItem(LOGGING_MODE_KEY, isPrivate ? '1' : '0'); } catch (err) { /* ignore */ }
+    }
+    syncModelSelects();
 }
 
 /**
@@ -637,12 +1176,17 @@ function applyChatState(modeOverride) {
  * State persisted to localStorage for consistency across sessions.
  */
 function togglePriv() {
+    if (isSessionActive()) {
+        alert('Logging is locked for the current session. Start a new consultation to change it.');
+        return;
+    }
     isPrivate = !isPrivate;
     const btn = document.getElementById('priv-btn');
     btn.style.background = isPrivate ? 'var(--triage)' : '#333';
     btn.style.border = isPrivate ? '2px solid #fff' : '1px solid #222';
     btn.innerText = isPrivate ? 'LOGGING: OFF' : 'LOGGING: ON';
     try { localStorage.setItem(LOGGING_MODE_KEY, isPrivate ? '1' : '0'); } catch (err) { /* ignore */ }
+    persistChatState(currentMode);
     updateUI();
 }
 
@@ -685,116 +1229,278 @@ function togglePriv() {
  * @param {string} promptText - Optional override for message text
  * @param {boolean} force28b - Skip 28B confirmation (after user confirms)
  */
-async function runChat(promptText = null, force28b = false) {
-    const txt = promptText || document.getElementById('msg').value;
-    if(!txt || isProcessing) return;
-    
+function buildSessionMetaPayload({ initialQuery, patientId, patientName, mode }) {
+    const modeKey = normalizeMode(mode || currentMode);
+    const modeSession = getModeSession(modeKey);
+    const base = modeSession.sessionMeta || {};
+    const startedAt = base.started_at || base.date || new Date().toISOString().slice(0, 16).replace('T', ' ');
+    const meta = {
+        session_id: modeSession.sessionId || base.session_id,
+        mode: modeKey || base.mode || currentMode,
+        patient_id: patientId ?? base.patient_id,
+        patient: patientName ?? base.patient,
+        initial_query: base.initial_query || initialQuery,
+        started_at: startedAt,
+    };
+    if (modeSession.promptBase) meta.prompt_base = modeSession.promptBase;
+    if (base.triage_path && typeof base.triage_path === 'object') {
+        meta.triage_path = base.triage_path;
+    } else if (modeKey === 'triage') {
+        const path = {
+            domain: document.getElementById('triage-domain')?.value || '',
+            problem: document.getElementById('triage-problem')?.value || '',
+            anatomy: document.getElementById('triage-anatomy')?.value || '',
+            severity: document.getElementById('triage-severity')?.value || '',
+            mechanism: document.getElementById('triage-mechanism')?.value || '',
+        };
+        const filtered = Object.fromEntries(Object.entries(path).filter(([, v]) => !!String(v || '').trim()));
+        if (Object.keys(filtered).length) {
+            meta.triage_path = filtered;
+        }
+    }
+    return meta;
+}
+
+async function submitChatMessage({ message, isStart, force28b = false }) {
+    const txt = (message || '').trim();
+    if (!txt || isProcessing) return;
     isProcessing = true;
+    if (typeof window.flushSettingsBeforeChat === 'function') {
+        try {
+            const synced = await window.flushSettingsBeforeChat();
+            if (!synced) {
+                alert('Unable to save Settings values before consultation. Please review Settings and try again.');
+                isProcessing = false;
+                return;
+            }
+        } catch (err) {
+            alert(`Unable to sync Settings before consultation: ${err.message || err}`);
+            isProcessing = false;
+            return;
+        }
+    }
     lastPrompt = txt;
-    const startTime = Date.now();
+    const mode = normalizeMode(isStart ? currentMode : currentMode);
+    const modeSession = getModeSession(mode);
+    const modelSelectId = isStart ? 'model-select' : 'chat-model-select';
+    const modelName = document.getElementById(modelSelectId)?.value || 'google/medgemma-1.5-4b-it';
     const blocker = document.getElementById('chat-blocker');
-    const modelName = document.getElementById('model-select').value || 'google/medgemma-1.5-4b-it';
     if (blocker) {
+        clearBlockerCountdown();
         const title = blocker.querySelector('h3');
-        if (title) title.textContent = currentMode === 'triage' ? 'Processing Triage Chat…' : 'Processing Inquiry Chat…';
+        if (title) title.textContent = mode === 'triage' ? 'Processing Triage Chat…' : 'Processing Inquiry Chat…';
         const modelLine = document.getElementById('chat-model-line');
         const etaLine = document.getElementById('chat-eta-line');
         if (modelLine) modelLine.textContent = `Model: ${modelName}`;
         const avgMs = (chatMetrics[modelName]?.avg_ms) || (modelName.toLowerCase().includes('27b') ? 60000 : 20000);
-        const eta = new Date(Date.now() + avgMs);
-        if (etaLine) etaLine.textContent = `Expected finish: ~${eta.toLocaleTimeString()} (avg ${Math.round(avgMs/1000)}s)`;
-        blocker.style.display = 'flex';
+        if (etaLine) {
+            const expectedSeconds = Math.max(1, Math.round(avgMs / 1000));
+            let remainingSeconds = expectedSeconds;
+            etaLine.textContent = `Expected duration: ~${expectedSeconds}s • Remaining: ${remainingSeconds}s`;
+            blockerCountdownTimer = setInterval(() => {
+                remainingSeconds = Math.max(0, remainingSeconds - 1);
+                const remainingLabel = remainingSeconds > 0 ? `${remainingSeconds}s` : '<1s';
+                etaLine.textContent = `Expected duration: ~${expectedSeconds}s • Remaining: ${remainingLabel}`;
+            }, 1000);
+        }
+        blocker.classList.add('active');
     }
-    
-        // Show loading indicator
-        const display = document.getElementById('display');
-        const loadingDiv = document.createElement('div');
-        loadingDiv.id = 'loading-indicator';
-        loadingDiv.className = 'loading-indicator';
-        loadingDiv.innerHTML = '🔄 Analyzing...';
+
+    const display = document.getElementById('display');
+    const loadingDiv = document.createElement('div');
+    loadingDiv.id = 'loading-indicator';
+    loadingDiv.className = 'loading-indicator';
+    loadingDiv.innerHTML = '🔄 Analyzing...';
+    if (display) {
         display.appendChild(loadingDiv);
-    display.scrollTop = display.scrollHeight;
-    
-    // Disable buttons
+        display.scrollTop = display.scrollHeight;
+    }
+
     document.getElementById('run-btn').disabled = true;
-        
+    const sendBtn = document.getElementById('chat-send-btn');
+    if (sendBtn) sendBtn.disabled = true;
+
     try {
         const fd = new FormData();
         fd.append('message', txt);
-        const patientVal = document.getElementById('p-select').value;
-        try { localStorage.setItem(LAST_PATIENT_KEY, patientVal); } catch (err) { /* ignore */ }
-        fd.append('patient', patientVal);
-        fd.append('mode', currentMode);
-        fd.append('private', isPrivate);
+        const patientVal = document.getElementById('p-select')?.value || '';
+        const patientName = document.getElementById('p-select')?.selectedOptions?.[0]?.textContent || '';
+        if (isStart) {
+            try { localStorage.setItem(LAST_PATIENT_KEY, patientVal); } catch (err) { /* ignore */ }
+            fd.append('patient', patientVal);
+        } else {
+            fd.append('patient', modeSession.sessionMeta?.patient_id || modeSession.sessionMeta?.patient || patientVal || '');
+        }
+        fd.append('mode', mode);
+        fd.append('private', isPrivate ? 'true' : 'false');
         fd.append('model_choice', modelName);
         fd.append('force_28b', force28b ? 'true' : 'false');
-        if (currentMode === 'triage') {
+        if (isStart && mode === 'triage') {
             fd.append('triage_consciousness', document.getElementById('triage-consciousness')?.value || '');
-            fd.append('triage_breathing_status', document.getElementById('triage-breathing-status')?.value || '');
-            fd.append('triage_pain_level', document.getElementById('triage-pain-level')?.value || '');
-            fd.append('triage_main_problem', document.getElementById('triage-main-problem')?.value || '');
-            fd.append('triage_temperature', document.getElementById('triage-temperature')?.value || '');
+            fd.append('triage_breathing', document.getElementById('triage-breathing')?.value || '');
             fd.append('triage_circulation', document.getElementById('triage-circulation')?.value || '');
-            fd.append('triage_cause', document.getElementById('triage-cause')?.value || '');
+            fd.append('triage_overall_stability', document.getElementById('triage-overall-stability')?.value || '');
+            fd.append('triage_domain', document.getElementById('triage-domain')?.value || '');
+            fd.append('triage_problem', document.getElementById('triage-problem')?.value || '');
+            fd.append('triage_anatomy', document.getElementById('triage-anatomy')?.value || '');
+            fd.append('triage_severity', document.getElementById('triage-severity')?.value || '');
+            fd.append('triage_mechanism', document.getElementById('triage-mechanism')?.value || '');
         }
-        const promptTextarea = document.getElementById('prompt-preview');
-        const manualOverride = promptTextarea && promptTextarea.dataset.autofilled === 'false';
-        if (manualOverride) {
-            const baseText = (promptTextarea.value || '').trim();
-            const composedPrompt = baseText ? buildOverridePrompt(baseText, txt, currentMode) : txt;
-            if (composedPrompt) {
-                fd.append('override_prompt', composedPrompt);
+        fd.append('session_action', isStart ? 'start' : 'message');
+        if (!isStart && modeSession.sessionId) {
+            fd.append('session_id', modeSession.sessionId);
+        }
+        if (!isStart && modeSession.transcript.length) {
+            fd.append('transcript', JSON.stringify(modeSession.transcript));
+        }
+        const metaPayload = buildSessionMetaPayload({
+            initialQuery: txt,
+            patientId: patientVal,
+            patientName,
+            mode,
+        });
+        fd.append('session_meta', JSON.stringify(metaPayload));
+
+        const triageMeta = isStart && mode === 'triage' ? collectTriageMeta() : null;
+        if (modeSession.promptBase) {
+            const overridePrompt = buildSessionOverridePrompt(modeSession.promptBase, modeSession.transcript, txt, triageMeta, mode);
+            if (overridePrompt) {
+                fd.append('override_prompt', overridePrompt);
             }
         }
-        
-        const res = await (await fetch('/api/chat', {method:'POST', body:fd, credentials:'same-origin'})).json();
-        const endTime = Date.now();
-        
-        // Remove loading indicator
+
+        const response = await fetch('/api/chat', { method: 'POST', body: fd, credentials: 'same-origin' });
+        const res = await response.json();
+
+        if (
+            isStart
+            && mode === 'triage'
+            && res?.triage_pathway_supplemented
+            && !triageSupplementDialogShownThisStart
+        ) {
+            alert(
+                'Clinical Triage Pathway is not fully defined for the selected choices. '
+                + 'Your selection(s) will be supplemented with the general triage prompt from Settings.'
+            );
+            triageSupplementDialogShownThisStart = true;
+        }
+
         loadingDiv.remove();
-        
-        if (res.confirm_28b) {
+
+        if (res.gpu_busy) {
+            if (display && normalizeMode(currentMode) === mode) {
+                display.innerHTML += `<div class="response-block" style="border-left-color:#b26a00;"><b>GPU BUSY:</b> ${res.error || 'GPU is currently busy. Please retry in a moment.'}</div>`;
+                display.scrollTop = display.scrollHeight;
+            }
+            if (res.error) {
+                alert(res.error);
+            }
+        } else if (res.confirm_28b) {
             const ok = confirm(res.error || 'The 28B model on CPU can take an hour or more. Continue?');
             if (ok) {
                 isProcessing = false;
                 document.getElementById('run-btn').disabled = false;
-                                return runChat(promptText || txt, true);
+                if (sendBtn) sendBtn.disabled = false;
+                return submitChatMessage({ message: txt, isStart, force28b: true });
             }
-            display.innerHTML += `<div class="response-block" style="border-left-color:var(--red);"><b>INFO:</b> ${res.error || 'Cancelled running 28B model.'}</div>`;
+            if (display && normalizeMode(currentMode) === mode) {
+                display.innerHTML += `<div class="response-block" style="border-left-color:var(--red);"><b>INFO:</b> ${res.error || 'Cancelled running 28B model.'}</div>`;
+            }
         } else if (res.error) {
-            display.innerHTML += `<div class="response-block" style="border-left-color:var(--red);"><b>ERROR:</b> ${res.error}</div>`;
+            if (display && normalizeMode(currentMode) === mode) {
+                display.innerHTML += `<div class="response-block" style="border-left-color:var(--red);"><b>ERROR:</b> ${res.error}</div>`;
+            }
         } else {
-            const durationMs = endTime - startTime;
-            const parsed = (window.marked && typeof window.marked.parse === 'function')
-                ? window.marked.parse(res.response || '')
-                : (res.response || '').replace(/\n/g, '<br>');
-            const meta = res.model ? `[${res.model}${res.duration_ms ? ` · ${Math.round(res.duration_ms)} ms` : ` · ${Math.round(durationMs)} ms`}]` : '';
-            display.innerHTML += `<div class="response-block"><b>${meta}</b><br>${parsed}</div>`;
+            modeSession.sessionId = res.session_id || modeSession.sessionId;
+            modeSession.transcript = Array.isArray(res.transcript) ? res.transcript : modeSession.transcript;
+            modeSession.sessionMeta = {
+                ...(metaPayload || {}),
+                ...(res.session_meta || {}),
+                session_id: modeSession.sessionId,
+                mode,
+            };
             if (res.model && res.model_metrics) {
                 chatMetrics[res.model] = res.model_metrics;
+            } else if (res.model && Number.isFinite(Number(res.duration_ms))) {
+                const durMs = Number(res.duration_ms);
+                const current = chatMetrics[res.model] || { count: 0, total_ms: 0, avg_ms: 0 };
+                const nextCount = (current.count || 0) + 1;
+                const nextTotal = (current.total_ms || 0) + durMs;
+                chatMetrics[res.model] = {
+                    count: nextCount,
+                    total_ms: nextTotal,
+                    avg_ms: nextTotal / nextCount,
+                };
+            }
+            if (normalizeMode(currentMode) === mode) {
+                renderTranscript(modeSession.transcript, { scrollTo: 'latest-assistant-start' });
+            }
+            updateUI();
+            if (normalizeMode(currentMode) === mode) {
+                syncStartPanelWithConsultationState();
             }
             try { localStorage.setItem(SKIP_LAST_CHAT_KEY, '0'); } catch (err) { /* ignore */ }
             if (typeof loadData === 'function') {
-                loadData(); // refresh crew history/logs after a chat completes
+                loadData();
             }
+            const chatInput = document.getElementById('chat-input');
+            if (chatInput) chatInput.value = '';
         }
-        
-        // Keep user-entered text so they can tweak/re-run
+
         persistChatState();
         try {
             localStorage.setItem(LAST_PROMPT_KEY, lastPrompt);
             localStorage.setItem(LAST_CHAT_MODE_KEY, currentMode);
-        } catch (err) { /* ignore storage issues */ }
-        if (display.lastElementChild) display.lastElementChild.scrollIntoView({behavior:'smooth'});
+        } catch (err) { /* ignore */ }
     } catch (error) {
         loadingDiv.remove();
-        display.innerHTML += `<div class="response-block" style="border-left-color:var(--red);"><b>ERROR:</b> ${error.message}</div>`;
+        if (display && normalizeMode(currentMode) === mode) {
+            display.innerHTML += `<div class="response-block" style="border-left-color:var(--red);"><b>ERROR:</b> ${error.message}</div>`;
+        }
     } finally {
         isProcessing = false;
+        if (isStart) {
+            triageSupplementDialogShownThisStart = false;
+        }
+        clearBlockerCountdown();
         const blocker = document.getElementById('chat-blocker');
-        if (blocker) blocker.style.display = 'none';
+        if (blocker) blocker.classList.remove('active');
         document.getElementById('run-btn').disabled = false;
-            }
+        if (sendBtn) sendBtn.disabled = false;
+    }
+}
+
+async function runChat(promptText = null, force28b = false) {
+    if (isSessionActive(currentMode)) {
+        alert('Expand "Start New Consultation" to begin a new consultation.');
+        return;
+    }
+    if (promptRefreshTimer) {
+        clearTimeout(promptRefreshTimer);
+        promptRefreshTimer = null;
+    }
+    triageSupplementDialogShownThisStart = false;
+    const previewData = await refreshPromptPreview();
+    if (currentMode === 'triage' && previewData?.triage_pathway_supplemented) {
+        alert(
+            'Clinical Triage Pathway is not fully defined for the selected choices. '
+            + 'Your selection(s) will be supplemented with the general triage prompt from Settings.'
+        );
+        triageSupplementDialogShownThisStart = true;
+    }
+    const modeSession = getModeSession(currentMode);
+    modeSession.promptBase = capturePromptBaseForSession();
+    await submitChatMessage({ message: promptText || document.getElementById('msg').value, isStart: true, force28b });
+}
+
+async function sendChatMessage() {
+    if (!isSessionActive(currentMode)) {
+        alert('Start a new consultation first.');
+        return;
+    }
+    const input = document.getElementById('chat-input');
+    const message = input ? input.value : '';
+    await submitChatMessage({ message, isStart: false });
 }
 
 
@@ -802,8 +1508,13 @@ async function runChat(promptText = null, force28b = false) {
 document.addEventListener('DOMContentLoaded', () => {
     console.log('[DEBUG] chat.js DOMContentLoaded');
     setupPromptInjectionPanel();
-    loadTriageOptions();
-    loadTriageSamples();
+    loadTriageDecisionTree()
+        .then(() => {
+            applyChatState(currentMode);
+            persistChatState(currentMode);
+            schedulePromptRefresh(0);
+        })
+        .catch(() => {});
     const msgTextarea = document.getElementById('msg');
     if (msgTextarea) {
         msgTextarea.addEventListener('keydown', (e) => {
@@ -813,9 +1524,41 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     }
+    const chatInput = document.getElementById('chat-input');
+    if (chatInput) {
+        chatInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendChatMessage();
+            }
+        });
+    }
+    const modelSelect = document.getElementById('model-select');
+    if (modelSelect && !modelSelect.dataset.bound) {
+        modelSelect.dataset.bound = 'true';
+        modelSelect.addEventListener('change', () => {
+            syncModelSelects('model-select');
+            persistChatState(currentMode);
+        });
+    }
+    const chatModelSelect = document.getElementById('chat-model-select');
+    if (chatModelSelect && !chatModelSelect.dataset.bound) {
+        chatModelSelect.dataset.bound = 'true';
+        chatModelSelect.addEventListener('change', () => {
+            syncModelSelects('chat-model-select');
+            persistChatState(currentMode);
+        });
+    }
+    const patientSelect = document.getElementById('p-select');
+    if (patientSelect && !patientSelect.dataset.chatModeBound) {
+        patientSelect.dataset.chatModeBound = 'true';
+        patientSelect.addEventListener('change', () => {
+            persistChatState(currentMode);
+            schedulePromptRefresh(0);
+        });
+    }
     const savedPrompt = localStorage.getItem(LAST_PROMPT_KEY);
     if (savedPrompt) lastPrompt = savedPrompt;
-    loadTriageSamples().catch(() => {});
 
     // Debug current patient select state
     const pSelect = document.getElementById('p-select');
@@ -827,30 +1570,14 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 /**
- * Reactivate a previous chat conversation from history.
+ * Restore a previous consultation session from history.
  * 
- * Reactivation Process:
+ * Restoration Process:
  * 1. Loads full history from server
  * 2. Finds target entry by ID
- * 3. Collects all entries for same patient + mode (thread)
- * 4. Switches to correct mode
- * 5. Navigates to chat tab
- * 6. Restores patient selection
- * 7. Displays previous exchange in chat area
- * 8. Prefills message box with last query
- * 9. Injects full transcript into prompt editor for context
- * 
- * Thread Grouping:
- * Finds all history entries matching:
- * - Same patient (by ID or name)
- * - Same mode (triage or inquiry)
- * Sorted chronologically to provide conversation context.
- * 
- * Transcript Injection:
- * Full conversation history injected into prompt so AI model can:
- * - Reference previous discussion
- * - Maintain context across sessions
- * - Provide consistent follow-up advice
+ * 3. Switches to correct mode
+ * 4. Restores patient selection
+ * 5. Loads full transcript into the chat UI
  * 
  * Use Cases:
  * - Continue interrupted consultations
@@ -858,116 +1585,393 @@ document.addEventListener('DOMContentLoaded', () => {
  * - Review and expand on previous diagnosis
  * - Share context with relief crew
  * 
- * UI Updates:
- * - Auto-expands prompt editor to show transcript
- * - Focuses message field for immediate input
- * - Shows "Reactivated Chat" header in display
- * - Restores patient selection and mode
- * 
- * @param {string} historyId - Unique ID of history entry to reactivate
+ * @param {string} historyId - Unique ID of history entry to restore
  */
-async function reactivateChat(historyId) {
+async function restoreChatSession(historyId) {
+    if (!historyId) return;
+    if (isProcessing) return;
+    try {
+        const entry = await loadHistoryEntryById(historyId);
+        if (!entry) {
+            alert('Unable to restore: history entry not found.');
+            return;
+        }
+        const restored = restoreHistoryEntrySession(entry, {
+            focusInput: true,
+            forceLoggingOn: true,
+            notifyRestored: true,
+            navigateToChat: true,
+            allowTakeover: true,
+        });
+        if (!restored) return;
+    } catch (err) {
+        alert(`Unable to restore session: ${err.message}`);
+    }
+}
+
+/**
+ * historyEntryTimestamp: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function historyEntryTimestamp(entry) {
+    if (!entry || typeof entry !== 'object') return Number.NEGATIVE_INFINITY;
+    const raw = entry.updated_at || entry.date || '';
+    if (!raw) return Number.NEGATIVE_INFINITY;
+    const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+    const ts = Date.parse(normalized);
+    return Number.isNaN(ts) ? Number.NEGATIVE_INFINITY : ts;
+}
+
+/**
+ * findMostRecentHistoryEntry: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function findMostRecentHistoryEntry(entries) {
+    if (!Array.isArray(entries) || !entries.length) return null;
+    const sorted = entries.slice().sort((a, b) => historyEntryTimestamp(b) - historyEntryTimestamp(a));
+    return sorted[0] || null;
+}
+
+async function loadHistoryEntryById(historyId) {
+    if (!historyId) return null;
+    const res = await fetch('/api/data/history', { credentials: 'same-origin' });
+    if (!res.ok) throw new Error(`History load failed (${res.status})`);
+    const data = await res.json();
+    if (!Array.isArray(data)) return null;
+    return data.find((h) => h.id === historyId) || null;
+}
+
+async function restoreChatAsReturned(historyId) {
+    if (!historyId) return;
+    if (isProcessing) return;
+    try {
+        const entry = await loadHistoryEntryById(historyId);
+        if (!entry) {
+            alert('Unable to restore: history entry not found.');
+            return;
+        }
+        const restored = restoreHistoryEntrySession(entry, {
+            focusInput: false,
+            forceLoggingOn: true,
+            notifyRestored: false,
+            navigateToChat: true,
+            allowTakeover: true,
+            confirmTakeover: false,
+            scrollTo: 'latest-assistant-start',
+            forceStartPanelExpanded: true,
+        });
+        if (!restored) return;
+    } catch (err) {
+        alert(`Unable to restore session: ${err.message}`);
+    }
+}
+
+async function restoreLatestChatAsReturned() {
+    if (isProcessing) return;
     try {
         const res = await fetch('/api/data/history', { credentials: 'same-origin' });
         if (!res.ok) throw new Error(`History load failed (${res.status})`);
         const data = await res.json();
-        const entry = Array.isArray(data) ? data.find((h) => h.id === historyId) : null;
-        if (!entry) {
-            alert('Unable to reactivate: history entry not found.');
+        const latest = findMostRecentHistoryEntry(Array.isArray(data) ? data : []);
+        if (!latest || !latest.id) {
+            alert('No consultation log entries found to restore.');
             return;
         }
-        const sameThread = Array.isArray(data)
-            ? data
-                .filter((h) => {
-                    const samePatient = (entry.patient_id && h.patient_id === entry.patient_id) || (entry.patient && h.patient === entry.patient);
-                    const sameMode = (entry.mode || 'triage') === (h.mode || 'triage');
-                    return samePatient && sameMode;
-                })
-                .sort((a, b) => (a.date || '').localeCompare(b.date || ''))
-            : [entry];
-        const transcript = sameThread
-            .map((h, idx) => {
-                const title = h.date ? `Entry ${idx + 1} — ${h.date}` : `Entry ${idx + 1}`;
-                return `${title}\nQUERY:\n${h.query || ''}\nRESPONSE:\n${h.response || ''}`;
-            })
-            .join('\n\n----\n\n');
-        // Set mode based on stored value if present
-        if (entry.mode) {
-            setMode(entry.mode);
-        }
-        // Navigate to the correct tab
-        const triageTabBtn = document.querySelector('.tab.tab-triage');
-        if (triageTabBtn) {
-            triageTabBtn.click();
-        }
-        // Attempt to restore patient selection using patient_id first, then name
-        const patientSelect = document.getElementById('p-select');
-        if (patientSelect) {
-            let targetVal = entry.patient_id || '';
-            if (targetVal && Array.from(patientSelect.options).some((o) => o.value === targetVal)) {
-                patientSelect.value = targetVal;
-            } else if (entry.patient) {
-                const matchByName = Array.from(patientSelect.options).find((o) => o.textContent === entry.patient);
-                if (matchByName) patientSelect.value = matchByName.value;
-            }
-            try { localStorage.setItem(LAST_PATIENT_KEY, patientSelect.value || ''); } catch (err) { /* ignore */ }
-        }
-        // Restore chat area with previous exchange
-        const display = document.getElementById('display');
-        if (display) {
-            const queryHtml = escapeHtml(entry.query || '').replace(/\n/g, '<br>');
-            const respHtml = escapeHtml(entry.response || '').replace(/\n/g, '<br>');
-            display.innerHTML = `
-                <div class="response-block" style="border-left-color:var(--inquiry);">
-                    <b>Reactivated Chat</b><br>
-                    <div style="margin-top:6px;"><strong>Query:</strong><br>${queryHtml}</div>
-                    <div style="margin-top:6px;"><strong>Response:</strong><br>${respHtml}</div>
-                </div>`;
-            display.scrollTop = display.scrollHeight;
-        }
-        // Prefill message box with last query so user can continue
-        const msgTextarea = document.getElementById('msg');
-        if (msgTextarea) {
-            msgTextarea.value = entry.query || '';
-            msgTextarea.focus();
-        }
-        // Restore prompt (injected) view if available
-        const promptBox = document.getElementById('prompt-preview');
-        const promptHeader = document.getElementById('prompt-preview-header');
-        if (promptBox && entry.prompt) {
-            promptBox.value = entry.prompt;
-            promptBox.dataset.autofilled = 'false';
-            try { localStorage.setItem(PROMPT_PREVIEW_CONTENT_KEY, entry.prompt); } catch (err) { /* ignore */ }
-            if (promptHeader) {
-                togglePromptPreviewArrow(promptHeader, true);
-            }
-        }
-        // Inject transcript into prompt preview so the model sees prior context
-        if (promptBox) {
-            const transcriptBlock = transcript ? `Previous chat transcript:\n${transcript}` : '';
-            const combined = [transcriptBlock, promptBox.value].filter(Boolean).join('\n\n');
-            promptBox.value = combined;
-            promptBox.dataset.autofilled = 'false';
-            try { localStorage.setItem(PROMPT_PREVIEW_CONTENT_KEY, combined); } catch (err) { /* ignore */ }
-            if (promptHeader) {
-                togglePromptPreviewArrow(promptHeader, true);
-            }
-            const container = document.getElementById('prompt-preview-container');
-            if (container) container.style.display = 'block';
-        }
-        // Persist last prompt locally
-        if (entry.query) {
-            lastPrompt = entry.query;
-            try { localStorage.setItem(LAST_PROMPT_KEY, entry.query); } catch (err) { /* ignore */ }
-        }
-        alert('Chat restored. You can continue the conversation.');
+        await restoreChatAsReturned(latest.id);
     } catch (err) {
-        alert(`Unable to reactivate chat: ${err.message}`);
+        alert(`Unable to restore latest session: ${err.message}`);
     }
 }
 
-window.reactivateChat = reactivateChat;
-window.applyTriageSample = applyTriageSample;
+async function activateChatTabForRestore() {
+    const chatTabBtn = document.querySelector(`.tab[onclick*="'Chat'"]`);
+    if (chatTabBtn && typeof window.showTab === 'function') {
+        try {
+            const maybePromise = window.showTab(chatTabBtn, 'Chat');
+            if (maybePromise && typeof maybePromise.then === 'function') {
+                await maybePromise;
+            }
+            return;
+        } catch (err) {
+            console.warn('Failed to activate Chat tab during restore', err);
+        }
+    }
+    if (chatTabBtn && typeof chatTabBtn.click === 'function') {
+        chatTabBtn.click();
+        return;
+    }
+    const chatPanel = document.getElementById('Chat');
+    if (chatPanel) {
+        document.querySelectorAll('.content').forEach((c) => { c.style.display = 'none'; });
+        chatPanel.style.display = 'flex';
+    }
+    if (typeof updateUI === 'function') {
+        updateUI();
+    }
+}
+
+/**
+ * showRestoredSessionNotice: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function showRestoredSessionNotice(mode, patientName) {
+    const display = document.getElementById('display');
+    if (!display) return;
+    const existing = document.getElementById('chat-restore-notice');
+    if (existing) existing.remove();
+    const modeLabel = mode === 'inquiry' ? 'Inquiry' : 'Triage';
+    const patientPart = patientName ? ` for ${patientName}` : '';
+    const notice = document.createElement('div');
+    notice.id = 'chat-restore-notice';
+    notice.style.cssText = 'margin:0 0 10px 0; padding:8px 10px; border-left:4px solid #2e7d32; background:#eef8ef; color:#13361a; font-size:13px; font-weight:600;';
+    notice.textContent = `Session restored: ${modeLabel}${patientPart}. Continue below.`;
+    display.prepend(notice);
+}
+
+/**
+ * setSelectValueByValueOrLabel: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function setSelectValueByValueOrLabel(select, rawValue) {
+    if (!select) return;
+    const wanted = String(rawValue || '').trim();
+    if (!wanted) {
+        select.value = '';
+        return;
+    }
+    const options = Array.from(select.options || []);
+    const exact = options.find((o) => String(o.value || '').trim() === wanted);
+    if (exact) {
+        select.value = exact.value;
+        return;
+    }
+    const wantedLower = wanted.toLowerCase();
+    const byLabel = options.find((o) => String(o.textContent || '').trim().toLowerCase() === wantedLower);
+    select.value = byLabel ? byLabel.value : '';
+}
+
+/**
+ * restoreStartFormFromHistory: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function restoreStartFormFromHistory(entry, messages, meta, mode) {
+    const msgEl = document.getElementById('msg');
+    const firstUserMsg = Array.isArray(messages)
+        ? messages.find((m) => (m?.role || m?.type || '').toString().toLowerCase() === 'user')
+        : null;
+    const initialQuery = (meta?.initial_query || entry?.query || firstUserMsg?.message || '').toString();
+    if (msgEl) msgEl.value = initialQuery;
+
+    if (mode !== 'triage') {
+        persistChatState(mode);
+        return;
+    }
+
+    const pathFromMeta = (meta?.triage_path && typeof meta.triage_path === 'object') ? meta.triage_path : {};
+    const conditionFromMeta = (meta?.triage_condition && typeof meta.triage_condition === 'object') ? meta.triage_condition : {};
+    const triageMeta = (firstUserMsg?.triage_meta && typeof firstUserMsg.triage_meta === 'object')
+        ? firstUserMsg.triage_meta
+        : ((firstUserMsg?.triageMeta && typeof firstUserMsg.triageMeta === 'object') ? firstUserMsg.triageMeta : {});
+
+    const path = {
+        domain: pathFromMeta.domain || triageMeta['Domain'] || '',
+        problem: pathFromMeta.problem || triageMeta['Problem / Injury Type'] || '',
+        anatomy: pathFromMeta.anatomy || triageMeta['Anatomy'] || '',
+        severity: pathFromMeta.severity || triageMeta['Severity / Complication'] || '',
+        mechanism: pathFromMeta.mechanism || triageMeta['Mechanism / Cause'] || '',
+    };
+    const condition = {
+        consciousness: conditionFromMeta.consciousness || triageMeta['Consciousness'] || '',
+        breathing: conditionFromMeta.breathing || triageMeta['Breathing'] || '',
+        circulation: conditionFromMeta.circulation || triageMeta['Circulation'] || '',
+        overall_stability: conditionFromMeta.overall_stability || triageMeta['Overall Stability'] || '',
+    };
+
+    setSelectValueByValueOrLabel(document.getElementById('triage-consciousness'), condition.consciousness);
+    setSelectValueByValueOrLabel(document.getElementById('triage-breathing'), condition.breathing);
+    setSelectValueByValueOrLabel(document.getElementById('triage-circulation'), condition.circulation);
+    setSelectValueByValueOrLabel(document.getElementById('triage-overall-stability'), condition.overall_stability);
+
+    const domainEl = document.getElementById('triage-domain');
+    const problemEl = document.getElementById('triage-problem');
+    const anatomyEl = document.getElementById('triage-anatomy');
+    const severityEl = document.getElementById('triage-severity');
+    const mechanismEl = document.getElementById('triage-mechanism');
+
+    setSelectValueByValueOrLabel(domainEl, path.domain);
+    if (typeof syncTriageTreeSelections === 'function') syncTriageTreeSelections();
+
+    setSelectValueByValueOrLabel(problemEl, path.problem);
+    if (typeof syncTriageTreeSelections === 'function') syncTriageTreeSelections();
+
+    setSelectValueByValueOrLabel(anatomyEl, path.anatomy);
+    if (typeof syncTriageTreeSelections === 'function') syncTriageTreeSelections();
+
+    setSelectValueByValueOrLabel(severityEl, path.severity);
+    if (typeof syncTriageTreeSelections === 'function') syncTriageTreeSelections();
+
+    setSelectValueByValueOrLabel(mechanismEl, path.mechanism);
+    if (typeof syncTriageTreeSelections === 'function') syncTriageTreeSelections();
+
+    persistChatState(mode);
+    schedulePromptRefresh(0);
+}
+
+/**
+ * restoreHistoryEntrySession: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function restoreHistoryEntrySession(entry, options = {}) {
+    if (!entry || typeof entry !== 'object') return false;
+    if (isProcessing) return false;
+    const opts = {
+        focusInput: false,
+        forceLoggingOn: true,
+        notifyRestored: false,
+        allowTakeover: false,
+        confirmTakeover: true,
+        scrollTo: 'bottom',
+        forceStartPanelExpanded: false,
+        navigateToChat: false,
+        ...options,
+    };
+    const parsed = parseHistoryTranscriptEntry(entry);
+    const messages = parsed.messages || [];
+    if (!messages.length) return false;
+    const meta = parsed.meta || {};
+    const mode = (entry.mode || meta.mode || 'triage') === 'inquiry' ? 'inquiry' : 'triage';
+
+    if (isSessionActive(mode)) {
+        if (!opts.allowTakeover) return false;
+        if (opts.confirmTakeover) {
+            const ok = confirm('Restore a previous session? This will end the current session and clear the transcript (it remains in the Consultation Log if logging is on).');
+            if (!ok) return false;
+        }
+        endActiveSession({ clearDisplay: normalizeMode(currentMode) === mode, mode });
+        if (normalizeMode(currentMode) === mode) {
+            resetStartForm();
+        }
+    }
+
+    if (normalizeMode(currentMode) !== mode) {
+        setMode(mode);
+    } else {
+        updateUI();
+    }
+
+    const patientSelect = document.getElementById('p-select');
+    if (patientSelect) {
+        let targetVal = entry.patient_id || meta.patient_id || '';
+        if (targetVal && Array.from(patientSelect.options).some((o) => o.value === targetVal)) {
+            patientSelect.value = targetVal;
+        } else if (entry.patient || meta.patient) {
+            const name = entry.patient || meta.patient;
+            const matchByName = Array.from(patientSelect.options).find((o) => o.textContent === name);
+            if (matchByName) patientSelect.value = matchByName.value;
+        }
+        try { localStorage.setItem(LAST_PATIENT_KEY, patientSelect.value || ''); } catch (err) { /* ignore */ }
+    }
+
+    const modeSession = getModeSession(mode);
+    modeSession.promptBase = meta.prompt_base || meta.promptBase || '';
+    modeSession.sessionId = entry.id || meta.session_id || `session-${Date.now()}`;
+    modeSession.transcript = messages;
+    modeSession.sessionMeta = {
+        session_id: modeSession.sessionId,
+        mode,
+        patient_id: entry.patient_id || meta.patient_id || '',
+        patient: entry.patient || meta.patient || '',
+        initial_query: entry.query || meta.initial_query || '',
+        started_at: entry.date || meta.started_at || meta.date || '',
+        prompt_base: modeSession.promptBase || undefined,
+    };
+
+    restoreStartFormFromHistory(entry, messages, meta, mode);
+
+    const promptBox = document.getElementById('prompt-preview');
+    if (promptBox && modeSession.promptBase) {
+        promptBox.value = modeSession.promptBase;
+        promptBox.dataset.autofilled = 'false';
+    }
+    const chatModelSelect = document.getElementById('chat-model-select');
+    if (chatModelSelect && entry.model) {
+        chatModelSelect.value = entry.model;
+        syncModelSelects('chat-model-select');
+    }
+    if (opts.forceLoggingOn) {
+        isPrivate = false;
+        try { localStorage.setItem(LOGGING_MODE_KEY, '0'); } catch (err) { /* ignore */ }
+    }
+
+    renderTranscript(modeSession.transcript, { scrollTo: opts.scrollTo || 'bottom' });
+    updateUI();
+    syncStartPanelWithConsultationState();
+    const applyForcedStartPanelExpansion = () => {
+        if (
+            opts.forceStartPanelExpanded
+            && normalizeMode(mode) === 'triage'
+            && normalizeMode(currentMode) === 'triage'
+        ) {
+            setStartPanelExpanded(true);
+        }
+    };
+    if (!opts.navigateToChat) {
+        applyForcedStartPanelExpansion();
+    }
+    persistChatState(mode);
+    try { localStorage.setItem(SKIP_LAST_CHAT_KEY, '0'); } catch (err) { /* ignore */ }
+
+    if (opts.navigateToChat) {
+        const navPromise = activateChatTabForRestore();
+        if (navPromise && typeof navPromise.finally === 'function') {
+            navPromise.finally(() => {
+                applyForcedStartPanelExpansion();
+            });
+        } else {
+            applyForcedStartPanelExpansion();
+        }
+    }
+    if (opts.focusInput) {
+        const chatInput = document.getElementById('chat-input');
+        if (chatInput) {
+            chatInput.focus();
+        }
+    }
+    if (opts.notifyRestored) {
+        showRestoredSessionNotice(mode, modeSession.sessionMeta?.patient || '');
+    }
+    return true;
+}
+
+window.restoreChatSession = restoreChatSession;
+window.restoreChatAsReturned = restoreChatAsReturned;
+window.restoreLatestChatAsReturned = restoreLatestChatAsReturned;
+window.restoreHistoryEntrySession = restoreHistoryEntrySession;
+window.sendChatMessage = sendChatMessage;
+window.updateStartPanelTitle = updateStartPanelTitle;
+window.handleStartPanelToggle = handleStartPanelToggle;
+window.syncStartPanelWithConsultationState = syncStartPanelWithConsultationState;
+window.renderTranscript = renderTranscript;
+window.resetConsultationUiForDemo = resetConsultationUiForDemo;
+
+/**
+ * syncPromptPreviewForMode: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function syncPromptPreviewForMode(mode) {
+    const promptBox = document.getElementById('prompt-preview');
+    if (!promptBox) return;
+    const modeSession = getModeSession(mode);
+    if (modeSession.promptBase) {
+        promptBox.value = modeSession.promptBase;
+        promptBox.dataset.autofilled = 'false';
+        return;
+    }
+    // No mode-specific override: reset to auto mode and rebuild prompt from settings.
+    promptBox.value = '';
+    promptBox.dataset.autofilled = 'true';
+    refreshPromptPreview(true);
+}
 
 /**
  * Switch chat mode (triage ↔ inquiry) with state preservation.
@@ -998,16 +2002,15 @@ function setMode(mode) {
     // Save current mode state before switching
     persistChatState(currentMode);
     currentMode = target;
-    updateUI();
     const select = document.getElementById('mode-select');
     if (select) {
         select.value = target;
     }
     applyChatState(target);
-    const container = document.getElementById('prompt-preview-container');
-    if (container && container.style.display === 'block') {
-        refreshPromptPreview();
-    }
+    syncPromptPreviewForMode(target);
+    updateUI();
+    syncCurrentModeTranscriptView();
+    syncStartPanelWithConsultationState();
 }
 
 /**
@@ -1111,6 +2114,197 @@ function buildOverridePrompt(basePrompt, userMessage, mode = currentMode) {
 }
 
 /**
+ * collectTriageMeta: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function collectTriageMeta() {
+    const meta = {};
+    const add = (label, value) => {
+        if (value) meta[label] = value;
+    };
+    add('Consciousness', formatTriageOptionLabel(document.getElementById('triage-consciousness')?.value || ''));
+    add('Breathing', formatTriageOptionLabel(document.getElementById('triage-breathing')?.value || ''));
+    add('Circulation', formatTriageOptionLabel(document.getElementById('triage-circulation')?.value || ''));
+    add('Overall Stability', formatTriageOptionLabel(document.getElementById('triage-overall-stability')?.value || ''));
+    add('Domain', formatTriageOptionLabel(document.getElementById('triage-domain')?.value || ''));
+    add('Problem / Injury Type', formatTriageOptionLabel(document.getElementById('triage-problem')?.value || ''));
+    add('Anatomy', formatTriageOptionLabel(document.getElementById('triage-anatomy')?.value || ''));
+    add('Mechanism / Cause', formatTriageOptionLabel(document.getElementById('triage-severity')?.value || ''));
+    add('Severity / Complication', formatTriageOptionLabel(document.getElementById('triage-mechanism')?.value || ''));
+    return meta;
+}
+
+/**
+ * formatTriageMetaBlock: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function formatTriageMetaBlock(meta) {
+    if (!meta || typeof meta !== 'object') return '';
+    const lines = Object.entries(meta)
+        .filter(([, v]) => v)
+        .map(([k, v]) => `- ${k}: ${v}`);
+    if (!lines.length) return '';
+    return `TRIAGE INTAKE:\n${lines.join('\n')}`;
+}
+
+/**
+ * buildConversationText: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function buildConversationText(messages, nextMessage, nextMeta) {
+    const lines = [];
+    (messages || []).forEach((msg) => {
+        if (!msg || typeof msg !== 'object') return;
+        const role = (msg.role || msg.type || '').toString().trim().toLowerCase();
+        const content = msg.message || msg.content || '';
+        if (!content) return;
+        const label = role === 'user' ? 'USER' : 'ASSISTANT';
+        if (role === 'user') {
+            const metaBlock = formatTriageMetaBlock(msg.triage_meta || msg.triageMeta);
+            if (metaBlock) lines.push(metaBlock);
+        }
+        lines.push(`${label}: ${content}`);
+    });
+    if (nextMessage) {
+        const nextBlock = formatTriageMetaBlock(nextMeta);
+        if (nextBlock) lines.push(nextBlock);
+        lines.push(`USER: ${nextMessage}`);
+    }
+    return lines.join('\n').trim();
+}
+
+/**
+ * buildSessionOverridePrompt: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function buildSessionOverridePrompt(basePrompt, transcript, nextMessage, nextMeta, mode = currentMode) {
+    const base = cleanPromptWhitespace(basePrompt);
+    if (!base) return '';
+    const convo = buildConversationText(transcript, nextMessage, nextMeta);
+    if (!convo) return base;
+    const label = mode === 'inquiry' ? 'QUERY:' : 'SITUATION:';
+    const lines = base.split('\n');
+    const idx = lines.findIndex(line => line.trimStart().startsWith(label));
+    if (idx !== -1) {
+        const labelPos = lines[idx].indexOf(label);
+        const prefix = labelPos >= 0 ? lines[idx].slice(0, labelPos) : '';
+        lines[idx] = `${prefix}${label}\n${convo}`;
+        return lines.join('\n');
+    }
+    return `${base}\n\n${label}\n${convo}`;
+}
+
+/**
+ * parseHistoryTranscriptEntry: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function parseHistoryTranscriptEntry(entry) {
+    if (!entry) return { messages: [], meta: {} };
+    const raw = entry.response;
+    if (raw && typeof raw === 'object' && Array.isArray(raw.messages)) {
+        return { messages: raw.messages, meta: raw.meta || {} };
+    }
+    if (typeof raw === 'string' && raw.trim().startsWith('{')) {
+        try {
+            const parsed = JSON.parse(raw);
+            if (parsed && Array.isArray(parsed.messages)) {
+                return { messages: parsed.messages, meta: parsed.meta || {} };
+            }
+        } catch (err) { /* ignore */ }
+    }
+    const messages = [];
+    if (entry.query) {
+        messages.push({ role: 'user', message: entry.query, ts: entry.date || '' });
+    }
+    if (entry.response) {
+        messages.push({ role: 'assistant', message: entry.response, ts: entry.date || '' });
+    }
+    return { messages, meta: {} };
+}
+
+/**
+ * scrollToLatestAssistantResponseStart: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function scrollToLatestAssistantResponseStart(display) {
+    if (!display) return;
+    const assistantBubbles = display.querySelectorAll('.chat-message.assistant');
+    const latest = assistantBubbles.length ? assistantBubbles[assistantBubbles.length - 1] : null;
+    if (!latest) {
+        display.scrollTop = display.scrollHeight;
+        return;
+    }
+    const top = Math.max(0, latest.offsetTop - display.offsetTop);
+    display.scrollTop = top;
+}
+
+/**
+ * renderTranscript: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function renderTranscript(messages, options = {}) {
+    const display = document.getElementById('display');
+    if (!display) return;
+    const shouldAppend = options.append === true;
+    const scrollMode = options.scrollTo || 'bottom';
+    if (!shouldAppend) {
+        display.innerHTML = '';
+    }
+    if (!messages || !messages.length) {
+        if (!shouldAppend) {
+            display.innerHTML = buildEmptyResponsePlaceholderHtml();
+        }
+        return;
+    }
+    messages.forEach((msg) => {
+        if (!msg || typeof msg !== 'object') return;
+        const role = (msg.role || msg.type || '').toString().trim().toLowerCase();
+        const isUser = role === 'user';
+        const bubble = document.createElement('div');
+        bubble.className = `chat-message ${isUser ? 'user' : 'assistant'}`;
+        const metaLine = document.createElement('div');
+        metaLine.className = 'chat-meta';
+        const metaParts = [];
+        metaParts.push(isUser ? 'You' : 'MedGemma');
+        if (isUser && msg.ts) {
+            const ts = new Date(msg.ts);
+            if (!Number.isNaN(ts.getTime())) {
+                metaParts.push(ts.toLocaleString());
+            }
+        }
+        metaLine.textContent = metaParts.join(' • ');
+        bubble.appendChild(metaLine);
+        const content = document.createElement('div');
+        content.className = 'chat-content';
+        const raw = msg.message || msg.content || '';
+        if (!isUser) {
+            content.innerHTML = renderAssistantMarkdownChat(raw || '');
+        } else {
+            content.innerHTML = escapeHtml(raw || '').replace(/\n/g, '<br>');
+        }
+        bubble.appendChild(content);
+        const triageMeta = msg.triage_meta || msg.triageMeta;
+        if (isUser && triageMeta && typeof triageMeta === 'object') {
+            const metaEntries = Object.entries(triageMeta).filter(([, v]) => v);
+            if (metaEntries.length) {
+                const triageDiv = document.createElement('div');
+                triageDiv.className = 'chat-triage-meta';
+                triageDiv.innerHTML = `<strong>Triage Intake</strong><br>${metaEntries
+                    .map(([k, v]) => `${escapeHtml(k)}: ${escapeHtml(v)}`)
+                    .join('<br>')}`;
+                bubble.appendChild(triageDiv);
+            }
+        }
+        display.appendChild(bubble);
+    });
+    if (scrollMode === 'latest-assistant-start') {
+        scrollToLatestAssistantResponseStart(display);
+    } else {
+        display.scrollTop = display.scrollHeight;
+    }
+}
+
+/**
  * Refresh prompt preview by fetching generated prompt from server.
  * 
  * Auto-Refresh Logic:
@@ -1141,20 +2335,22 @@ async function refreshPromptPreview(force = false) {
     const msgVal = document.getElementById('msg')?.value || '';
     const patientVal = document.getElementById('p-select')?.value || '';
     const promptBox = document.getElementById('prompt-preview');
-    if (!promptBox) return;
-    if (!force && promptBox.dataset.autofilled === 'false') return;
+    if (!promptBox) return null;
+    if (!force && promptBox.dataset.autofilled === 'false') return null;
     const fd = new FormData();
     fd.append('message', msgVal);
     fd.append('patient', patientVal);
     fd.append('mode', currentMode);
     if (currentMode === 'triage') {
         fd.append('triage_consciousness', document.getElementById('triage-consciousness')?.value || '');
-        fd.append('triage_breathing_status', document.getElementById('triage-breathing-status')?.value || '');
-        fd.append('triage_pain_level', document.getElementById('triage-pain-level')?.value || '');
-        fd.append('triage_main_problem', document.getElementById('triage-main-problem')?.value || '');
-        fd.append('triage_temperature', document.getElementById('triage-temperature')?.value || '');
+        fd.append('triage_breathing', document.getElementById('triage-breathing')?.value || '');
         fd.append('triage_circulation', document.getElementById('triage-circulation')?.value || '');
-        fd.append('triage_cause', document.getElementById('triage-cause')?.value || '');
+        fd.append('triage_overall_stability', document.getElementById('triage-overall-stability')?.value || '');
+        fd.append('triage_domain', document.getElementById('triage-domain')?.value || '');
+        fd.append('triage_problem', document.getElementById('triage-problem')?.value || '');
+        fd.append('triage_anatomy', document.getElementById('triage-anatomy')?.value || '');
+        fd.append('triage_severity', document.getElementById('triage-severity')?.value || '');
+        fd.append('triage_mechanism', document.getElementById('triage-mechanism')?.value || '');
     }
     try {
         const res = await fetch('/api/chat/preview', { method: 'POST', body: fd, credentials: 'same-origin' });
@@ -1162,11 +2358,25 @@ async function refreshPromptPreview(force = false) {
         const data = await res.json();
         promptBox.value = stripUserMessageFromPrompt(data.prompt || '', msgVal, data.mode || currentMode);
         promptBox.dataset.autofilled = 'true';
-        try { localStorage.setItem(PROMPT_PREVIEW_CONTENT_KEY, promptBox.value); } catch (err) { /* ignore */ }
+        return data;
     } catch (err) {
         promptBox.value = `Unable to build prompt: ${err.message}`;
         promptBox.dataset.autofilled = 'true';
+        return null;
     }
+}
+
+/**
+ * resetPromptPreviewToDefault: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function resetPromptPreviewToDefault() {
+    const promptBox = document.getElementById('prompt-preview');
+    if (!promptBox) return;
+    promptBox.value = '';
+    promptBox.dataset.autofilled = 'true';
+    try { localStorage.removeItem(PROMPT_PREVIEW_CONTENT_KEY); } catch (err) { /* ignore */ }
+    refreshPromptPreview(true);
 }
 
 /**
@@ -1217,34 +2427,179 @@ function togglePromptPreviewArrow(btn, forceOpen = null) {
     }
 }
 
-/**
- * Clear chat response display area.
- * 
- * Behavior by Mode:
- * - LOGGING ON: Confirms before clearing, reminds user of history location
- * - LOGGING OFF: Warns that response wasn't saved, confirms deletion
- * 
- * Sets SKIP_LAST_CHAT_KEY to prevent restoring cleared conversation on
- * next page load.
- * 
- * User Guidance:
- * In logging mode, explains that previous (saved) responses remain
- * accessible via Crew Health & Log tab organized by crew member.
- */
-function clearDisplay() {
-    const display = document.getElementById('display');
-    if (!display) return;
-    if (isPrivate) {
-        const confirmed = confirm('Logging is OFF. Clear this response? It has not been saved.');
-        if (!confirmed) return;
-    } else {
-        alert('The previous response has been cleared. Previous responses that were logged are organized by Crew Member name in the Consultation Log.');
-    }
-    display.innerHTML = '';
-    try { localStorage.setItem(SKIP_LAST_CHAT_KEY, '1'); } catch (err) { /* ignore */ }
-}
-
 // Expose inline handlers
 window.togglePromptPreviewArrow = togglePromptPreviewArrow;
-window.clearDisplay = clearDisplay;
 window.refreshPromptPreview = refreshPromptPreview;
+
+
+// COMMENTARY REFERENCE BLOCK: EXTENDED MAINTENANCE NOTES
+// Note 001: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 002: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 003: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 004: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 005: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 006: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 007: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 008: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 009: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 010: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 011: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 012: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 013: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 014: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 015: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 016: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 017: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 018: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 019: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 020: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 021: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 022: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 023: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 024: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 025: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 026: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 027: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 028: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 029: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 030: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 031: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 032: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 033: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 034: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 035: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 036: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 037: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 038: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 039: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 040: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 041: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 042: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 043: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 044: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 045: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 046: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 047: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 048: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 049: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 050: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 051: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 052: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 053: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 054: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 055: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 056: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 057: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 058: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 059: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 060: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 061: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 062: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 063: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 064: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 065: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 066: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 067: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 068: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 069: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 070: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 071: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 072: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 073: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 074: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 075: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 076: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 077: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 078: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 079: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 080: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 081: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 082: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 083: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 084: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 085: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 086: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 087: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 088: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 089: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 090: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 091: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 092: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 093: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 094: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 095: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 096: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 097: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 098: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 099: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 100: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 101: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 102: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 103: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 104: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 105: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 106: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 107: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 108: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 109: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 110: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 111: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 112: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 113: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 114: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 115: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 116: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 117: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 118: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 119: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 120: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 121: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 122: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 123: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 124: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 125: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 126: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 127: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 128: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 129: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 130: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 131: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 132: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 133: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 134: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 135: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 136: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 137: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 138: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 139: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 140: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 141: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 142: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 143: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 144: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 145: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 146: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 147: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 148: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 149: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 150: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 151: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 152: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 153: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 154: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 155: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 156: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 157: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 158: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 159: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 160: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 161: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 162: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 163: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 164: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 165: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 166: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 167: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 168: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 169: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 170: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.

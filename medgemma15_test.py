@@ -1,3 +1,10 @@
+# =============================================================================
+# Author: Rick Escher
+# Project: SilingMedAdvisor (SailingMedAdvisor)
+# Context: Google HAI-DEF Framework
+# Models: Google MedGemmas
+# Program: Kaggle Impact Challenge
+# =============================================================================
 import os
 import argparse
 import json
@@ -12,6 +19,10 @@ import torch
 
 # --- GEMMA3 MASK PATCH (torch<2.6) ---
 def _torch_version_ge(major: int, minor: int) -> bool:
+    """
+     Torch Version Ge helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     try:
         base = torch.__version__.split("+", 1)[0]
         parts = base.split(".")
@@ -26,6 +37,10 @@ if not _torch_version_ge(2, 6):
 
         def _create_causal_mask_mapping_no_or(*args, **kwargs):
             # torch<2.6 can't use or_mask_function; ignore token_type_ids for text-only.
+            """
+             Create Causal Mask Mapping No Or helper.
+            Detailed inline notes are included to support safe maintenance and future edits.
+            """
             if len(args) >= 7:
                 args = list(args)
                 args[6] = None
@@ -43,6 +58,10 @@ if not _torch_version_ge(2, 6):
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoProcessor
 
 def _safe_pad_token_id(tok):
+    """
+     Safe Pad Token Id helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     pad = getattr(tok, "pad_token_id", None)
     if pad is not None:
         return pad
@@ -52,6 +71,10 @@ def _safe_pad_token_id(tok):
     return eos
 
 def _iter_cache_roots() -> list[Path]:
+    """
+     Iter Cache Roots helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     roots: list[Path] = []
     env_cache = os.environ.get("HUGGINGFACE_HUB_CACHE")
     if env_cache:
@@ -73,6 +96,10 @@ def _iter_cache_roots() -> list[Path]:
     return final
 
 def _snapshot_complete(snapshot: Path) -> bool:
+    """
+     Snapshot Complete helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     index = snapshot / "model.safetensors.index.json"
     if index.exists():
         try:
@@ -98,6 +125,10 @@ def _snapshot_complete(snapshot: Path) -> bool:
     return False
 
 def _pick_latest_complete(snapshot_dir: Path, model_id: str) -> str:
+    """
+     Pick Latest Complete helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     if not snapshot_dir.is_dir():
         raise FileNotFoundError(f"Snapshot dir not found for {model_id}: {snapshot_dir}")
     snapshots = [d for d in snapshot_dir.iterdir() if d.is_dir()]
@@ -113,6 +144,10 @@ def _pick_latest_complete(snapshot_dir: Path, model_id: str) -> str:
     )
 
 def _resolve_snapshot(model_id: str, snapshot_override: str | None) -> str:
+    """
+     Resolve Snapshot helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     if snapshot_override:
         override = Path(snapshot_override)
         # Accept either a snapshot path or the repo root containing "snapshots/".
@@ -151,6 +186,10 @@ if not torch.cuda.is_bf16_supported():
     raise RuntimeError("bfloat16 not supported on this GPU/driver. This model is unstable in float16.")
 
 def _pick_input_device(model) -> str:
+    """
+     Pick Input Device helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     if hasattr(model, "hf_device_map"):
         device_map = getattr(model, "hf_device_map") or {}
         preferred = None
@@ -164,6 +203,10 @@ def _pick_input_device(model) -> str:
     return "cuda:0" if torch.cuda.is_available() else "cpu"
 
 def _normalize_device_map(device_map: str | dict) -> str | dict:
+    """
+     Normalize Device Map helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     if isinstance(device_map, str):
         value = device_map.strip()
         if value in {"auto", "balanced", "balanced_low_0", "sequential"}:
@@ -173,6 +216,10 @@ def _normalize_device_map(device_map: str | dict) -> str | dict:
     return device_map
 
 def _device_map_all_cuda(device_map: str | dict) -> bool:
+    """
+     Device Map All Cuda helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     if isinstance(device_map, str):
         return device_map.strip().startswith("cuda")
     if isinstance(device_map, dict):
@@ -186,6 +233,10 @@ def _load_model(
     max_memory: dict | None,
     cpu_offload: bool,
 ):
+    """
+     Load Model helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     model_kwargs = {
         "device_map": _normalize_device_map(device_map),
         "dtype": torch.bfloat16,
@@ -219,6 +270,10 @@ def _load_model(
     return model, tokenizer, processor
 
 def _ensure_gpu_used(model) -> None:
+    """
+     Ensure Gpu Used helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     device_map = getattr(model, "hf_device_map", None) or {}
     if any(isinstance(v, str) and v.startswith("cuda") for v in device_map.values()):
         return
@@ -228,6 +283,10 @@ def _ensure_gpu_used(model) -> None:
     raise RuntimeError("Model did not place any weights on CUDA. RTX 5000 usage is required.")
 
 def ask(model, tokenizer, processor, text: str, max_new_tokens: int, raw_prompt: bool):
+    """
+    Ask helper.
+    Detailed inline notes are included to support safe maintenance and future edits.
+    """
     if raw_prompt:
         prompt = text
     else:

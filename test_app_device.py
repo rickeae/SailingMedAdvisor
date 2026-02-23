@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+# =============================================================================
+# Author: Rick Escher
+# Project: SilingMedAdvisor (SailingMedAdvisor)
+# Context: Google HAI-DEF Framework
+# Models: Google MedGemmas
+# Program: Kaggle Impact Challenge
+# =============================================================================
 """
 Test script to check device detection when app.py loads
 """

@@ -1,3 +1,10 @@
+/* =============================================================================
+ * Author: Rick Escher
+ * Project: SilingMedAdvisor (SailingMedAdvisor)
+ * Context: Google HAI-DEF Framework
+ * Models: Google MedGemmas
+ * Program: Kaggle Impact Challenge
+ * ========================================================================== */
 /*
 File: static/js/equipment.js
 Author notes: Equipment and medical supplies management.
@@ -32,6 +39,7 @@ const fetchJson = (window.Utils && window.Utils.fetchJson) ? window.Utils.fetchJ
     if (!res.ok || data.error) throw new Error(data.error || `Status ${res.status}`);
     return data;
 };
+const eqEscapeHtml = (window.Utils && window.Utils.escapeHtml) ? window.Utils.escapeHtml : (str) => str;
 
 // ============================================================================
 // STATE MANAGEMENT
@@ -64,40 +72,99 @@ const DEFAULT_CONSUMABLE_CATEGORIES = [
     'Other'
 ];
 
-function getEquipmentCategoryList() {
-    const list = window.CACHED_SETTINGS && Array.isArray(window.CACHED_SETTINGS.equipment_categories)
-        ? window.CACHED_SETTINGS.equipment_categories
-        : DEFAULT_EQUIPMENT_CATEGORIES;
-    return list.filter((v) => typeof v === 'string' && v.trim()).map((v) => v.trim());
+const EQ_TIER_OPTIONS = [
+    { value: '', label: 'Select...' },
+    { value: 'Tier 1', label: 'Tier 1 — Emergency & Surgical' },
+    { value: 'Tier 2', label: 'Tier 2 — Stabilization & Acute' },
+    { value: 'Tier 3', label: 'Tier 3 — Supportive & Maintenance' },
+];
+
+const EQ_TIER_SUBCATEGORIES = {
+    'Tier 1': [
+        'Local Anesthesia',
+        'Respiratory/Anaphylaxis',
+        'Critical Antibiotics (Systemic)',
+        'Critical Antibiotics (Ophthalmic)',
+        'Emergency Steroids',
+    ],
+    'Tier 2': [
+        'Analgesics (Moderate/Severe Pain)',
+        'NSAIDs (Mild/Moderate Pain)',
+        'Topical Antiseptics/Antibiotics',
+        'Standard Antibiotics/Antivirals',
+        'Antihistamines/Steroid Creams',
+    ],
+    'Tier 3': [
+        'Gastrointestinal (Nausea/Diarrhea/Reflux)',
+        'Hydration/Electrolytes',
+        'Dermatological (Fungal/Parasitic)',
+        'Diagnostic/Maintenance',
+        'Chronic/Behavioral',
+    ],
+};
+
+/**
+ * eqBuildTierOptions: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function eqBuildTierOptions(selected = '') {
+    return EQ_TIER_OPTIONS.map((opt) => `<option value="${eqEscapeHtml(opt.value)}" ${opt.value === selected ? 'selected' : ''}>${eqEscapeHtml(opt.label)}</option>`).join('');
 }
 
-function getConsumableCategoryList() {
-    const list = window.CACHED_SETTINGS && Array.isArray(window.CACHED_SETTINGS.consumable_categories)
-        ? window.CACHED_SETTINGS.consumable_categories
-        : DEFAULT_CONSUMABLE_CATEGORIES;
-    return list.filter((v) => typeof v === 'string' && v.trim()).map((v) => v.trim());
+/**
+ * eqBuildTierSubcategoryOptions: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function eqBuildTierSubcategoryOptions(tier = '', selected = '') {
+    const options = [{ value: '', label: 'Select...' }];
+    const list = EQ_TIER_SUBCATEGORIES[tier] || [];
+    list.forEach((entry) => options.push({ value: entry, label: entry }));
+    return options.map((opt) => `<option value="${eqEscapeHtml(opt.value)}" ${opt.value === selected ? 'selected' : ''}>${eqEscapeHtml(opt.label)}</option>`).join('');
 }
 
-function buildCategoryOptions(list, selected) {
-    const opts = ['<option value="">Uncategorized</option>'];
-    const selectedNorm = (selected || '').trim().toLowerCase();
-    list.forEach((cat) => {
-        const value = cat;
-        const isSel = selectedNorm && selectedNorm === cat.trim().toLowerCase();
-        opts.push(`<option value="${value.replace(/\"/g, '&quot;')}" ${isSel ? 'selected' : ''}>${value}</option>`);
+/**
+ * handleEquipmentTierChange: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function handleEquipmentTierChange(itemId) {
+    const tierEl = document.getElementById(`eq-tier-${itemId}`);
+    const catEl = document.getElementById(`eq-tiercat-${itemId}`);
+    if (!tierEl || !catEl) return;
+    const tierVal = tierEl.value || '';
+    const current = catEl.value || '';
+    catEl.innerHTML = eqBuildTierSubcategoryOptions(tierVal, current);
+    if (current && !(EQ_TIER_SUBCATEGORIES[tierVal] || []).includes(current)) {
+        catEl.value = '';
+    }
+    scheduleSaveEquipment(itemId);
+}
+
+/**
+ * initTierFormControls: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function initTierFormControls() {
+    const pairs = [
+        { tier: 'eq-new-tier', cat: 'eq-new-tiercat' },
+        { tier: 'cons-new-tier', cat: 'cons-new-tiercat' },
+        { tier: 'med-new-tier', cat: 'med-new-tiercat' },
+    ];
+    pairs.forEach(({ tier, cat }) => {
+        const tierEl = document.getElementById(tier);
+        const catEl = document.getElementById(cat);
+        if (!tierEl || !catEl) return;
+        tierEl.innerHTML = eqBuildTierOptions(tierEl.value || '');
+        catEl.innerHTML = eqBuildTierSubcategoryOptions(tierEl.value || '', catEl.value || '');
+        if (!tierEl.dataset.bound) {
+            tierEl.dataset.bound = 'true';
+            tierEl.addEventListener('change', () => {
+                catEl.innerHTML = eqBuildTierSubcategoryOptions(tierEl.value || '', '');
+            });
+        }
     });
-    return opts.join('');
-}
-
-function refreshEquipmentCategoryOptions() {
-    const eqSelect = document.getElementById('eq-new-category');
-    if (eqSelect) eqSelect.innerHTML = buildCategoryOptions(getEquipmentCategoryList(), eqSelect.value);
-    const consSelect = document.getElementById('cons-new-category');
-    if (consSelect) consSelect.innerHTML = buildCategoryOptions(getConsumableCategoryList(), consSelect.value);
 }
 
 window.refreshEquipmentCategoriesFromSettings = function () {
-    refreshEquipmentCategoryOptions();
     if (equipmentCache.length) {
         renderEquipment(equipmentCache);
     }
@@ -171,6 +238,8 @@ function ensureEquipmentDefaults(item) {
         supplier: item.supplier || '',
         parentId: item.parentId || '',
         requiresPower: item.requiresPower || false,
+        priorityTier: item.priorityTier || '',
+        tierCategory: item.tierCategory || '',
         notes: item.notes || '',
         excludeFromResources: Boolean(item.excludeFromResources),
     };
@@ -193,14 +262,22 @@ async function loadEquipment(expandId = null) {
     if (!list) return;
     list.innerHTML = '';
     try {
-        refreshEquipmentCategoryOptions();
+        if (typeof refreshEquipmentCategoryOptions === 'function') {
+            refreshEquipmentCategoryOptions();
+        }
+        initTierFormControls();
         const data = await fetchJson('/api/data/tools');
         equipmentCache = (Array.isArray(data) ? data : []).map(ensureEquipmentDefaults);
         renderEquipment(equipmentCache, expandId);
     } catch (err) {
         updateSectionCount('equipment-count', 0);
         updateSectionCount('consumables-count', 0);
-        list.innerHTML = `<div style="color:red;">Error loading equipment: ${err.message}</div>`;
+        const errHtml = `<div style="color:red; padding:12px;">Error loading equipment: ${err.message}</div>`;
+        const equipmentList = document.getElementById('equipment-list');
+        const consumablesList = document.getElementById('consumables-list');
+        if (equipmentList) equipmentList.innerHTML = errHtml;
+        if (consumablesList) consumablesList.innerHTML = errHtml;
+        list.innerHTML = errHtml;
     }
 }
 
@@ -208,8 +285,8 @@ async function loadEquipment(expandId = null) {
  * Classify equipment into category buckets.
  * 
  * Classification Rules:
- * 1. type='medication' OR category contains 'medication' → 'medication'
- * 2. type='consumable' → 'consumable'  
+ * 1. type='medication' → 'medication'
+ * 2. type='consumable' → 'consumable'
  * 3. Otherwise → 'equipment' (durable goods)
  * 
  * Used to route items to correct display lists and apply appropriate styling.
@@ -219,12 +296,15 @@ async function loadEquipment(expandId = null) {
  */
 function classifyEquipment(item) {
     const type = (item.type || '').toLowerCase();
-    const category = (item.category || '').toLowerCase();
-    if (type === 'medication' || category.includes('medication')) return 'medication';
+    if (type === 'medication') return 'medication';
     if (type === 'consumable') return 'consumable';
     return 'equipment';
 }
 
+/**
+ * showImportStatus: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function showImportStatus(id, message, isError = false) {
     const el = document.getElementById(id);
     if (!el) return;
@@ -336,6 +416,10 @@ async function exportConsumables() {
     }
 }
 
+/**
+ * parseTabDelimitedRows: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function parseTabDelimitedRows(text) {
     if (typeof text !== 'string') return [];
     return text
@@ -353,6 +437,10 @@ function parseTabDelimitedRows(text) {
         .filter((row) => row.name);
 }
 
+/**
+ * parseConsumableFileText: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function parseConsumableFileText(text) {
     return parseTabDelimitedRows(text).map((row) => ({
         name: row.name,
@@ -362,6 +450,10 @@ function parseConsumableFileText(text) {
     }));
 }
 
+/**
+ * parseEquipmentFileText: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function parseEquipmentFileText(text) {
     return parseTabDelimitedRows(text).map((row) => ({
         name: row.name,
@@ -371,10 +463,18 @@ function parseEquipmentFileText(text) {
     }));
 }
 
+/**
+ * entryNameKey: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function entryNameKey(name) {
     return (name || '').trim().toLowerCase();
 }
 
+/**
+ * buildEntryMap: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function buildEntryMap(entries) {
     const map = new Map();
     entries.forEach((entry) => {
@@ -385,6 +485,10 @@ function buildEntryMap(entries) {
     return map;
 }
 
+/**
+ * mergeEntriesByName: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function mergeEntriesByName(existing, entryMap, targetClassifier) {
     const result = [];
     const usedKeys = new Set();
@@ -470,6 +574,10 @@ async function mergeEquipmentImports(entries, statusId) {
     showImportStatus(statusId, `Imported ${entryMap.size} equipment item(s) from file.`);
 }
 
+/**
+ * openConsumablesFilePicker: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function openConsumablesFilePicker() {
     const input = document.getElementById('consumables-import-file');
     if (!input) return;
@@ -491,6 +599,10 @@ async function handleConsumablesFileImport(event) {
     }
 }
 
+/**
+ * openEquipmentFilePicker: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function openEquipmentFilePicker() {
     const input = document.getElementById('equipment-import-file');
     if (!input) return;
@@ -568,24 +680,30 @@ function renderEquipment(items, expandId = null) {
     cons.sort(sortByName);
 
     if (storeList) {
-        storeList.innerHTML = stores.length ? stores.map((item) => renderEquipmentCard(item, expandId)).join('') : '';
+        storeList.innerHTML = stores.length
+            ? stores.map((item) => renderEquipmentCard(item, expandId)).join('')
+            : '<div style="color:#666; padding:12px;">No medical equipment entries available.</div>';
     }
     if (medicationList) {
         medicationList.innerHTML = meds.length ? meds.map((item) => renderEquipmentCard(item, expandId)).join('') : '';
     }
     if (consumablesList) {
-        consumablesList.innerHTML = cons.length ? cons.map((item) => renderEquipmentCard(item, expandId)).join('') : '';
+        consumablesList.innerHTML = cons.length
+            ? cons.map((item) => renderEquipmentCard(item, expandId)).join('')
+            : '<div style="color:#666; padding:12px;">No consumable entries available.</div>';
     }
     updateSectionCount('equipment-count', stores.length);
     updateSectionCount('consumables-count', cons.length);
 }
 
+/**
+ * renderEquipmentCard: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function renderEquipmentCard(item, expandId = null) {
     const itemType = (item.type || '').toLowerCase() || 'durable';
     const isConsumable = itemType === 'consumable';
     const isEquipment = itemType === 'durable';
-    const equipmentCategories = getEquipmentCategoryList();
-    const consumableCategories = getConsumableCategoryList();
     const lowStock = item.minPar && Number(item.totalQty) <= Number(item.minPar);
     const expirySoon = item.expiryDate && daysUntil(item.expiryDate) <= 60;
     const headerNote = [lowStock ? 'Low Stock' : null, expirySoon ? 'Expiring Soon' : null, item.status && item.status !== 'In Stock' ? item.status : null]
@@ -631,11 +749,19 @@ function renderEquipmentCard(item, expandId = null) {
                         <label style="font-weight:700; font-size:12px;">Quantity</label>
                         <input id="eq-qty-${item.id}" type="text" value="${item.totalQty}" style="width:100%; padding:8px;" oninput="scheduleSaveEquipment('${item.id}')">
                     </div>
-                    <div style="grid-column: span 2;">
-                        <label style="font-weight:700; font-size:12px;">Category</label>
-                        <select id="eq-cat-${item.id}" style="width:100%; padding:8px;" onchange="scheduleSaveEquipment('${item.id}')">
-                            ${buildCategoryOptions(consumableCategories, item.category)}
-                        </select>
+                    <div style="grid-column: span 2; display:grid; grid-template-columns: repeat(2, minmax(200px, 1fr)); gap:10px;">
+                        <div>
+                            <label style="font-weight:700; font-size:12px;">Priority Tier</label>
+                            <select id="eq-tier-${item.id}" style="width:100%; padding:8px;" onchange="handleEquipmentTierChange('${item.id}')">
+                                ${eqBuildTierOptions(item.priorityTier)}
+                            </select>
+                        </div>
+                        <div>
+                            <label style="font-weight:700; font-size:12px;">Functional Subcategory</label>
+                            <select id="eq-tiercat-${item.id}" style="width:100%; padding:8px;" onchange="scheduleSaveEquipment('${item.id}')">
+                                ${eqBuildTierSubcategoryOptions(item.priorityTier, item.tierCategory)}
+                            </select>
+                        </div>
                     </div>
                     <div style="grid-column: span 2;">
                         <div class="dev-tag">dev:consumable-detail-notes</div>
@@ -671,11 +797,19 @@ function renderEquipmentCard(item, expandId = null) {
                     <label style="font-weight:700; font-size:12px;">Quantity</label>
                     <input id="eq-qty-${item.id}" type="text" value="${item.totalQty}" style="width:100%; padding:8px;" oninput="scheduleSaveEquipment('${item.id}')">
                 </div>
-                <div style="grid-column: span 2;">
-                    <label style="font-weight:700; font-size:12px;">Category</label>
-                    <select id="eq-cat-${item.id}" style="width:100%; padding:8px;" onchange="scheduleSaveEquipment('${item.id}')">
-                        ${buildCategoryOptions(equipmentCategories, item.category)}
-                    </select>
+                <div style="grid-column: span 2; display:grid; grid-template-columns: repeat(2, minmax(200px, 1fr)); gap:10px;">
+                    <div>
+                        <label style="font-weight:700; font-size:12px;">Priority Tier</label>
+                        <select id="eq-tier-${item.id}" style="width:100%; padding:8px;" onchange="handleEquipmentTierChange('${item.id}')">
+                            ${eqBuildTierOptions(item.priorityTier)}
+                        </select>
+                    </div>
+                    <div>
+                        <label style="font-weight:700; font-size:12px;">Functional Subcategory</label>
+                        <select id="eq-tiercat-${item.id}" style="width:100%; padding:8px;" onchange="scheduleSaveEquipment('${item.id}')">
+                            ${eqBuildTierSubcategoryOptions(item.priorityTier, item.tierCategory)}
+                        </select>
+                    </div>
                 </div>
                 <div style="grid-column: span 2;">
                     <label style="font-weight:700; font-size:12px;">Storage Location</label>
@@ -761,7 +895,6 @@ async function saveEquipment(id) {
     const eq = items.find((i) => i.id === id);
     if (!eq) return;
     eq.name = getVal(`eq-name-${id}`, eq.name);
-    eq.category = getVal(`eq-cat-${id}`, eq.category);
     eq.type = getVal(`eq-type-${id}`, eq.type || 'durable');
     eq.storageLocation = getVal(`eq-loc-${id}`, eq.storageLocation);
     eq.subLocation = getVal(`eq-subloc-${id}`, eq.subLocation);
@@ -774,6 +907,8 @@ async function saveEquipment(id) {
     eq.totalQty = getVal(`eq-qty-${id}`, eq.totalQty);
     eq.minPar = getVal(`eq-par-${id}`, eq.minPar);
     eq.supplier = getVal(`eq-sup-${id}`, eq.supplier);
+    eq.priorityTier = getVal(`eq-tier-${id}`, eq.priorityTier);
+    eq.tierCategory = getVal(`eq-tiercat-${id}`, eq.tierCategory);
     eq.notes = getVal(`eq-notes-${id}`, eq.notes);
     const excludeEl = document.getElementById(`eq-exclude-${id}`);
     eq.excludeFromResources = !!(excludeEl && excludeEl.checked);
@@ -788,6 +923,10 @@ async function saveEquipment(id) {
     renderEquipment(equipmentCache, id);
 }
 
+/**
+ * openEquipmentAddForm: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function openEquipmentAddForm() {
     // Ensure both outer and inner collapsibles are open so the add button is visible.
     const outerHeader = document.querySelector('#equipment-section-header');
@@ -810,6 +949,10 @@ function openEquipmentAddForm() {
     }, 30);
 }
 
+/**
+ * getNewEquipmentVal: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function getNewEquipmentVal(id) {
     const el = document.getElementById(id);
     return el ? el.value.trim() : '';
@@ -850,15 +993,17 @@ async function addMedicalStore() {
     const location = getNewEquipmentVal('eq-new-loc');
     const notes = document.getElementById('eq-new-notes')?.value || '';
     const exclude = document.getElementById('eq-new-exclude')?.checked || false;
-    const category = getNewEquipmentVal('eq-new-category');
+    const priorityTier = getNewEquipmentVal('eq-new-tier');
+    const tierCategory = getNewEquipmentVal('eq-new-tiercat');
     const newId = `eq-${Date.now()}`;
     const newItem = ensureEquipmentDefaults({
         id: newId,
         name,
-        category,
         type: 'durable',
         storageLocation: location,
         totalQty: quantity,
+        priorityTier,
+        tierCategory,
         notes,
         status: 'In Stock',
         excludeFromResources: exclude,
@@ -875,7 +1020,7 @@ async function addMedicalStore() {
     });
 
     // Clear the add form for the next entry
-    ['eq-new-name','eq-new-loc','eq-new-qty','eq-new-notes','eq-new-category']
+    ['eq-new-name','eq-new-loc','eq-new-qty','eq-new-notes','eq-new-tier','eq-new-tiercat']
         .forEach((id) => { const el = document.getElementById(id); if (el) el.value = ''; });
     const newExclude = document.getElementById('eq-new-exclude');
     if (newExclude) newExclude.checked = false;
@@ -883,6 +1028,10 @@ async function addMedicalStore() {
     loadEquipment(newId);
 }
 
+/**
+ * canonicalMedKey: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function canonicalMedKey(generic, brand, strength, formStrength = '') {
     const clean = (val) => (val || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
     const strengthVal = clean(strength || formStrength).replace(/unspecified/g, '');
@@ -909,6 +1058,8 @@ async function addMedicationItem() {
     const expiryQty = getNewEquipmentVal('med-new-exp-qty') || '';
     const expiryBatch = getNewEquipmentVal('med-new-exp-batch') || '';
     const notes = document.getElementById('med-new-notes')?.value || '';
+    const priorityTier = getNewEquipmentVal('med-new-tier');
+    const tierCategory = getNewEquipmentVal('med-new-tiercat');
     const newId = `med-${Date.now()}`;
     const purchaseHistory = [];
     if (expiryDate) {
@@ -940,6 +1091,8 @@ async function addMedicationItem() {
         allergyWarnings: getNewEquipmentVal('med-new-allergy') || '',
         standardDosage: dosage,
         sortCategory,
+        priorityTier,
+        tierCategory,
         verified,
         notes,
         purchaseHistory,
@@ -969,7 +1122,7 @@ async function addMedicationItem() {
         credentials: 'same-origin',
     });
 
-    ['med-new-name','med-new-brand','med-new-form','med-new-strength','med-new-loc','med-new-exp','med-new-exp-qty','med-new-exp-batch','med-new-qty','med-new-par','med-new-unit','med-new-sup','med-new-indication','med-new-allergy','med-new-dose','med-new-notes']
+    ['med-new-name','med-new-brand','med-new-form','med-new-strength','med-new-loc','med-new-exp','med-new-exp-qty','med-new-exp-batch','med-new-qty','med-new-par','med-new-unit','med-new-sup','med-new-indication','med-new-allergy','med-new-dose','med-new-notes','med-new-tier','med-new-tiercat']
         .forEach((id) => { const el = document.getElementById(id); if (el) el.value = ''; });
     const sortSelect = document.getElementById('med-new-sort');
     const sortCustomInput = document.getElementById('med-new-sort-custom');
@@ -1022,14 +1175,16 @@ async function addConsumableItem() {
     const quantity = getNewEquipmentVal('cons-new-qty');
     const notes = document.getElementById('cons-new-notes')?.value || '';
     const exclude = document.getElementById('cons-new-exclude')?.checked || false;
-    const category = getNewEquipmentVal('cons-new-category');
+    const priorityTier = getNewEquipmentVal('cons-new-tier');
+    const tierCategory = getNewEquipmentVal('cons-new-tiercat');
     const newId = `eq-${Date.now()}`;
     const newItem = ensureEquipmentDefaults({
         id: newId,
         name,
-        category,
         type: 'consumable',
         totalQty: quantity,
+        priorityTier,
+        tierCategory,
         notes,
         status: 'In Stock',
         excludeFromResources: exclude,
@@ -1046,7 +1201,7 @@ async function addConsumableItem() {
         credentials: 'same-origin',
     });
 
-    ['cons-new-name','cons-new-qty','cons-new-notes','cons-new-category']
+    ['cons-new-name','cons-new-qty','cons-new-notes','cons-new-tier','cons-new-tiercat']
         .forEach((id) => { const el = document.getElementById(id); if (el) el.value = ''; });
     const consumableExclude = document.getElementById('cons-new-exclude');
     if (consumableExclude) consumableExclude.checked = false;
@@ -1128,6 +1283,7 @@ window.addMedicationItem = addMedicationItem;
 window.addConsumableItem = addConsumableItem;
 window.deleteEquipment = deleteEquipment;
 window.scheduleSaveEquipment = scheduleSaveEquipment;
+window.handleEquipmentTierChange = handleEquipmentTierChange;
 window.exportConsumables = exportConsumables;
 window.openConsumablesFilePicker = openConsumablesFilePicker;
 window.handleConsumablesFileImport = handleConsumablesFileImport;
@@ -1135,9 +1291,25 @@ window.exportEquipmentItems = exportEquipmentItems;
 window.openEquipmentFilePicker = openEquipmentFilePicker;
 window.handleEquipmentFileImport = handleEquipmentFileImport;
 window.forceClearCache = function forceClearCache() {
-    if (confirm('Force a hard reload and clear cached assets?')) {
-        const url = new URL(window.location.href);
-        url.searchParams.set('cache', Date.now().toString());
-        window.location.replace(url.toString());
+    if (typeof window.resetConsultationUiForDemo === 'function') {
+        window.resetConsultationUiForDemo();
     }
+    try {
+        [
+            'sailingmed:lastPrompt',
+            'sailingmed:lastPatient',
+            'sailingmed:lastChatMode',
+            'sailingmed:promptPreviewOpen',
+            'sailingmed:promptPreviewContent',
+            'sailingmed:chatState',
+            'triage-pathway-open',
+            'sailingmed:skipLastChat',
+            'sailingmed:loggingOff',
+            'sailingmed:sidebarCollapsed',
+        ].forEach((k) => localStorage.removeItem(k));
+        localStorage.setItem('sailingmed:sidebarCollapsed', '0');
+        sessionStorage.clear();
+    } catch (err) { /* ignore */ }
+    // Route through logout to ensure splash/login is shown regardless of auth state.
+    window.location.assign(`/logout?fresh=${Date.now()}`);
 };

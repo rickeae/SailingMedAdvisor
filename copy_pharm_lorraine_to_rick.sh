@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+# =============================================================================
+# Author: Rick Escher
+# Project: SilingMedAdvisor (SailingMedAdvisor)
+# Context: Google HAI-DEF Framework
+# Models: Google MedGemmas
+# Program: Kaggle Impact Challenge
+# =============================================================================
 set -euo pipefail
 
 # Copy only pharmaceuticals (type == "medication") from Lorraine to Rick without jq.

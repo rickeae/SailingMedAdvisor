@@ -1,7 +1,18 @@
 #!/usr/bin/env python3
-"""Debug actual inference path"""
+# =============================================================================
+# Author: Rick Escher
+# Project: SilingMedAdvisor (SailingMedAdvisor)
+# Context: Google HAI-DEF Framework
+# Models: Google MedGemmas
+# Program: Kaggle Impact Challenge
+# =============================================================================
+"""
+Quick runtime diagnostic for local inference behavior.
+
+This script calls the running app's offline-status endpoint and prints
+the exact environment flags/model cache state the backend sees.
+"""
 import requests
-import json
 
 # Check what the API reports
 print("1. Checking API status:")

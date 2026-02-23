@@ -1,4 +1,11 @@
 <!DOCTYPE html>
+<!-- =============================================================================
+     Author: Rick Escher
+     Project: SilingMedAdvisor (SailingMedAdvisor)
+     Context: Google HAI-DEF Framework
+     Models: Google MedGemmas
+     Program: Kaggle Impact Challenge
+     ========================================================================== -->
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -6,7 +13,9 @@
     <title>Login - MedGemma Master</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <style>
+        :root { --frame-padding: 8px; --frame-width: min(calc(100vw - (var(--frame-padding) * 2)), calc((100vh - (var(--frame-padding) * 2)) * 16 / 9)); --frame-height: min(calc(100vh - (var(--frame-padding) * 2)), calc((100vw - (var(--frame-padding) * 2)) * 9 / 16)); }
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { width: 100%; height: 100%; }
         body {
             font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
             background: radial-gradient(circle at 30% 30%, #7452B9 0%, #6143a1 55%, #4b3283 100%);
@@ -14,15 +23,29 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            padding: 32px 16px;
+            padding: var(--frame-padding);
             color: #0f2145;
+            overflow: hidden;
+        }
+        .login-frame {
+            width: var(--frame-width);
+            height: auto;
+            max-width: calc(100vw - (var(--frame-padding) * 2));
+            max-height: calc(100vh - (var(--frame-padding) * 2));
+            aspect-ratio: 16 / 9;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px 16px;
         }
         .login-container {
             background: #ffffff;
             border-radius: 18px;
             box-shadow: 0 18px 48px rgba(0,0,0,0.18);
             padding: 40px 40px 44px;
-            width: min(720px, 96vw);
+            width: min(780px, 100%);
+            max-height: 100%;
+            overflow: auto;
         }
         .login-header { text-align: center; margin-bottom: 26px; }
         .login-header h1 {
@@ -102,9 +125,27 @@
             color: #7f8fb3;
             font-size: 13px;
         }
+        @media (max-height: 760px) {
+            .login-frame { padding: 10px 12px; }
+            .login-container { padding: 22px 24px 24px; border-radius: 14px; }
+            .login-header { margin-bottom: 14px; }
+            .icon { font-size: 44px; margin-bottom: 8px; }
+            .login-header h1 { font-size: 30px; }
+            .login-header .tagline { font-size: 16px; }
+            .login-header .description {
+                font-size: 14px;
+                line-height: 1.45;
+                padding: 12px 12px;
+                margin: 14px 0 8px;
+            }
+            .form-group { margin-bottom: 12px; }
+            .btn-login { padding: 12px; font-size: 16px; }
+            .footer { margin-top: 14px; }
+        }
     </style>
 </head>
 <body>
+    <div class="login-frame">
     <div class="login-container">
         <div class="login-header">
             <div class="icon">⚕️</div>
@@ -134,8 +175,33 @@
             Crew credentials are managed on the Settings page under "Crew Login Credentials."
         </div>
     </div>
+    </div>
 
     <script>
+        (function applyFreshReset() {
+            try {
+                const params = new URLSearchParams(window.location.search);
+                if (!params.has('fresh')) return;
+                [
+                    'sailingmed:lastPrompt',
+                    'sailingmed:lastPatient',
+                    'sailingmed:lastChatMode',
+                    'sailingmed:promptPreviewOpen',
+                    'sailingmed:promptPreviewContent',
+                    'sailingmed:chatState',
+                    'triage-pathway-open',
+                    'sailingmed:loggingOff',
+                    'sailingmed:sidebarCollapsed',
+                ].forEach((k) => localStorage.removeItem(k));
+                localStorage.setItem('sailingmed:sidebarCollapsed', '0');
+                localStorage.setItem('sailingmed:skipLastChat', '1');
+                sessionStorage.clear();
+                if (window.history && window.history.replaceState) {
+                    window.history.replaceState({}, document.title, '/login');
+                }
+            } catch (_) { /* ignore */ }
+        })();
+
         const form = document.getElementById('loginForm');
         const errorDiv = document.getElementById('error');
         const passwordInput = document.getElementById('password');
@@ -198,6 +264,16 @@
             } catch (error) {
                 errorDiv.textContent = 'Connection error. Please try again.';
                 errorDiv.style.display = 'block';
+            }
+        });
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key !== 'Enter') return;
+            e.preventDefault();
+            if (typeof form.requestSubmit === 'function') {
+                form.requestSubmit();
+            } else {
+                loginBtn.click();
             }
         });
 

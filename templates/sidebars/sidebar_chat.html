@@ -1,22 +1,20 @@
+<!-- =============================================================================
+     Author: Rick Escher
+     Project: SilingMedAdvisor (SailingMedAdvisor)
+     Context: Google HAI-DEF Framework
+     Models: Google MedGemmas
+     Program: Kaggle Impact Challenge
+     ========================================================================== -->
 <div class="dev-tag">dev:sidebar-chat</div>
 <div class="sidebar-section">
-    <div class="sidebar-title">Overview</div>
+    <div class="sidebar-title"><span class="sidebar-pill">MedGemma Consultation</span> Agentic Decision Support</div>
     <div class="sidebar-body">
-        This app was created out of the need for high quality medical guidance when there are no other options. Our family of six is circumnavigating on a sailboat. We are often in remote and inaccessible locations where there simply are no doctors to assist with a medical emergency.<br><br>
-        For example, we were anchored in a remote part of the Solomon Islands when our oldest son got a large three-prong off-shore fish hook stuck in his left cheek very close to his eye. It had large barbs and was impossible to pull out. Another time, our youngest son was biten by a dog suspected by the locals of having rabies. We needed to quickly cobble together a precautionary treatment from our medical chest. Another time, our son experienced a Shallow Water Blackout at a depth of 10m. He floated to the surface unconscious and was awakened by his younger siblings who were with him.<br><br>
-        In all cases, we needed timely access to medical assistance to address the situation. We struggled to find it, and hence, this app was born.</div>
+        <strong>Purpose:</strong> This workspace facilitates high-fidelity inference using an Agentic Workflow to bridge the gap between raw LLM output and clinical utility. By bifurcating the logic into Triage and Inquiry modes, the system applies specific system-level constraints to the MedGemma models. This is the primary interface for active model selection, allowing the operator to toggle between the 4B model, optimized for rapid, efficient processing on local hardware, and the 27B model, optimized for deep, complex reasoning.
+    </div>
 </div>
 <div class="sidebar-section">
-    <div class="sidebar-title">Consultation & Logging</div>
+    <div class="sidebar-title">Operational Logic</div>
     <div class="sidebar-body">
-        Triage Consultation is intended to provide immediate, actionable advice for the situation described. If a Crew Member is selected then their medical history is injected into the prompt to better tailor the response. The current Medical Chest inventory is also injected so MedGemma knows what we have to work with.<br><br>
-        Toggling Triage Consultation switches to Inquiry Consultation. This is a research and information consultation where answers are not constrained to ship's stores or offshore medical situations.<br><br>
-        Logging toggles on/off and whether triage and inquiry consultations are saved as part of the Crew Member's health log.
-</div>
-</div>
-<div class="sidebar-section">
-    <div class="sidebar-title">Prompt Injection</div>
-    <div class="sidebar-body">
-        When Advanced Mode or Developer Mode is specified in Settings, the text that will be injected to the current chat will be editable. This provides greater control over MedGemma's behavious and can help more precisely tailor the prompt to the immediate situation.
+        The "Prompt Preview" allows for real-time auditing of the Chain-of-Thought reasoning. By injecting vessel-specific variables into the context window, we ensure that the model's Novel Task execution, specifically Maritime Emergency Medicine, is grounded in the immediate operational reality of the vessel. The performance of these models is further governed by the MedGemma Model Parameters established in the global configuration, ensuring that token allocation and response behavior are optimized for the selected mode.
     </div>
 </div>

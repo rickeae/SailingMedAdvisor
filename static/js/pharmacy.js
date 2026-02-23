@@ -1,3 +1,10 @@
+/* =============================================================================
+ * Author: Rick Escher
+ * Project: SilingMedAdvisor (SailingMedAdvisor)
+ * Context: Google HAI-DEF Framework
+ * Models: Google MedGemmas
+ * Program: Kaggle Impact Challenge
+ * ========================================================================== */
 /*
 File: static/js/pharmacy.js
 Author notes: Client-side controller for the Medical Chest (pharmaceuticals).
@@ -12,6 +19,91 @@ const DEFAULT_USER_LABELS = ['Antibiotic', 'Analgesic', 'Cardiac', 'Respiratory'
 let pharmacyLabelsCache = null;
 let WHO_RECOMMENDED_MEDS = [];
 let whoMedLoaded = false;
+
+const TIER_OPTIONS = [
+    { value: '', label: 'Select...' },
+    { value: 'Tier 1', label: 'Tier 1 — Emergency & Surgical' },
+    { value: 'Tier 2', label: 'Tier 2 — Stabilization & Acute' },
+    { value: 'Tier 3', label: 'Tier 3 — Supportive & Maintenance' },
+];
+
+const TIER_SUBCATEGORIES = {
+    'Tier 1': [
+        'Local Anesthesia',
+        'Respiratory/Anaphylaxis',
+        'Critical Antibiotics (Systemic)',
+        'Critical Antibiotics (Ophthalmic)',
+        'Emergency Steroids',
+    ],
+    'Tier 2': [
+        'Analgesics (Moderate/Severe Pain)',
+        'NSAIDs (Mild/Moderate Pain)',
+        'Topical Antiseptics/Antibiotics',
+        'Standard Antibiotics/Antivirals',
+        'Antihistamines/Steroid Creams',
+    ],
+    'Tier 3': [
+        'Gastrointestinal (Nausea/Diarrhea/Reflux)',
+        'Hydration/Electrolytes',
+        'Dermatological (Fungal/Parasitic)',
+        'Diagnostic/Maintenance',
+        'Chronic/Behavioral',
+    ],
+};
+
+/**
+ * buildTierOptions: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function buildTierOptions(selected = '') {
+    return TIER_OPTIONS.map((opt) => `<option value="${escapeHtml(opt.value)}" ${opt.value === selected ? 'selected' : ''}>${escapeHtml(opt.label)}</option>`).join('');
+}
+
+/**
+ * buildTierSubcategoryOptions: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function buildTierSubcategoryOptions(tier = '', selected = '') {
+    const options = [{ value: '', label: 'Select...' }];
+    const list = TIER_SUBCATEGORIES[tier] || [];
+    list.forEach((entry) => options.push({ value: entry, label: entry }));
+    return options.map((opt) => `<option value="${escapeHtml(opt.value)}" ${opt.value === selected ? 'selected' : ''}>${escapeHtml(opt.label)}</option>`).join('');
+}
+
+/**
+ * handleMedTierChange: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function handleMedTierChange(medId) {
+    const tierEl = document.getElementById(`tier-${medId}`);
+    const catEl = document.getElementById(`tiercat-${medId}`);
+    if (!tierEl || !catEl) return;
+    const tierVal = tierEl.value || '';
+    const current = catEl.value || '';
+    catEl.innerHTML = buildTierSubcategoryOptions(tierVal, current);
+    if (current && !(TIER_SUBCATEGORIES[tierVal] || []).includes(current)) {
+        catEl.value = '';
+    }
+    scheduleSaveMedication(medId);
+}
+
+/**
+ * initNewMedTierControls: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function initNewMedTierControls() {
+    const tierEl = document.getElementById('med-new-tier');
+    const catEl = document.getElementById('med-new-tiercat');
+    if (!tierEl || !catEl) return;
+    tierEl.innerHTML = buildTierOptions(tierEl.value || '');
+    catEl.innerHTML = buildTierSubcategoryOptions(tierEl.value || '', catEl.value || '');
+    if (!tierEl.dataset.bound) {
+        tierEl.dataset.bound = 'true';
+        tierEl.addEventListener('change', () => {
+            catEl.innerHTML = buildTierSubcategoryOptions(tierEl.value || '', '');
+        });
+    }
+}
 
 // --- Shared utilities -------------------------------------------------------
 
@@ -54,6 +146,10 @@ async function fetchInventory(options = {}) {
     return data;
 }
 
+/**
+ * updatePharmacyCount: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function updatePharmacyCount(count) {
     const el = document.getElementById('pharmacy-count');
     if (el) {
@@ -61,6 +157,10 @@ function updatePharmacyCount(count) {
     }
 }
 
+/**
+ * syncPharmacyCountFromDOM: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function syncPharmacyCountFromDOM() {
     const list = document.getElementById('pharmacy-list');
     if (!list) {
@@ -71,6 +171,10 @@ function syncPharmacyCountFromDOM() {
     updatePharmacyCount(domCount);
 }
 
+/**
+ * observePharmacyList: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function observePharmacyList() {
     const list = document.getElementById('pharmacy-list');
     if (!list || list.dataset.countObserver === 'true') return;
@@ -81,6 +185,10 @@ function observePharmacyList() {
     syncPharmacyCountFromDOM();
 }
 
+/**
+ * getTextareaHeights: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function getTextareaHeights() {
     const map = {};
     document.querySelectorAll('#pharmacy-list textarea').forEach((el) => {
@@ -91,6 +199,10 @@ function getTextareaHeights() {
     return map;
 }
 
+/**
+ * normalizeUserLabels: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function normalizeUserLabels(list) {
     if (!Array.isArray(list)) return [...DEFAULT_USER_LABELS];
     const seen = new Set();
@@ -128,10 +240,18 @@ async function ensurePharmacyLabels() {
     return pharmacyLabelsCache;
 }
 
+/**
+ * getPharmacyLabels: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function getPharmacyLabels() {
     return pharmacyLabelsCache && pharmacyLabelsCache.length ? [...pharmacyLabelsCache] : [...DEFAULT_USER_LABELS];
 }
 
+/**
+ * renderUserLabelOptions: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function renderUserLabelOptions(selectedValue = '') {
     const selected = (selectedValue || '').trim();
     const labels = getPharmacyLabels();
@@ -148,6 +268,10 @@ function renderUserLabelOptions(selectedValue = '') {
     };
 }
 
+/**
+ * populateNewMedUserLabelSelect: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function populateNewMedUserLabelSelect() {
     const select = document.getElementById('med-new-sort');
     const custom = document.getElementById('med-new-sort-custom');
@@ -169,6 +293,10 @@ function populateNewMedUserLabelSelect() {
     else if (select.value !== '__custom') custom.value = '';
 }
 
+/**
+ * refreshPharmacyLabelsFromSettings: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function refreshPharmacyLabelsFromSettings(list) {
     const normalized = normalizeUserLabels(Array.isArray(list) ? list : pharmacyLabelsCache || DEFAULT_USER_LABELS);
     pharmacyLabelsCache = normalized;
@@ -181,6 +309,10 @@ function refreshPharmacyLabelsFromSettings(list) {
     }
 }
 
+/**
+ * handleSortCategoryChange: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function handleSortCategoryChange(id) {
     const select = document.getElementById(`sort-${id}`);
     const custom = document.getElementById(`sort-custom-${id}`);
@@ -195,6 +327,10 @@ function handleSortCategoryChange(id) {
     scheduleSaveMedication(id, !isCustom);
 }
 
+/**
+ * toggleCustomSortField: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function toggleCustomSortField() {
     const sel = document.getElementById('med-new-sort');
     const custom = document.getElementById('med-new-sort-custom');
@@ -272,6 +408,10 @@ function ensurePurchaseDefaults(p, open = false) {
     };
 }
 
+/**
+ * ensurePharmacyDefaults: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function ensurePharmacyDefaults(item) {
     // Normalize a med record; if legacy top-level manufacturer/batch exists, push into first expiry row.
     const med = {
@@ -292,6 +432,8 @@ function ensurePharmacyDefaults(item) {
         standardDosage: item.standardDosage || '',
         notes: item.notes || '',
         sortCategory: item.sortCategory || '',
+        priorityTier: item.priorityTier || '',
+        tierCategory: item.tierCategory || '',
         verified: !!item.verified,
         purchaseHistory: Array.isArray(item.purchaseHistory)
             ? item.purchaseHistory.map(ensurePurchaseDefaults)
@@ -314,6 +456,10 @@ function ensurePharmacyDefaults(item) {
     return med;
 }
 
+/**
+ * handleVerifyToggle: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function handleVerifyToggle(medId) {
     const cb = document.getElementById(`ver-${medId}`);
     const isVerified = !!cb?.checked;
@@ -367,6 +513,10 @@ function handleVerifyToggle(medId) {
         });
 }
 
+/**
+ * handleExcludeToggle: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function handleExcludeToggle(medId) {
     const cb = document.getElementById(`exclude-${medId}`);
     const isExcluded = !!cb?.checked;
@@ -400,12 +550,20 @@ function handleExcludeToggle(medId) {
     scheduleSaveMedication(medId, false);
 }
 
+/**
+ * canonicalMedKey: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function canonicalMedKey(generic, brand, strength, formStrength = '') {
     const clean = (val) => (val || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
     const strengthVal = clean(strength || formStrength).replace(/unspecified/g, '');
     return `${clean(generic)}|${clean(brand)}|${strengthVal}`;
 }
 
+/**
+ * scheduleSaveMedication: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function scheduleSaveMedication(id, rerender = false) {
     // Debounce saves to prevent form collapse during typing.
     // Longer delay prevents save/reload while user is still typing.
@@ -417,6 +575,10 @@ function scheduleSaveMedication(id, rerender = false) {
     }, 800); // 800ms debounce - waits for user to pause typing
 }
 
+/**
+ * getMedicationDisplayName: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function getMedicationDisplayName(med) {
     const clean = (val) => (val || '').trim();
     const isPlaceholder = (val) => !val || /^medication\b/i.test(val);
@@ -430,6 +592,10 @@ function getMedicationDisplayName(med) {
     return `${primary}${showBrand ? ' - ' + brand : ''}`;
 }
 
+/**
+ * getExpiryDate: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function getExpiryDate(med) {
     if (!med || !Array.isArray(med.purchaseHistory)) return med?.expiryDate || '';
     let earliest = null;
@@ -442,6 +608,10 @@ function getExpiryDate(med) {
     return earliest ? earliest.toISOString().slice(0, 10) : (med.expiryDate || '');
 }
 
+/**
+ * getCurrentQuantity: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function getCurrentQuantity(med) {
     if (!med || !Array.isArray(med.purchaseHistory)) return Number(med.currentQuantity) || 0;
     return med.purchaseHistory.reduce((sum, ph) => {
@@ -450,6 +620,10 @@ function getCurrentQuantity(med) {
     }, 0);
 }
 
+/**
+ * sortPharmacyItems: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function sortPharmacyItems(items) {
     const list = Array.isArray(items) ? [...items] : [];
     const sortSel = document.getElementById('pharmacy-sort');
@@ -512,6 +686,7 @@ async function loadPharmacy() {
     if (pharmacyCache.length) {
         updatePharmacyCount(pharmacyCache.length);
         renderPharmacy(pharmacyCache);
+        initNewMedTierControls();
         // Skip - don't block on WHO list
     }
 
@@ -528,6 +703,7 @@ async function loadPharmacy() {
         
         // Render immediately - don't wait for WHO list
         populateNewMedUserLabelSelect();
+        initNewMedTierControls();
         observePharmacyList();
         updatePharmacyCount(pharmacyCache.length);
         renderPharmacy(pharmacyCache);
@@ -541,12 +717,20 @@ async function loadPharmacy() {
     }
 }
 
+/**
+ * handlePharmacySortChange: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function handlePharmacySortChange() {
     const openIds = getOpenMedIds();
     const textHeights = getTextareaHeights();
     renderPharmacy(pharmacyCache, openIds, textHeights);
 }
 
+/**
+ * getOpenMedIds: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function getOpenMedIds() {
     return Array.from(document.querySelectorAll('#pharmacy-list .history-item .col-body[data-med-id]'))
         .filter((el) => el.style.display !== 'none')
@@ -554,6 +738,10 @@ function getOpenMedIds() {
         .filter(Boolean);
 }
 
+/**
+ * renderPharmacy: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function renderPharmacy(items, openIds = [], textHeights = {}) {
     const list = document.getElementById('pharmacy-list');
     if (!list) return;
@@ -595,6 +783,10 @@ function renderPharmacy(items, openIds = [], textHeights = {}) {
     renderChunk();
 }
 
+/**
+ * renderPurchaseRows: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function renderPurchaseRows(med) {
     // Expiry UI contract:
     //  - Rows carry stable ph-id so deletes map 1:1 to saved rows.
@@ -645,6 +837,10 @@ function renderPurchaseRows(med) {
         .join('');
 }
 
+/**
+ * renderMedicationCard: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function renderMedicationCard(med, isOpen = false, textHeights = {}) {
     // Render a single medication card with summary badges and collapsible details/expiry tracking.
     const currentQty = getCurrentQuantity(med);
@@ -743,6 +939,20 @@ function renderMedicationCard(med, isOpen = false, textHeights = {}) {
                                 <input id="unit-${med.id}" type="text" value="${med.unit}" placeholder="Bottle, Box, Blister" style="width:100%; padding:8px;" oninput="scheduleSaveMedication('${med.id}')">
                             </div>
                         </div>
+                        <div style="grid-column: span 2; display:grid; grid-template-columns: repeat(2, minmax(200px, 1fr)); gap:10px;">
+                            <div>
+                                <label style="font-weight:700; font-size:12px;">Priority Tier</label>
+                                <select id="tier-${med.id}" style="width:100%; padding:8px;" onchange="handleMedTierChange('${med.id}')">
+                                    ${buildTierOptions(med.priorityTier)}
+                                </select>
+                            </div>
+                            <div>
+                                <label style="font-weight:700; font-size:12px;">Functional Subcategory</label>
+                                <select id="tiercat-${med.id}" style="width:100%; padding:8px;" onchange="scheduleSaveMedication('${med.id}')">
+                                    ${buildTierSubcategoryOptions(med.priorityTier, med.tierCategory)}
+                                </select>
+                            </div>
+                        </div>
                         <div>
                             <label style="font-weight:700; font-size:12px;">Storage Location</label>
                             <input id="loc-${med.id}" type="text" value="${med.storageLocation}" placeholder="Locker A, Fridge" style="width:100%; padding:8px;" oninput="scheduleSaveMedication('${med.id}')">
@@ -819,6 +1029,10 @@ function renderMedicationCard(med, isOpen = false, textHeights = {}) {
     </div>`;
 }
 
+/**
+ * renderWhoMedList: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function renderWhoMedList() {
     const container = document.getElementById('who-med-list');
     if (!container) return;
@@ -866,6 +1080,10 @@ async function loadWhoMedsFromServer() {
     }
 }
 
+/**
+ * parseWHOListText: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function parseWHOListText(text) {
     if (typeof text !== 'string') return [];
     const lines = text
@@ -895,6 +1113,10 @@ function parseWHOListText(text) {
         .filter((entry) => entry && entry.genericName);
 }
 
+/**
+ * setWhoMedStatus: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function setWhoMedStatus(message, isError = false) {
     const statusEl = document.getElementById('who-med-status');
     if (!statusEl) return;
@@ -902,6 +1124,10 @@ function setWhoMedStatus(message, isError = false) {
     statusEl.style.color = isError ? 'var(--red)' : '#1f2d3d';
 }
 
+/**
+ * openWhoListFilePicker: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function openWhoListFilePicker() {
     const input = document.getElementById('who-list-import-file');
     if (!input) return;
@@ -1010,6 +1236,10 @@ async function addWhoMeds(triggerId = null) {
     }
 }
 
+/**
+ * handleWhoTileSelect: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function handleWhoTileSelect(checkbox) {
     const tile = checkbox?.closest('label');
     if (!tile) return;
@@ -1018,6 +1248,10 @@ function handleWhoTileSelect(checkbox) {
     tile.style.borderColor = isChecked ? '#9fd7ac' : '#d9e5f7';
 }
 
+/**
+ * daysUntil: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function daysUntil(dateStr) {
     const now = new Date();
     const target = new Date(dateStr);
@@ -1026,6 +1260,10 @@ function daysUntil(dateStr) {
     return Math.ceil(diff / (1000 * 60 * 60 * 24));
 }
 
+/**
+ * clearExpiryForm: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function clearExpiryForm(medId) {
     const fields = ['new-exp-date', 'new-exp-qty', 'new-exp-manu', 'new-exp-batch', 'new-exp-notes'];
     fields.forEach(prefix => {
@@ -1034,6 +1272,10 @@ function clearExpiryForm(medId) {
     });
 }
 
+/**
+ * addPurchaseEntry: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function addPurchaseEntry(medId) {
     // Read values from the add form (like crew vaccine pattern)
     const date = document.getElementById(`new-exp-date-${medId}`)?.value || '';
@@ -1159,6 +1401,8 @@ async function saveMedication(id, rerender = false) {
     const sortVal = document.getElementById(`sort-${id}`)?.value || '';
     const sortCustom = document.getElementById(`sort-custom-${id}`)?.value || '';
     med.sortCategory = sortVal === '__custom' ? sortCustom : sortVal || sortCustom || '';
+    med.priorityTier = document.getElementById(`tier-${id}`)?.value || '';
+    med.tierCategory = document.getElementById(`tiercat-${id}`)?.value || '';
     med.verified = !!document.getElementById(`ver-${id}`)?.checked;
     med.purchaseHistory = collectPurchaseEntries(id);
     // Auto-sanitize any non-ISO dates so the save doesn't fail; backend also clears invalid dates.
@@ -1447,6 +1691,7 @@ window.saveMedication = saveMedication;
 window.deleteMedication = deleteMedication;
 window.addPurchaseEntry = addPurchaseEntry;
 window.scheduleSaveMedication = scheduleSaveMedication;
+window.handleMedTierChange = handleMedTierChange;
 window.refreshPharmacyLabelsFromSettings = refreshPharmacyLabelsFromSettings;
 window.sortPharmacyList = function(mode) {
     const openMedIds = getOpenMedIds();

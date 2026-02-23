@@ -1,4 +1,11 @@
 <!DOCTYPE html>
+<!-- =============================================================================
+     Author: Rick Escher
+     Project: SilingMedAdvisor (SailingMedAdvisor)
+     Context: Google HAI-DEF Framework
+     Models: Google MedGemmas
+     Program: Kaggle Impact Challenge
+     ========================================================================== -->
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -6,27 +13,29 @@
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
-        :root { --page-width: clamp(960px, 80vw, 1400px); --banner-height: 68px; --triage: #c1121f; --inquiry: #2e7d32; --green: #2e7d32; --red: #c62828; --dark: #2c3e50; --bg: #f4f7f6; }
-        body { margin: 0; font-family: 'Segoe UI', sans-serif; background: var(--bg); height: 100vh; display: flex; flex-direction: column; overflow-y: auto; }
-        .nav { background: var(--dark); display: flex; padding: 0 12px; min-height: var(--banner-height); align-items: center; flex-shrink: 0; max-width: var(--page-width); width: 100%; margin: 0 auto; box-sizing: border-box; gap: 8px; position: sticky; top: 0; z-index: 1000; }
+        :root { --page-width: 100%; --frame-padding: 8px; --frame-width: min(calc(100vw - (var(--frame-padding) * 2)), calc((100vh - (var(--frame-padding) * 2)) * 16 / 9)); --frame-height: min(calc(100vh - (var(--frame-padding) * 2)), calc((100vw - (var(--frame-padding) * 2)) * 9 / 16)); --banner-height: 68px; --triage: #c1121f; --inquiry: #2e7d32; --green: #2e7d32; --red: #c62828; --dark: #2c3e50; --bg: #f4f7f6; --splash-purple: #7452B9; --tabbar-bg: {{ '#7452B9' if use_splash_purple_tabbar else '#2c3e50' }}; }
+        html, body { width: 100%; height: 100%; }
+        body { margin: 0; font-family: 'Segoe UI', sans-serif; background: #0c1522; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: var(--frame-padding); box-sizing: border-box; overflow: hidden; }
+        .app-frame { width: var(--frame-width); height: var(--frame-height); background: var(--bg); display: flex; flex-direction: column; overflow: hidden; border: 1px solid #c9d2dc; box-shadow: 0 8px 24px rgba(9, 22, 39, 0.35); }
+        .nav { background: var(--tabbar-bg); display: flex; padding: 0; min-height: var(--banner-height); align-items: stretch; flex-shrink: 0; max-width: var(--page-width); width: 100%; margin: 0 auto; box-sizing: border-box; gap: 8px; position: sticky; top: 0; z-index: 1000; }
         .page-shell { max-width: var(--page-width); margin: 0 auto; width: 100%; box-sizing: border-box; }
-        .tab { color: white; background: none; border: none; padding: 10px 15px; cursor: pointer; font-weight: 700; flex: 1; text-align: center; }
+        .tab { color: white; background: none; border: none; padding: 0 10px; cursor: pointer; font-weight: 900; font-size: 16px; flex: 1; text-align: center; display: flex; align-items: center; justify-content: center; align-self: stretch; min-height: var(--banner-height); }
         .tab.active { color: #ffd54f; background: var(--inquiry); border-radius: 4px; }
         .tab-triage.active { background: var(--triage); }
         .tab-triage { flex: 1.2; font-weight: 900; }
         .tab-nowrap { white-space: nowrap; }
         .tab-config { color: white; }
-        .content { flex-grow: 1; padding: 15px; overflow-y: auto; display: none; flex-direction: column; background: var(--bg); min-height: calc(100vh - var(--banner-height) - 20px); }
+        .content { flex-grow: 1; padding: 15px; overflow-y: auto; display: none; flex-direction: column; background: var(--bg); min-height: 0; }
         .page-shell { max-width: var(--page-width); margin: 0 auto; width: 100%; box-sizing: border-box; }
         .page-body { display: flex; gap: 16px; align-items: stretch; width: 100%; position: relative; }
-        .page-body.sidebar-open .page-main { margin-right: 340px; padding-right: 24px; }
-        .page-body.sidebar-collapsed .page-main { margin-right: 70px; padding-right: 16px; }
+        .page-body.sidebar-open .page-main { margin-right: 448px; padding-right: 24px; }
+        .page-body.sidebar-collapsed .page-main { margin-right: 96px; padding-right: 16px; }
         .page-main { flex: 1; min-width: 0; display: flex; flex-direction: column; transition: padding-right 0.25s ease, margin-right 0.25s ease; }
         .page-main > .page-shell,
         .page-main > .panel-wrapper,
         .page-main > .history-wrapper { max-width: 100%; width: 100%; }
-        .page-sidebar { position: absolute; right: 0; top: 0; bottom: 0; width: 320px; min-width: 260px; max-width: 380px; background: #fff; border: 1px solid #ddd; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.07); display: flex; flex-direction: column; transition: width 0.25s ease, min-width 0.25s ease; overflow: hidden; }
-        .page-sidebar.collapsed { width: 38px; min-width: 38px; }
+        .page-sidebar { position: absolute; right: 0; top: 0; bottom: 0; width: 420px; min-width: 340px; max-width: 500px; background: #fff; border: 1px solid #ddd; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.07); display: flex; flex-direction: column; transition: width 0.25s ease, min-width 0.25s ease; overflow: hidden; }
+        .page-sidebar.collapsed { width: 52px; min-width: 52px; }
         .sidebar-toggle { background: none; border: none; padding: 10px; cursor: pointer; font-weight: 800; text-align: left; display: flex; align-items: center; gap: 8px; color: var(--dark); }
         .sidebar-toggle:hover { background: #f5f5f5; }
         .sidebar-content { padding: 0 14px 14px 14px; overflow-y: auto; flex: 1; }
@@ -38,7 +47,7 @@
         .sidebar-section.hidden { display: none; }
         .sidebar-pill { background: #f0f4f8; color: #2c3e50; padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; }
         /* Triage page sizing */
-        #Chat .triage-wrapper { min-height: 80vh; }
+        #Chat .triage-wrapper { min-height: 0; height: 100%; }
         
         .banner { height: var(--banner-height); padding: 0 20px; color: white; font-weight: 900; display: flex; align-items: center; gap: 12px; flex-wrap: nowrap; border-radius: 0; background: var(--triage); transition: 0.3s; max-width: var(--page-width); margin: 0 auto; box-sizing: border-box; box-shadow: 0 4px 12px rgba(0,0,0,0.15); position: sticky; top: var(--banner-height); z-index: 900; }
         .banner-controls { display: none; align-items: center; gap: 10px; flex: 1; min-width: 320px; flex-wrap: wrap; }
@@ -46,15 +55,102 @@
         .banner-controls button { height: 44px; }
         .banner-label { font-weight: 700; }
         .mode-toggle { padding: 10px 16px; font-weight: 800; color: var(--dark); border: 1px solid #ccc; border-radius: 6px; cursor: pointer; min-width: 140px; background: white; }
+        .triage-top-controls {
+            margin-bottom: 12px;
+            display: grid;
+            grid-template-columns: 108px minmax(0, 1fr) minmax(0, 0.95fr) 124px;
+            align-items: center;
+            gap: 6px;
+            min-width: 0;
+            overflow: hidden;
+        }
+        .triage-top-controls-label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 15px;
+            font-weight: 800;
+            color: #000;
+            min-width: 0;
+            white-space: nowrap;
+        }
+        .triage-pathway-title {
+            font-size: 15px;
+            font-weight: 800;
+            color: #000;
+            letter-spacing: 0;
+        }
+        .triage-top-controls #p-select,
+        .triage-top-controls #model-select {
+            width: 100%;
+            min-width: 0;
+            max-width: 100%;
+        }
+        .triage-top-controls #priv-btn {
+            width: 100%;
+            min-width: 0;
+            padding: 10px 10px;
+            font-size: 14px;
+            white-space: nowrap;
+        }
+        #triage-condition-selects {
+            grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+            gap: 8px !important;
+        }
+        #triage-condition-selects select {
+            padding: 7px !important;
+        }
         .banner.inquiry-mode { background: var(--inquiry); }
         /* Neutralize glow when logging is on (no privacy) */
         .banner.no-privacy { box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
         .banner.private-mode { box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
 
-        .triage-wrapper { max-width: var(--page-width); margin: 0 auto; border: 1px solid #ddd; border-top: none; display: flex; flex-direction: column; flex: 1; width: 100%; }
+        .triage-wrapper { max-width: var(--page-width); margin: 0 auto; border: 1px solid #ddd; border-top: none; display: flex; flex-direction: column; flex: 1; width: 100%; min-height: 0; }
         .chat-area { background: white; border-radius: 0; border: none; display: flex; flex-direction: column; flex: 1; min-height: 0; width: 100%; }
         .chat-area > div { width: 100%; box-sizing: border-box; }
         .display { flex-grow: 1; padding: 20px; overflow-y: auto; background:#fff; border:1px solid #e0e0e0; border-radius:6px; min-height:180px; max-height:70vh; }
+        .chat-transcript { display: flex; flex-direction: column; gap: 12px; }
+        .chat-message { padding: 12px 14px; border-radius: 12px; max-width: 82%; box-shadow: 0 2px 8px rgba(0,0,0,0.06); display: flex; flex-direction: column; gap: 6px; }
+        .chat-message.user { align-self: flex-end; background: #eef2ff; border: 1px solid #c7d4ff; }
+        .chat-message.assistant { align-self: flex-start; background: #f8f9fa; border: 1px solid #e2e2e2; }
+        .chat-meta { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 0.4px; }
+        .chat-content { font-size: 14px; color: #222; line-height: 1.45; }
+        .chat-content p { margin: 0 0 8px; }
+        .chat-content p:last-child { margin-bottom: 0; }
+        .chat-content ul,
+        .chat-content ol { margin: 4px 0 10px 20px; padding-left: 14px; }
+        .chat-content li { margin: 2px 0; }
+        .response-block p { margin: 0 0 8px; }
+        .response-block ul,
+        .response-block ol { margin: 4px 0 10px 20px; padding-left: 14px; }
+        .chat-content .chat-section-heading,
+        .response-block .chat-section-heading { margin-top: 10px; margin-bottom: 6px; }
+        .chat-content .chat-section-heading:first-child,
+        .response-block .chat-section-heading:first-child { margin-top: 0; }
+        .chat-content .chat-section-heading + ul,
+        .chat-content .chat-section-heading + ol,
+        .response-block .chat-section-heading + ul,
+        .response-block .chat-section-heading + ol { margin-top: 0; }
+        .chat-content .chat-section-label,
+        .response-block .chat-section-label { font-weight: 900; letter-spacing: 0.1px; color: #0f2942; }
+        .chat-empty-state {
+            color: #6b7280;
+            font-size: 14px;
+            text-align: left;
+            width: auto;
+            margin: 0;
+            padding: 0;
+            line-height: 1.4;
+        }
+        .chat-triage-meta { margin-top: 6px; font-size: 12px; color: #444; background: #fffaf7; border: 1px dashed #e2b6b6; border-radius: 6px; padding: 6px 8px; }
+        .chat-message { max-width: 82%; padding: 12px 14px; border-radius: 10px; line-height: 1.5; box-shadow: 0 2px 6px rgba(0,0,0,0.05); }
+        .chat-message.user { align-self: flex-end; background: #e8f5e9; border: 1px solid #cfe8d6; }
+        .chat-message.assistant { align-self: flex-start; background: #f3f6fa; border: 1px solid #d7e2ef; }
+        .chat-meta { font-size: 11px; color: #6b7280; margin-top: 6px; }
+        .chat-composer { margin-top: 12px; display: none; gap: 10px; flex-direction: column; }
+        .chat-composer textarea { min-height: 90px; }
+        .chat-composer-row { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+        .chat-composer-row select { padding: 8px; min-width: 200px; }
         .response-block { border-left: 6px solid var(--inquiry); padding: 15px; margin: 15px 0; background: #f9f9f9; }
         .history-list { display: flex; flex-direction: column; gap: 8px; }
         .history-item { border: 1px solid #ddd; border-radius: 6px; background: #fff; }
@@ -88,6 +184,44 @@
         
         .btn { padding: 10px 20px; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; transition: opacity 0.3s; }
         .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .export-cta-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 10px 16px;
+            border: 1px solid rgba(255, 255, 255, 0.35);
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 800;
+            letter-spacing: 0.2px;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+            transition: transform 0.15s ease, filter 0.15s ease, box-shadow 0.15s ease;
+        }
+        .export-cta-btn:hover { transform: translateY(-1px); filter: brightness(1.04); box-shadow: 0 4px 10px rgba(0, 0, 0, 0.24); }
+        .export-cta-btn:active { transform: translateY(0); }
+        #crew-csv-btn.export-cta-btn,
+        #crew-immigration-zip-btn.export-cta-btn {
+            background: var(--inquiry) !important;
+            border-color: rgba(255, 213, 79, 0.55);
+        }
+        .vessel-photo-grid { display: grid; grid-template-columns: repeat(3, minmax(180px, 1fr)); gap: 12px; }
+        .vessel-photo-card { border: 1px solid #c8d9ed; border-radius: 6px; padding: 10px; background: #eef5ff; }
+        .vessel-photo-preview {
+            border: 1px dashed #9eb4cf;
+            border-radius: 6px;
+            background: #fff;
+            min-height: 130px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 8px;
+            font-size: 12px;
+            color: #52657a;
+            margin-bottom: 8px;
+            overflow: hidden;
+        }
+        .vessel-photo-preview img { width: 100%; max-height: 190px; object-fit: contain; border-radius: 4px; cursor: pointer; }
         #priv-btn { border: 1px solid #222; color: white; }
         #priv-btn.is-private { border: 2px solid #fff; }
         /* Align green button text to the selected-tab palette */
@@ -111,6 +245,9 @@
             .triage-wrapper textarea,
             #msg,
             #prompt-preview { font-size: 15px; }
+            .triage-top-controls .btn,
+            .triage-top-controls .btn-sm { width: auto; }
+            #triage-condition-selects { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
             #medication-add-body .col-body,
             #medication-add-body .col-header,
             #equipment-add-body .col-body,
@@ -121,6 +258,7 @@
             #equipment-add-body [style*="grid"] { grid-template-columns: 1fr !important; }
             #consumables-add-body [style*="grid"] { grid-template-columns: 1fr !important; }
             #vessel-info [style*="grid-template-columns"] { grid-template-columns: 1fr !important; }
+            .vessel-photo-grid { grid-template-columns: 1fr !important; }
             #crew-info-list [style*="grid-template-columns"] { grid-template-columns: 1fr !important; }
             #medication-add-body button,
             #equipment-add-body button,
@@ -134,11 +272,11 @@
             .page-body.sidebar-collapsed .page-main { margin-right: 0; padding-right: 0; }
         .page-sidebar .sidebar-toggle { width: 100%; justify-content: center; }
         .nav { flex-wrap: wrap; }
-        .tab { flex: 1 1 50%; }
+        .tab { flex: 1 1 50%; font-size: 14px; min-height: 52px; }
     }
     /* Blocking modal while GPU chat is running */
     #chat-blocker {
-        display: none;
+        display: none !important;
         position: fixed;
         inset: 0;
         background: rgba(0,0,0,0.65);
@@ -147,7 +285,9 @@
         justify-content: center;
         padding: 16px;
         box-sizing: border-box;
+        pointer-events: none;
     }
+    #chat-blocker.active { display: flex !important; pointer-events: auto; }
     #chat-blocker .modal {
         background: #fff;
         border-radius: 10px;
@@ -188,20 +328,21 @@
     </script>
 </head>
 <body>
+<div id="app-frame" class="app-frame">
 
 <div class="nav">
     <span class="dev-tag">dev:tabbar</span>
-    <button class="tab tab-triage active" onclick="showTab(event, 'Chat')"><span class="dev-tag">dev:tab-chat</span>MEDGEMMA CONSULTATION</button>
-    <button class="tab tab-nowrap" onclick="showTab(event, 'CrewMedical')"><span class="dev-tag">dev:tab-consult-log</span>CONSULTATION LOG</button>
-    <button class="tab" onclick="showTab(event, 'OnboardEquipment')"><span class="dev-tag">dev:tab-medical-chest</span>MEDICAL CHEST</button>
-    <button class="tab" onclick="showTab(event, 'VesselCrewInfo')"><span class="dev-tag">dev:tab-vessel-crew</span>VESSEL & CREW</button>
-    <button class="tab tab-config" onclick="showTab(event, 'Settings')"><span class="dev-tag">dev:tab-settings</span>SETTINGS</button>
+    <button class="tab tab-triage active" onclick="showTab(event, 'Chat')"><span class="dev-tag">dev:tab-chat</span>🚨 MEDGEMMA CONSULTATION</button>
+    <button class="tab tab-nowrap" onclick="showTab(event, 'CrewMedical')"><span class="dev-tag">dev:tab-consult-log</span>📋 CONSULTATION LOG</button>
+    <button class="tab" onclick="showTab(event, 'OnboardEquipment')"><span class="dev-tag">dev:tab-medical-chest</span>🧰 MEDICAL CHEST</button>
+    <button class="tab" onclick="showTab(event, 'VesselCrewInfo')"><span class="dev-tag">dev:tab-vessel-crew</span>⛵ VESSEL & CREW</button>
+    <button class="tab tab-config" onclick="showTab(event, 'Settings')"><span class="dev-tag">dev:tab-settings</span>⚙️ SETTINGS</button>
 </div>
 
 <div class="page-shell">
         <div id="banner" class="banner">
         <span class="dev-tag">dev:banner</span>
-        <div id="banner-controls-triage" class="banner-controls" style="display:flex; align-items:center; gap:10px;">
+        <div id="banner-controls-triage" class="banner-controls" style="align-items:center; gap:10px;">
             <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
                 <span style="font-weight:800;">Consultation Mode:</span><span class="dev-tag">dev:mode-label</span>
                 <select id="mode-select" class="mode-toggle" style="min-width:200px; background:white; color:var(--dark);" onchange="setMode(this.value)">
@@ -213,7 +354,8 @@
         </div>
         <div id="banner-controls-crew" class="banner-controls" style="justify-content:space-between; gap:12px;">
             <div style="display:flex; gap:12px; align-items:center; flex:1;">
-                <button id="crew-csv-btn" onclick="exportCrewList()" class="btn btn-sm" style="background:var(--inquiry); display:none; align-self:center;"><span class="dev-tag">dev:btn-crew-csv</span>📋 Crew List CSV</button>
+                <button id="crew-csv-btn" onclick="exportCrewList()" class="btn btn-sm export-cta-btn" style="background:var(--inquiry); display:none; align-self:center;"><span class="dev-tag">dev:btn-crew-csv</span>📋 Crew List CSV</button>
+                <button id="crew-immigration-zip-btn" onclick="exportImmigrationZip()" class="btn btn-sm export-cta-btn" style="background:var(--inquiry); display:none; align-self:center;"><span class="dev-tag">dev:btn-crew-immigration-zip</span>🛂 Export Zip File for Immigration</button>
                 <button id="crew-med-export-all-btn" onclick="exportAllMedical()" class="btn btn-sm" style="background:var(--inquiry); display:none;"><span class="dev-tag">dev:btn-crew-export-all</span>📤 Export All Medical</button>
             </div>
         </div>
@@ -230,76 +372,165 @@
                         <div id="query-form-header" class="col-header crew-med-header" data-pref-key="query-form-open" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start; align-items:center; gap:12px;">
                             <span class="dev-tag">dev:triage-form</span>
                             <span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▾</span>
-                            <span id="query-form-title" style="font-weight:700; white-space:nowrap;">Triage Consultation Entry</span>
-                            <div class="triage-sample-inline" style="margin-left:auto; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-                                <label for="triage-sample-select" style="font-size:12px; color:#333; font-weight:700; margin:0;">Select a Test Case:</label>
-                                <span class="dev-tag">dev:sel-triage-sample</span>
-                                <select id="triage-sample-select" style="padding:8px; min-width:200px;" onchange="applyTriageSample(this.value)">
-                                    <option value="">Select a Test Case</option>
-                                </select>
-                            </div>
+                            <span id="query-form-title" style="font-weight:700; white-space:nowrap;">Start New Triage Consultation</span>
                         </div>
                         <div id="query-form-body" class="col-body" style="padding:16px; background:#f4f4f4; display:block;">
-                            <div style="margin-bottom:12px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-                <span style="display:flex; align-items:center; gap:6px; font-weight:800; color:var(--dark); min-width:160px;">
-                    Crew Member Receiving Care
+                            <div class="triage-top-controls">
+                <span class="triage-top-controls-label">
+                    Crew/Patient
                     <span class="dev-tag">dev:triage-patient</span>
                 </span>
-                <select id="p-select" style="flex:1; max-width:320px; padding:10px; font-weight:700; min-width:220px;"><span class="dev-tag">dev:sel-patient</span></select>
-                <select id="model-select" style="flex:1; max-width:280px; padding:10px; font-weight:700; min-width:200px;">
+                <select id="p-select" style="padding:10px; font-weight:700;"><option value="">Unnamed Crew Member</option></select>
+                <select id="model-select" style="padding:10px; font-weight:700;">
                     <option value="google/medgemma-1.5-4b-it">medgemma-1.5-4b-it (local)</option>
                     <option value="google/medgemma-27b-text-it">medgemma-27b-text-it (local)</option>
                 </select>
-                <span class="dev-tag">dev:sel-model</span>
-                <button onclick="togglePriv()" id="priv-btn" class="btn" style="background:#555; min-width:140px;"><span class="dev-tag">dev:btn-logging</span>LOGGING: ON</button>
+                <button onclick="togglePriv()" id="priv-btn" class="btn" style="background:#555;"><span class="dev-tag">dev:btn-logging</span>LOGGING: ON</button>
             </div>
                             <span class="dev-tag">dev:textarea-chat-msg</span>
                             <textarea id="msg" style="height:105px;" placeholder="Describe what's happening"></textarea>
-                            <div id="triage-meta-selects" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:10px; margin-top:10px;">
-                                <div>
-                                    <label for="triage-consciousness" style="font-size:12px; color:#333;">Is the person awake/responsive?</label>
-                                    <span class="dev-tag">dev:sel-triage-consciousness</span>
-                                    <select id="triage-consciousness" style="padding:8px; width:100%;">
-                                        <option value="">Select...</option>
-                                    </select>
+                            <div id="triage-condition-container">
+                                <div id="triage-condition-selects" style="display:grid; margin-top:0;">
+                                    <div id="triage-consciousness-field">
+                                        <label for="triage-consciousness" style="font-size:12px; color:#333;">Consciousness</label>
+                                        <span class="dev-tag">dev:sel-triage-consciousness</span>
+                                        <select id="triage-consciousness" style="padding:8px; width:100%;">
+                                            <option value="">Select...</option>
+                                            <option value="Alert and oriented">Alert and oriented</option>
+                                            <option value="Confused / disoriented">Confused / disoriented</option>
+                                            <option value="Responds to voice only">Responds to voice only</option>
+                                            <option value="Responds to pain only">Responds to pain only</option>
+                                            <option value="Unresponsive">Unresponsive</option>
+                                        </select>
+                                    </div>
+                                    <div id="triage-breathing-field">
+                                        <label for="triage-breathing" style="font-size:12px; color:#333;">Breathing</label>
+                                        <span class="dev-tag">dev:sel-triage-breathing</span>
+                                        <select id="triage-breathing" style="padding:8px; width:100%;">
+                                            <option value="">Select...</option>
+                                            <option value="Normal">Normal</option>
+                                            <option value="Rapid">Rapid</option>
+                                            <option value="Slow">Slow</option>
+                                            <option value="Labored / struggling">Labored / struggling</option>
+                                            <option value="Gasping / irregular">Gasping / irregular</option>
+                                            <option value="Not breathing">Not breathing</option>
+                                        </select>
+                                    </div>
+                                    <div id="triage-circulation-field">
+                                        <label for="triage-circulation" style="font-size:12px; color:#333;">Circulation</label>
+                                        <span class="dev-tag">dev:sel-triage-circulation</span>
+                                        <select id="triage-circulation" style="padding:8px; width:100%;">
+                                            <option value="">Select...</option>
+                                            <option value="Normal pulse and warm skin">Normal pulse and warm skin</option>
+                                            <option value="Rapid pulse">Rapid pulse</option>
+                                            <option value="Weak / thready pulse">Weak / thready pulse</option>
+                                            <option value="Irregular pulse">Irregular pulse</option>
+                                            <option value="No pulse">No pulse</option>
+                                            <option value="Severe uncontrolled bleeding">Severe uncontrolled bleeding</option>
+                                        </select>
+                                    </div>
+                                    <div id="triage-overall-stability-field">
+                                        <label for="triage-overall-stability" style="font-size:12px; color:#333;">Overall Stability</label>
+                                        <span class="dev-tag">dev:sel-triage-overall-stability</span>
+                                        <select id="triage-overall-stability" style="padding:8px; width:100%;">
+                                            <option value="">Select...</option>
+                                            <option value="Stable - no immediate danger">Stable - no immediate danger</option>
+                                            <option value="Concerning - abnormal, needs urgent evaluation">Concerning - abnormal, needs urgent evaluation</option>
+                                            <option value="Unstable - high risk, urgent treatment required">Unstable - high risk, urgent treatment required</option>
+                                            <option value="Critical - life-saving intervention needed now">Critical - life-saving intervention needed now</option>
+                                        </select>
+                                    </div>
                                 </div>
-                                <div>
-                                    <label for="triage-breathing-status" style="font-size:12px; color:#333;">Breathing right now</label>
-                                    <span class="dev-tag">dev:sel-triage-breathing</span>
-                                    <select id="triage-breathing-status" style="padding:8px; width:100%;">
-                                        <option value="">Select...</option>
-                                    </select>
+                            </div>
+                            <div id="triage-pathway-container" class="collapsible" style="margin-top:12px; margin-bottom:8px;">
+                                <div id="triage-pathway-header" class="col-header crew-med-header" data-pref-key="triage-pathway-open" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start; align-items:center;">
+                                    <span class="dev-tag">dev:triage-pathway</span>
+                                    <span class="detail-icon history-arrow" style="font-size:16px; margin-right:8px;">▸</span>
+                                    <span class="triage-pathway-title">Clinical Triage Pathway (Optional)</span>
                                 </div>
-                                <div>
-                                    <label for="triage-pain-level" style="font-size:12px; color:#333;">How bad is the pain?</label>
-                                    <span class="dev-tag">dev:sel-triage-pain</span>
-                                    <select id="triage-pain-level" style="padding:8px; width:100%;">
-                                        <option value="">Select...</option>
-                                    </select>
-                                </div>
-                                <div>
-                                    <label for="triage-main-problem" style="font-size:12px; color:#333;">Main problem right now</label>
-                                    <select id="triage-main-problem" style="padding:8px; width:100%;">
-                                        <option value="">Select...</option>
-                                    </select>
-                                </div>
-                                <div>
-                                    <label for="triage-temperature" style="font-size:12px; color:#333;">Body temperature</label>
-                                    <select id="triage-temperature" style="padding:8px; width:100%;">
-                                        <option value="">Select...</option>
-                                    </select>
-                                </div>
-                                <div>
-                                    <label for="triage-circulation" style="font-size:12px; color:#333;">Circulation and blood pressure signs</label>
-                                    <select id="triage-circulation" style="padding:8px; width:100%;">
-                                        <option value="">Select...</option>
-                                    </select>
-                                </div>
-                                <div>
-                                    <label for="triage-cause" style="font-size:12px; color:#333;">What caused this?</label>
-                                    <select id="triage-cause" style="padding:8px; width:100%;">
-                                        <option value="">Select...</option>
-                                    </select>
+                                <div id="triage-pathway-body" class="col-body" style="padding:10px 0 0; display:none; background:transparent;">
+                                    <div id="triage-meta-selects" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:10px; margin-top:0;">
+                                        <div id="triage-domain-field">
+                                            <label for="triage-domain" style="font-size:12px; color:#333;">Domain</label>
+                                            <span class="dev-tag">dev:sel-triage-domain</span>
+                                            <select id="triage-domain" style="padding:8px; width:100%;">
+                                                <option value="">Select...</option>
+                                                <option value="Trauma">Trauma</option>
+                                                <option value="Medical illness">Medical illness</option>
+                                                <option value="Environmental exposure">Environmental exposure</option>
+                                                <option value="Dental">Dental</option>
+                                                <option value="Behavioral / psychological">Behavioral / psychological</option>
+                                            </select>
+                                        </div>
+                                        <div id="triage-problem-field">
+                                            <label for="triage-problem" style="font-size:12px; color:#333;">Problem / Injury Type</label>
+                                            <span class="dev-tag">dev:sel-triage-problem</span>
+                                            <select id="triage-problem" style="padding:8px; width:100%;">
+                                                <option value="">Select...</option>
+                                                <option value="Laceration">Laceration</option>
+                                                <option value="Bleeding wound (non-laceration)">Bleeding wound (non-laceration)</option>
+                                                <option value="Fracture">Fracture</option>
+                                                <option value="Dislocation / severe sprain">Dislocation / severe sprain</option>
+                                                <option value="Burn">Burn</option>
+                                                <option value="Infection / abscess">Infection / abscess</option>
+                                                <option value="Embedded foreign body">Embedded foreign body</option>
+                                                <option value="Eye injury">Eye injury</option>
+                                                <option value="Marine bite / sting / envenomation">Marine bite / sting / envenomation</option>
+                                                <option value="Heat illness">Heat illness</option>
+                                                <option value="Cold exposure / hypothermia">Cold exposure / hypothermia</option>
+                                                <option value="General illness (vomiting, fever, weakness)">General illness (vomiting, fever, weakness)</option>
+                                            </select>
+                                        </div>
+                                        <div id="triage-anatomy-field">
+                                            <label for="triage-anatomy" style="font-size:12px; color:#333;">Anatomy</label>
+                                            <span class="dev-tag">dev:sel-triage-anatomy</span>
+                                            <select id="triage-anatomy" style="padding:8px; width:100%;">
+                                                <option value="">Select...</option>
+                                                <option value="Head">Head</option>
+                                                <option value="Face / Eye">Face / Eye</option>
+                                                <option value="Neck / Airway">Neck / Airway</option>
+                                                <option value="Chest">Chest</option>
+                                                <option value="Abdomen">Abdomen</option>
+                                                <option value="Back / Spine">Back / Spine</option>
+                                                <option value="Arm / Hand">Arm / Hand</option>
+                                                <option value="Leg / Foot">Leg / Foot</option>
+                                                <option value="Joint">Joint</option>
+                                                <option value="Whole body / systemic">Whole body / systemic</option>
+                                            </select>
+                                        </div>
+                                        <div id="triage-severity-field">
+                                            <label for="triage-severity" style="font-size:12px; color:#333;">Mechanism / Cause</label>
+                                            <span class="dev-tag">dev:sel-triage-severity</span>
+                                            <select id="triage-severity" style="padding:8px; width:100%;">
+                                                <option value="">Select...</option>
+                                                <option value="Stable minor">Stable minor</option>
+                                                <option value="Significant bleeding">Significant bleeding</option>
+                                                <option value="Uncontrolled bleeding">Uncontrolled bleeding</option>
+                                                <option value="Altered mental status">Altered mental status</option>
+                                                <option value="Breathing difficulty">Breathing difficulty</option>
+                                                <option value="Severe pain or functional loss">Severe pain or functional loss</option>
+                                                <option value="Infection risk / sepsis signs">Infection risk / sepsis signs</option>
+                                                <option value="Deteriorating over time">Deteriorating over time</option>
+                                            </select>
+                                        </div>
+                                        <div id="triage-mechanism-field">
+                                            <label for="triage-mechanism" style="font-size:12px; color:#333;">Severity / Complication</label>
+                                            <span class="dev-tag">dev:sel-triage-mechanism</span>
+                                            <select id="triage-mechanism" style="padding:8px; width:100%;">
+                                                <option value="">Select...</option>
+                                                <option value="Blunt impact">Blunt impact</option>
+                                                <option value="Sharp cut">Sharp cut</option>
+                                                <option value="Penetrating / Impaled">Penetrating / Impaled</option>
+                                                <option value="Crush / compression">Crush / compression</option>
+                                                <option value="Twist / overload (rope, winch)">Twist / overload (rope, winch)</option>
+                                                <option value="High-tension recoil (snapback line)">High-tension recoil (snapback line)</option>
+                                                <option value="Marine bite / sting">Marine bite / sting</option>
+                                                <option value="Thermal exposure">Thermal exposure</option>
+                                                <option value="Immersion / near drowning">Immersion / near drowning</option>
+                                                <option value="Chemical / electrical exposure">Chemical / electrical exposure</option>
+                                            </select>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                             <div class="collapsible" style="margin-top:12px;">
@@ -316,17 +547,25 @@
                                 </div>
                             </div>
                             <div style="display:flex; gap:10px; margin-top:10px; align-items:center; flex-wrap:wrap;">
-                                <button onclick="runChat()" id="run-btn" class="btn" style="flex-grow:1; background:var(--triage); min-width:160px;">SUBMIT FOR TRIAGE</button>
+                                <button onclick="runChat()" id="run-btn" class="btn" style="flex-grow:1; background:var(--triage); min-width:160px;">Submit to Start Triage Consultation</button>
                             </div>
                         </div>
-                    </div>
-                    <div style="display:flex; justify-content:flex-end; margin-bottom:6px;">
-                                <button onclick="clearDisplay()" class="btn btn-sm" style="background:#c62828;">Clear Previous Consultation Response</button>
                     </div>
                     <div style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">
                         <span class="dev-tag">dev:triage-display</span>
                     </div>
-                    <div id="display" class="display"></div>
+                    <div id="display" class="display chat-transcript"><div class="chat-empty-state">No consultation response yet. Expand "Start New Triage Consultation" above and submit to generate guidance.</div></div>
+                    <div id="chat-composer" class="chat-composer">
+                        <textarea id="chat-input" placeholder="Type your follow-up..."></textarea>
+                        <div class="chat-composer-row">
+                            <span style="font-size:12px; font-weight:700; color:#333;">Model for this message</span>
+                            <select id="chat-model-select">
+                                <option value="google/medgemma-1.5-4b-it">medgemma-1.5-4b-it (local)</option>
+                                <option value="google/medgemma-27b-text-it">medgemma-27b-text-it (local)</option>
+                            </select>
+                            <button onclick="sendChatMessage()" id="chat-send-btn" class="btn" style="background:var(--inquiry); min-width:160px;">SEND MESSAGE</button>
+                        </div>
+                    </div>
                     </div>
                 </div>
             </div>
@@ -444,6 +683,16 @@
                                             <div>
                                                 <label style="font-weight:700; font-size:12px;">Strength</label>
                                                 <input id="med-new-strength" type="text" style="width:100%; padding:8px;" placeholder="500mg, 10mg/ml">
+                                            </div>
+                                            <div style="grid-column: span 2; display:grid; grid-template-columns: repeat(2, minmax(200px, 1fr)); gap:10px;">
+                                                <div>
+                                                    <label style="font-weight:700; font-size:12px;">Priority Tier</label>
+                                                    <select id="med-new-tier" style="width:100%; padding:8px;"></select>
+                                                </div>
+                                                <div>
+                                                    <label style="font-weight:700; font-size:12px;">Functional Subcategory</label>
+                                                    <select id="med-new-tiercat" style="width:100%; padding:8px;"></select>
+                                                </div>
                                             </div>
                                             <div style="grid-column: 1 / span 2; display:grid; grid-template-columns: repeat(3, minmax(160px, 1fr)); gap:10px;">
                                                 <div>
@@ -569,11 +818,15 @@
                                                 <label style="font-weight:700; font-size:12px;">Medical Equipment Name *</label>
                                                 <input id="eq-new-name" type="text" style="width:100%; padding:8px;" placeholder="e.g., Oxygen Concentrator">
                                             </div>
-                                            <div>
-                                                <label style="font-weight:700; font-size:12px;">Category</label>
-                                                <select id="eq-new-category" style="width:100%; padding:8px;">
-                                                    <option value="">Uncategorized</option>
-                                                </select>
+                                            <div style="grid-column: span 2; display:grid; grid-template-columns: repeat(2, minmax(200px, 1fr)); gap:10px;">
+                                                <div>
+                                                    <label style="font-weight:700; font-size:12px;">Priority Tier</label>
+                                                    <select id="eq-new-tier" style="width:100%; padding:8px;"></select>
+                                                </div>
+                                                <div>
+                                                    <label style="font-weight:700; font-size:12px;">Functional Subcategory</label>
+                                                    <select id="eq-new-tiercat" style="width:100%; padding:8px;"></select>
+                                                </div>
                                             </div>
                                             <div>
                                                 <label style="font-weight:700; font-size:12px;">Quantity</label>
@@ -628,11 +881,15 @@
                                                 <label style="font-weight:700; font-size:12px;">Quantity</label>
                                                 <input id="cons-new-qty" type="text" style="width:100%; padding:8px;" placeholder="e.g., 12 boxes or 50 strips">
                                             </div>
-                                            <div style="grid-column: span 2;">
-                                                <label style="font-weight:700; font-size:12px;">Category</label>
-                                                <select id="cons-new-category" style="width:100%; padding:8px;">
-                                                    <option value="">Uncategorized</option>
-                                                </select>
+                                            <div style="grid-column: span 2; display:grid; grid-template-columns: repeat(2, minmax(200px, 1fr)); gap:10px;">
+                                                <div>
+                                                    <label style="font-weight:700; font-size:12px;">Priority Tier</label>
+                                                    <select id="cons-new-tier" style="width:100%; padding:8px;"></select>
+                                                </div>
+                                                <div>
+                                                    <label style="font-weight:700; font-size:12px;">Functional Subcategory</label>
+                                                    <select id="cons-new-tiercat" style="width:100%; padding:8px;"></select>
+                                                </div>
                                             </div>
                                             <div>
                                                 <div class="dev-tag">dev:consumable-notes-field</div>
@@ -746,6 +1003,30 @@
                                 <input type="text" id="vessel-rib-sn" value="{{ vessel_prefill.ribSn | default('') }}" style="padding:8px; width:100%;">
                             </div>
                         </div>
+                        <div style="margin-bottom:8px;">
+                            <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">Vessel Photos &amp; Registration Images</label>
+                            <div class="dev-tag">dev:vessel-photo-fields</div>
+                        </div>
+                        <div class="vessel-photo-grid">
+                            <div class="vessel-photo-card">
+                                <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">Boat Photo</label>
+                                <div id="vessel-photo-preview-boatPhoto" class="vessel-photo-preview">No file uploaded.</div>
+                                <input type="file" id="vessel-photo-input-boatPhoto" accept="image/*,.pdf" onchange="uploadVesselPhoto('boatPhoto', this)" style="font-size:12px; width:100%;">
+                                <button class="btn btn-sm" style="background:var(--red); margin-top:8px; width:100%; padding:6px 10px;" onclick="deleteVesselPhoto('boatPhoto')">Delete</button>
+                            </div>
+                            <div class="vessel-photo-card">
+                                <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">Registration Front</label>
+                                <div id="vessel-photo-preview-registrationFrontPhoto" class="vessel-photo-preview">No file uploaded.</div>
+                                <input type="file" id="vessel-photo-input-registrationFrontPhoto" accept="image/*,.pdf" onchange="uploadVesselPhoto('registrationFrontPhoto', this)" style="font-size:12px; width:100%;">
+                                <button class="btn btn-sm" style="background:var(--red); margin-top:8px; width:100%; padding:6px 10px;" onclick="deleteVesselPhoto('registrationFrontPhoto')">Delete</button>
+                            </div>
+                            <div class="vessel-photo-card">
+                                <label style="font-size:12px; font-weight:bold; margin-bottom:4px; display:block;">Registration Back</label>
+                                <div id="vessel-photo-preview-registrationBackPhoto" class="vessel-photo-preview">No file uploaded.</div>
+                                <input type="file" id="vessel-photo-input-registrationBackPhoto" accept="image/*,.pdf" onchange="uploadVesselPhoto('registrationBackPhoto', this)" style="font-size:12px; width:100%;">
+                                <button class="btn btn-sm" style="background:var(--red); margin-top:8px; width:100%; padding:6px 10px;" onclick="deleteVesselPhoto('registrationBackPhoto')">Delete</button>
+                            </div>
+                        </div>
                                 </div>
                             </div>
                 <div class="collapsible" style="margin-bottom:15px;">
@@ -844,23 +1125,11 @@
                 <div class="panel-wrapper">
                     <div class="collapsible" style="margin-bottom:12px;">
                         <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                            <span class="dev-tag">dev:settings-offline</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Offline Readiness</span>
-                            <span id="offline-meta" style="margin-left:auto; font-size:12px; color:#4a5568;"></span>
+                            <span class="dev-tag">dev:settings-crew-creds</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Crew Login Credentials</span>
+                            <span id="crew-creds-meta" style="margin-left:auto; font-size:12px; color:#4a5568;"></span>
                         </div>
                         <div class="col-body" style="padding:12px; background:#f8f9fa;">
-                            <div id="offline-status" style="font-size:13px; color:#2c3e50; margin-bottom:10px;">Not checked yet.</div>
-                            <div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:8px;">
-                                <button id="offline-check-btn" class="btn btn-sm" style="background:var(--inquiry);" onclick="runOfflineCheck(false)">Check cache status</button>
-                                <button id="offline-download-btn" class="btn btn-sm" style="background:#1f2d3d;" onclick="runOfflineCheck(true)">Download missing models</button>
-                                <button id="offline-backup-btn" class="btn btn-sm" style="background:#00695c;" onclick="createOfflineBackup()">Backup cache</button>
-                                <button id="offline-restore-btn" class="btn btn-sm" style="background:#8e44ad;" onclick="restoreOfflineBackup()">Restore last backup</button>
-                                <button id="offline-flag-btn" class="btn btn-sm" style="background:#b26a00;" onclick="toggleOfflineFlags()">Enable offline flags</button>
-                            </div>
-                            <label style="display:flex; align-items:center; gap:8px; font-size:12px; color:#333; margin-bottom:6px;">
-                                <input type="checkbox" id="offline-force-flags" onclick="toggleOfflineFlags(this.checked)" />
-                                Keep offline flags enabled until I turn them off
-                            </label>
-                            <div style="font-size:12px; color:#555;">Ensures all required models are cached and lets you back up/restore the cache before going offline.</div>
+                            <div id="crew-credentials"></div>
                         </div>
                     </div>
                     <div class="collapsible" style="margin-bottom:12px;">
@@ -897,52 +1166,48 @@
                     </div>
                     <div class="collapsible" style="margin-bottom:12px;">
                         <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                            <span class="dev-tag">dev:settings-equipment-categories</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Medical Equipment Categories</span>
-                            <span id="equipment-cat-meta" style="margin-left:auto; font-size:12px; color:#4a5568;"></span>
+                            <span class="dev-tag">dev:settings-usermode</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">User Mode</span>
+                            <span id="user-mode-meta" style="margin-left:auto; font-size:12px; color:#4a5568;"></span>
                         </div>
-                        <div class="col-body" style="padding:12px; background:#f8f9fa; display:none;">
-                            <div style="margin-bottom:8px; font-size:12px; color:#2c3e50;">Manage the category list used for Medical Equipment dropdowns and prompt summaries.</div>
-                            <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
-                                <input id="equipment-category-input" type="text" style="padding:8px; min-width:220px; flex:1;" placeholder="e.g., Diagnostics & monitoring">
-                                <button class="btn btn-sm" style="background:var(--inquiry);" onclick="addEquipmentCategory()">Add Category</button>
-                            </div>
-                            <div class="dev-tag" style="margin-bottom:6px;">dev:settings-equipment-category-list</div>
-                            <div id="equipment-categories-list"></div>
-                            <div id="equipment-categories-status" style="margin-top:8px; font-size:12px; color:#555;">Saved with app settings.</div>
-                        </div>
-                    </div>
-                    <div class="collapsible" style="margin-bottom:12px;">
-                        <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                            <span class="dev-tag">dev:settings-consumable-categories</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Consumable Categories</span>
-                            <span id="consumable-cat-meta" style="margin-left:auto; font-size:12px; color:#4a5568;"></span>
-                        </div>
-                        <div class="col-body" style="padding:12px; background:#f8f9fa; display:none;">
-                            <div style="margin-bottom:8px; font-size:12px; color:#2c3e50;">Manage the category list used for Consumable dropdowns and prompt summaries.</div>
-                            <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
-                                <input id="consumable-category-input" type="text" style="padding:8px; min-width:220px; flex:1;" placeholder="e.g., Wound care & dressings">
-                                <button class="btn btn-sm" style="background:var(--inquiry);" onclick="addConsumableCategory()">Add Category</button>
-                            </div>
-                            <div class="dev-tag" style="margin-bottom:6px;">dev:settings-consumable-category-list</div>
-                            <div id="consumable-categories-list"></div>
-                            <div id="consumable-categories-status" style="margin-top:8px; font-size:12px; color:#555;">Saved with app settings.</div>
-                        </div>
-                    </div>
-                    <div class="collapsible" style="margin-bottom:12px;">
-                        <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                            <span class="dev-tag">dev:settings-resource-injection</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Medical Chest Prompt Injection</span>
-                        </div>
-                        <div class="col-body" style="padding:12px; background:#f8f9fa; display:none;">
-                            <div style="margin-bottom:8px; font-size:12px; color:#2c3e50;">Choose whether the prompt includes full equipment/consumable lists or just category counts.</div>
-                            <label for="resource_injection_mode" style="font-weight:700; font-size:12px;">Injection Mode</label>
-                            <select id="resource_injection_mode" style="padding:10px; min-width:260px;">
-                                <option value="category_counts">Categories with counts (short)</option>
-                                <option value="full">Full item lists (long)</option>
+                        <div class="col-body" style="padding:12px; background:#f8f9fa;">
+                            <label for="user_mode">User Mode</label>
+                            <select id="user_mode" style="padding:10px; min-width:200px;">
+                                <option value="user">User</option>
+                                <option value="advanced">Advanced</option>
+                                <option value="developer">Developer</option>
                             </select>
+                            <div style="margin-top:10px;">
+                                <a class="btn btn-sm" style="background:#b23b00; display:inline-block;" href="/logout?fresh=1" onclick="if (typeof forceClearCache === 'function') { forceClearCache(); return false; }"><span class="dev-tag">dev:cache-bust</span>Force Reload</a>
+                            </div>
+                            <div style="margin-top:8px; font-size:12px; color:#555;">
+                                User: hides advanced controls. Advanced: shows prompt tools. Developer: also shows dev tags.
+                            </div>
                         </div>
                     </div>
                     <div class="collapsible" style="margin-bottom:12px;">
                         <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                            <span class="dev-tag">dev:settings-last-prompt</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Last Prompt Verbatim (Debug)</span>
+                            <span class="dev-tag">dev:settings-offline</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Offline Readiness Check</span>
+                            <span id="offline-meta" style="margin-left:auto; font-size:12px; color:#4a5568;"></span>
+                        </div>
+                        <div class="col-body" style="padding:12px; background:#f8f9fa;">
+                            <div id="offline-status" style="font-size:13px; color:#2c3e50; margin-bottom:10px;">Not checked yet.</div>
+                            <div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:8px;">
+                                <button id="offline-check-btn" class="btn btn-sm" style="background:var(--inquiry);" onclick="runOfflineCheck(false)">Check cache status</button>
+                                <button id="offline-download-btn" class="btn btn-sm" style="background:#1f2d3d;" onclick="runOfflineCheck(true)">Download missing models</button>
+                                <button id="offline-backup-btn" class="btn btn-sm" style="background:#00695c;" onclick="createOfflineBackup()">Backup cache</button>
+                                <button id="offline-restore-btn" class="btn btn-sm" style="background:#8e44ad;" onclick="restoreOfflineBackup()">Restore last backup</button>
+                                <button id="offline-flag-btn" class="btn btn-sm" style="background:#b26a00;" onclick="toggleOfflineFlags()">Enable offline flags</button>
+                            </div>
+                            <label style="display:flex; align-items:center; gap:8px; font-size:12px; color:#333; margin-bottom:6px;">
+                                <input type="checkbox" id="offline-force-flags" onclick="toggleOfflineFlags(this.checked)" />
+                                Keep offline flags enabled until I turn them off
+                            </label>
+                            <div style="font-size:12px; color:#555;">Ensures all required models are cached and lets you back up/restore the cache before going offline.</div>
+                        </div>
+                    </div>
+                    <div class="collapsible" style="margin-bottom:12px;">
+                        <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                            <span class="dev-tag">dev:settings-last-prompt</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Last Prompt Verbatim</span>
                         </div>
                         <div class="col-body" style="padding:12px; background:#f8f9fa; display:none;">
                             <div style="margin-bottom:8px; font-size:12px; color:#2c3e50;">Shows the exact prompt submitted to MedGemma for the most recent chat.</div>
@@ -959,48 +1224,32 @@
                             <div id="default-export-status" style="margin-top:8px; font-size:12px; color:#555;"></div>
                         </div>
                     </div>
-                    <div class="collapsible" style="margin-bottom:12px;">
-                        <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                            <span class="dev-tag">dev:settings-usermode</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">User Mode</span>
-                            <span id="user-mode-meta" style="margin-left:auto; font-size:12px; color:#4a5568;"></span>
-                        </div>
-                        <div class="col-body" style="padding:12px; background:#f8f9fa;">
-                            <label for="user_mode">User Mode</label>
-                            <select id="user_mode" style="padding:10px; min-width:200px;">
-                                <option value="user">User</option>
-                                <option value="advanced">Advanced</option>
-                                <option value="developer">Developer</option>
-                            </select>
-                            <div style="margin-top:10px;">
-                                <button class="btn btn-sm" style="background:#b23b00;" onclick="forceClearCache()"><span class="dev-tag">dev:cache-bust</span>Force Reload (Dev)</button>
-                            </div>
-                            <div style="margin-top:8px; font-size:12px; color:#555;">
-                                User: hides advanced controls. Advanced: shows prompt tools. Developer: also shows dev tags.
-                            </div>
-                        </div>
-                    </div>
-                    <div class="collapsible">
-                    <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                        <span class="dev-tag">dev:settings-crew-creds</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Crew Login Credentials</span>
-                        <span id="crew-creds-meta" style="margin-left:auto; font-size:12px; color:#4a5568;"></span>
-                    </div>
-                        <div class="col-body" style="padding:12px; background:#f8f9fa;">
-                            <div id="crew-credentials"></div>
-                        </div>
-                    </div>
                     <div class="collapsible" style="margin-top:12px;">
                         <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
                             <span class="dev-tag">dev:settings-models</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">MedGemma Model Parameters</span>
                             <span id="model-meta" style="margin-left:auto; font-size:12px; color:#4a5568;"></span>
                         </div>
-                        <div class="col-body" style="padding:12px; background:#f8f9fa;">
-                            <div class="collapsible" style="margin-bottom:12px;">
+                        <div class="col-body" style="padding:12px; background:#f8f9fa; display:flex; flex-direction:column;">
+                            <div class="collapsible" style="margin-bottom:12px; order:3;">
                                 <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                                    <span class="dev-tag">dev:settings-triage</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Triage Mode (Clinical Response)</span>
+                                    <span class="dev-tag">dev:settings-triage</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Triage Mode General</span>
                                 </div>
                                 <div class="col-body" style="padding:12px; background:#f8f9fa;">
                                     <label>Instruction Text Block</label>
                                     <textarea id="triage_instruction" style="height:120px;"></textarea>
+                                    <div style="margin-top:10px; padding:10px; border:1px solid #dde3ec; border-radius:8px; background:#fff;">
+                                        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                                            <input id="triage_prompt_template_name" data-settings-no-autosave="1" type="text" style="padding:8px; min-width:220px; flex:1;" placeholder="Prompt name (e.g., Triage v2)">
+                                            <button class="btn btn-sm" style="background:#0b8457;" onclick="savePromptTemplate('triage_instruction')">Save Prompt Version</button>
+                                        </div>
+                                        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px;">
+                                            <select id="triage_prompt_template_select" data-settings-no-autosave="1" style="padding:8px; min-width:220px; flex:1;">
+                                                <option value="">Select saved triage prompt…</option>
+                                            </select>
+                                            <button class="btn btn-sm" style="background:var(--inquiry);" onclick="loadSelectedPromptTemplate('triage_instruction')">Load Selected Prompt</button>
+                                        </div>
+                                        <div id="triage_prompt_template_status" style="margin-top:6px; font-size:12px; color:#4a5568;"></div>
+                                    </div>
                                     <div style="display:flex; gap:20px; margin-top:15px; align-items:center;">
                                         <div style="display:flex; align-items:center; gap:6px;">
                                             <span title="Temperature: higher = more random, lower = more deterministic." style="font-weight:700;">Temp:</span>
@@ -1014,19 +1263,36 @@
                                             <span title="Top-P (nucleus sampling): lower = safer, higher = more diverse." style="font-weight:700;">Top-P:</span>
                                             <input type="number" id="tr_p" step="0.05" style="width:60px;">
                                         </div>
+                                        <div style="display:flex; align-items:center; gap:6px;">
+                                            <span title="Top-K sampling: limits token choices to the K most likely options each step." style="font-weight:700;">Top-K:</span>
+                                            <input type="number" id="tr_k" style="width:60px;">
+                                        </div>
                                         <div style="margin-left:auto;">
                                             <button class="btn btn-sm" style="background:var(--inquiry);" onclick="resetSection('triage')">Reset to Default</button>
                                         </div>
                                     </div>
                                 </div>
                             </div>
-                            <div class="collapsible" style="margin-bottom:12px;">
+                            <div class="collapsible" style="margin-bottom:12px; order:2;">
                                 <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                                    <span class="dev-tag">dev:settings-inquiry</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Inquiry Mode (Research/Academic)</span>
+                                    <span class="dev-tag">dev:settings-inquiry</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Inquiry Mode</span>
                                 </div>
                                 <div class="col-body" style="padding:12px; background:#f8f9fa;">
                                     <label>Instruction Text Block</label>
                                     <textarea id="inquiry_instruction" style="height:120px;"></textarea>
+                                    <div style="margin-top:10px; padding:10px; border:1px solid #dde3ec; border-radius:8px; background:#fff;">
+                                        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                                            <input id="inquiry_prompt_template_name" data-settings-no-autosave="1" type="text" style="padding:8px; min-width:220px; flex:1;" placeholder="Prompt name (e.g., Inquiry concise)">
+                                            <button class="btn btn-sm" style="background:#0b8457;" onclick="savePromptTemplate('inquiry_instruction')">Save Prompt Version</button>
+                                        </div>
+                                        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px;">
+                                            <select id="inquiry_prompt_template_select" data-settings-no-autosave="1" style="padding:8px; min-width:220px; flex:1;">
+                                                <option value="">Select saved inquiry prompt…</option>
+                                            </select>
+                                            <button class="btn btn-sm" style="background:var(--inquiry);" onclick="loadSelectedPromptTemplate('inquiry_instruction')">Load Selected Prompt</button>
+                                        </div>
+                                        <div id="inquiry_prompt_template_status" style="margin-top:6px; font-size:12px; color:#4a5568;"></div>
+                                    </div>
                                     <div style="display:flex; gap:20px; margin-top:15px; align-items:center;">
                                         <div style="display:flex; align-items:center; gap:6px;">
                                             <span title="Temperature: higher = more creative, lower = more factual." style="font-weight:700;">Temp:</span>
@@ -1040,15 +1306,111 @@
                                             <span title="Top-P (nucleus sampling): lower = safer, higher = more diverse." style="font-weight:700;">Top-P:</span>
                                             <input type="number" id="in_p" step="0.05" style="width:60px;">
                                         </div>
+                                        <div style="display:flex; align-items:center; gap:6px;">
+                                            <span title="Top-K sampling: limits token choices to the K most likely options each step." style="font-weight:700;">Top-K:</span>
+                                            <input type="number" id="in_k" style="width:60px;">
+                                        </div>
                                         <div style="margin-left:auto;">
                                             <button class="btn btn-sm" style="background:var(--inquiry);" onclick="resetSection('inquiry')">Reset to Default</button>
                                         </div>
                                     </div>
                                 </div>
                             </div>
-                            <div class="collapsible" style="margin-bottom:12px;">
+                            <div class="collapsible" style="margin-bottom:12px; order:4;">
                                 <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
-                                    <span class="dev-tag">dev:settings-mission</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Mission Context (Informs Both Triage and Inquiry Modes)</span>
+                                    <span class="dev-tag">dev:settings-triage-tree</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Triage Mode Clinical Triage Pathway Prompt Builder</span>
+                                </div>
+                                <div class="col-body" style="padding:12px; background:#f8f9fa;">
+                                    <div style="margin-bottom:8px; font-size:12px; color:#2c3e50;">
+                                        Edit the hierarchical rule tree used for triage path assembly. The model receives only the selected branch plus user metadata.
+                                    </div>
+                                    <label for="triage-tree-base-doctrine" style="font-size:12px; color:#333; font-weight:700;">Base Doctrine</label>
+                                    <div id="triage-tree-base-path" style="margin:4px 0 6px; font-size:11px; color:#4a5568;">Path: Global (all triage paths)</div>
+                                    <textarea id="triage-tree-base-doctrine" data-settings-no-autosave="1" style="min-height:90px; width:100%;" placeholder="Base doctrine text..."></textarea>
+                                    <div style="margin-top:8px; font-size:12px; color:#2c3e50;">
+                                        Decision path levels: <strong>1) Domain</strong> → <strong>2) Problem</strong> → <strong>3) Anatomy</strong> → <strong>4) Mechanism / Cause</strong> → <strong>5) Severity / Complication</strong>
+                                    </div>
+                                    <div style="margin-top:10px; padding:10px; border:1px solid #dde3ec; border-radius:8px; background:#fff;">
+                                        <div style="font-size:12px; color:#1f3b57; font-weight:800; margin-bottom:6px;">1) Domain</div>
+                                        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                                            <label for="triage-tree-domain-select" style="font-size:12px; color:#333; font-weight:700; min-width:90px;">Domain</label>
+                                            <select id="triage-tree-domain-select" data-settings-no-autosave="1" style="padding:8px; min-width:220px; flex:1;"></select>
+                                            <input id="triage-tree-domain-new" data-settings-no-autosave="1" type="text" style="padding:8px; min-width:220px; flex:1;" placeholder="New domain name">
+                                            <button class="btn btn-sm" style="background:#0b8457;" onclick="addTriageTreeDomain()">Add Domain</button>
+                                            <button class="btn btn-sm" style="background:var(--red);" onclick="deleteTriageTreeDomain()">Delete Domain</button>
+                                        </div>
+                                        <div style="margin-top:8px;">
+                                            <label for="triage-tree-domain-mindset" style="font-size:12px; color:#333; font-weight:700;">Domain Mindset</label>
+                                            <div id="triage-tree-domain-path" style="margin:4px 0 6px; font-size:11px; color:#4a5568;">Path: (select Domain)</div>
+                                            <textarea id="triage-tree-domain-mindset" data-settings-no-autosave="1" style="min-height:70px; width:100%;" placeholder="Mindset text for selected domain..."></textarea>
+                                        </div>
+                                    </div>
+                                    <div style="margin-top:10px; padding:10px; border:1px solid #dde3ec; border-radius:8px; background:#fff;">
+                                        <div style="font-size:12px; color:#1f3b57; font-weight:800; margin-bottom:6px;">2) Problem</div>
+                                        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                                            <label for="triage-tree-problem-select" style="font-size:12px; color:#333; font-weight:700; min-width:90px;">Problem</label>
+                                            <select id="triage-tree-problem-select" data-settings-no-autosave="1" style="padding:8px; min-width:240px; flex:1;"></select>
+                                            <input id="triage-tree-problem-new" data-settings-no-autosave="1" type="text" style="padding:8px; min-width:240px; flex:1;" placeholder="New problem name">
+                                            <button class="btn btn-sm" style="background:#0b8457;" onclick="addTriageTreeProblem()">Add Problem</button>
+                                            <button class="btn btn-sm" style="background:var(--red);" onclick="deleteTriageTreeProblem()">Delete Problem</button>
+                                        </div>
+                                        <div style="margin-top:8px;">
+                                            <label for="triage-tree-procedure" style="font-size:12px; color:#333; font-weight:700;">Procedure</label>
+                                            <div id="triage-tree-procedure-path" style="margin:4px 0 6px; font-size:11px; color:#4a5568;">Path: (select Domain and Problem)</div>
+                                            <textarea id="triage-tree-procedure" data-settings-no-autosave="1" style="min-height:80px; width:100%;" placeholder="Procedure for selected problem..."></textarea>
+                                        </div>
+                                    </div>
+                                    <div style="margin-top:10px; padding:10px; border:1px solid #dde3ec; border-radius:8px; background:#fff;">
+                                        <div style="font-size:12px; color:#1f3b57; font-weight:800; margin-bottom:6px;">3) Anatomy</div>
+                                        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                                            <select id="triage-tree-anatomy-key-select" data-settings-no-autosave="1" style="padding:8px; min-width:240px; flex:1;"></select>
+                                            <input id="triage-tree-anatomy-key-new" data-settings-no-autosave="1" type="text" style="padding:8px; min-width:240px; flex:1;" placeholder="New anatomy option name">
+                                            <button class="btn btn-sm" style="background:#0b8457;" onclick="addTriageTreeAnatomyOption()">Add Option</button>
+                                            <button class="btn btn-sm" style="background:var(--red);" onclick="deleteTriageTreeAnatomyOption()">Delete Option</button>
+                                        </div>
+                                        <div style="margin-top:8px;">
+                                            <label for="triage-tree-anatomy-text" style="font-size:12px; color:#333; font-weight:700;">Anatomy Rule Text</label>
+                                            <div id="triage-tree-anatomy-path" style="margin:4px 0 6px; font-size:11px; color:#4a5568;">Path: (select Domain, Problem, and Anatomy)</div>
+                                            <textarea id="triage-tree-anatomy-text" data-settings-no-autosave="1" style="min-height:90px; width:100%;" placeholder="Rule text for selected anatomy option..."></textarea>
+                                        </div>
+                                    </div>
+                                    <div style="margin-top:10px; padding:10px; border:1px solid #dde3ec; border-radius:8px; background:#fff;">
+                                        <div style="font-size:12px; color:#1f3b57; font-weight:800; margin-bottom:6px;">4) Mechanism / Cause</div>
+                                        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                                            <select id="triage-tree-severity-key-select" data-settings-no-autosave="1" style="padding:8px; min-width:240px; flex:1;"></select>
+                                            <input id="triage-tree-severity-key-new" data-settings-no-autosave="1" type="text" style="padding:8px; min-width:240px; flex:1;" placeholder="New mechanism option name">
+                                            <button class="btn btn-sm" style="background:#0b8457;" onclick="addTriageTreeSeverityOption()">Add Option</button>
+                                            <button class="btn btn-sm" style="background:var(--red);" onclick="deleteTriageTreeSeverityOption()">Delete Option</button>
+                                        </div>
+                                        <div style="margin-top:8px;">
+                                            <label for="triage-tree-severity-text" style="font-size:12px; color:#333; font-weight:700;">Mechanism Rule Text</label>
+                                            <div id="triage-tree-severity-path" style="margin:4px 0 6px; font-size:11px; color:#4a5568;">Path: (select Domain, Problem, Anatomy, and Mechanism)</div>
+                                            <textarea id="triage-tree-severity-text" data-settings-no-autosave="1" style="min-height:90px; width:100%;" placeholder="Rule text for selected mechanism option..."></textarea>
+                                        </div>
+                                    </div>
+                                    <div style="margin-top:10px; padding:10px; border:1px solid #dde3ec; border-radius:8px; background:#fff;">
+                                        <div style="font-size:12px; color:#1f3b57; font-weight:800; margin-bottom:6px;">5) Severity / Complication</div>
+                                        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                                            <select id="triage-tree-mechanism-key-select" data-settings-no-autosave="1" style="padding:8px; min-width:240px; flex:1;"></select>
+                                            <input id="triage-tree-mechanism-key-new" data-settings-no-autosave="1" type="text" style="padding:8px; min-width:240px; flex:1;" placeholder="New severity option name">
+                                            <button class="btn btn-sm" style="background:#0b8457;" onclick="addTriageTreeMechanismOption()">Add Option</button>
+                                            <button class="btn btn-sm" style="background:var(--red);" onclick="deleteTriageTreeMechanismOption()">Delete Option</button>
+                                        </div>
+                                        <div style="margin-top:8px;">
+                                            <label for="triage-tree-mechanism-text" style="font-size:12px; color:#333; font-weight:700;">Severity Rule Text</label>
+                                            <div id="triage-tree-mechanism-path" style="margin:4px 0 6px; font-size:11px; color:#4a5568;">Path: (select Domain, Problem, Anatomy, Mechanism, and Severity)</div>
+                                            <textarea id="triage-tree-mechanism-text" data-settings-no-autosave="1" style="min-height:90px; width:100%;" placeholder="Rule text for selected severity option..."></textarea>
+                                        </div>
+                                    </div>
+                                    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;">
+                                        <button class="btn btn-sm" style="background:#4a5568;" onclick="loadTriagePromptTree()">Reload from Database</button>
+                                    </div>
+                                    <div id="triage-tree-status" style="margin-top:8px; font-size:12px; color:#4a5568;"></div>
+                                </div>
+                            </div>
+                            <div class="collapsible" style="margin-bottom:12px; order:1;">
+                                <div class="col-header crew-med-header" onclick="toggleSection(this)" style="background:#fff; justify-content:flex-start;">
+                                    <span class="dev-tag">dev:settings-mission</span><span class="detail-icon history-arrow" style="font-size:18px; margin-right:8px;">▸</span><span style="font-weight:700;">Mission Context</span>
                                 </div>
                                 <div class="col-body" style="padding:12px; background:#f8f9fa;">
                                     <textarea id="mission_context" style="height:60px;"></textarea>
@@ -1072,6 +1434,7 @@
     </div>
 </div>
 
+</div>
 <!-- DB missing modal -->
 <div id="db-modal" style="display:none; position:fixed; inset:0; z-index:2000; background:rgba(6,28,48,0.55); align-items:center; justify-content:center; padding:20px;">
     <div style="background:#ffffff; border-radius:16px; box-shadow:0 18px 48px rgba(0,0,0,0.25); max-width:520px; width:100%; padding:22px; border:1px solid #d8e2f5;">
@@ -1093,7 +1456,7 @@
             <div class="spinner"></div>
             <h3>Processing Triage Consultation…</h3>
         <p id="chat-model-line" style="margin:6px 0; font-weight:700; color:#122b4d;">Model: …</p>
-        <p id="chat-eta-line" style="margin:0 0 8px 0; color:#2c3e50;">ETA: calculating…</p>
+        <p id="chat-eta-line" style="margin:0 0 8px 0; color:#2c3e50;">Expected duration: calculating…</p>
         <p>Please wait. Navigation or edits in SailingMedAdvisor<br>are temporarily paused until this response completes.</p>
         </div>
     </div>
@@ -1102,13 +1465,14 @@
         // Preload vessel data from server-rendered context to avoid empty fields if API fetch is delayed or fails
         window.VESSEL_PREFILL = {{ vessel_prefill|tojson|safe }};
     </script>
-    <script src="/static/js/utils.js?v=2027"></script>
-    <script src="/static/js/chat.js?v=2017"></script>
-    <script src="/static/js/crew.js?v=2045"></script>
-<script src="/static/js/pharmacy.js?v=20260128"></script>
-<script src="/static/js/equipment.js?v=2038"></script>
-<script src="/static/js/settings.js?v=2026"></script>
-    <script src="/static/js/main.js?v=2024"></script>
+    <script src="/static/js/utils.js?v=20260226"></script>
+    <script src="/static/js/chat.js?v=20260315"></script>
+    <script src="/static/js/crew.js?v=20260223"></script>
+    <script src="/static/js/pharmacy.js?v=20260223"></script>
+    <script src="/static/js/equipment.js?v=20260223"></script>
+    <script src="/static/js/settings.js?v=20260307"></script>
+    <script src="/static/js/main.js?v=20260223"></script>
+    <script src="/static/js/recovery.js?v=20260304"></script>
 <script>
     function showDbModal(message) {
         const modal = document.getElementById('db-modal');

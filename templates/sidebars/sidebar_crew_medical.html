@@ -1,20 +1,20 @@
+<!-- =============================================================================
+     Author: Rick Escher
+     Project: SilingMedAdvisor (SailingMedAdvisor)
+     Context: Google HAI-DEF Framework
+     Models: Google MedGemmas
+     Program: Kaggle Impact Challenge
+     ========================================================================== -->
 <div class="dev-tag">dev:sidebar-crew-medical</div>
-<div class="sidebar-section" data-sidebar-section="crew-medical-section">
-    <div class="sidebar-title"><span class="sidebar-pill">Health Records</span> Intake Notes</div>
+<div class="sidebar-section">
+    <div class="sidebar-title"><span class="sidebar-pill">Consultation Log</span> Clinical Continuity & Auditability</div>
     <div class="sidebar-body">
-        When Logging is on the details of Triage and Inquiry chats 
-        are saved here under each crew member's name. If Logging
-        is off then the chats are not saved.<br><br>
-        When you reactivate a past chat that chat is loaded into
-        the Triage or Inquiry section and you can continue from where
-        you last left-off. This is useful when you want to resubmit
-        a chat for further consideration by the larger model.<br><br>
-        When a crew member has not been selected for a chat the chat
-        will be logged under Unnamed Crew as either Triage chat or
-        an Inquiry chat.
+        <strong>Purpose:</strong> The Log serves as the persistent state-management layer of the HAI-DEF architecture. In a disconnected environment, maintaining a local, longitudinal record is critical for clinical continuity. This tab indexes every interaction, allowing the Agent to maintain context over multi-day scenarios where patient status and diagnostic data evolve.
     </div>
 </div>
 <div class="sidebar-section">
-    <div class="sidebar-title">Updates & Exports</div>
-    <div class="sidebar-body">Vivamus aliquam, neque eu feugiat finibus, enim ipsum egestas quam, sit amet dictum neque leo vel orci.</div>
+    <div class="sidebar-title">Operational Logic</div>
+    <div class="sidebar-body">
+        Beyond a simple transcript, this is a Data Engineering tool. It allows for "Session Restoration," effectively reloading the model's KV cache with previous case history. This ensures that follow-up care is informed by prior observations, creating a verifiable audit trail for shore-side handover and post-incident analysis.
+    </div>
 </div>

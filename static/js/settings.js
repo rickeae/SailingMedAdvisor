@@ -1,3 +1,10 @@
+/* =============================================================================
+ * Author: Rick Escher
+ * Project: SilingMedAdvisor (SailingMedAdvisor)
+ * Context: Google HAI-DEF Framework
+ * Models: Google MedGemmas
+ * Program: Kaggle Impact Challenge
+ * ========================================================================== */
 /*
 File: static/js/settings.js
 Author notes: Application configuration management and settings UI controller.
@@ -27,7 +34,6 @@ User Modes:
    - Temperature, token limits, top-p visible
    - Detailed status with metrics
    - Import/export features
-   - Sample test cases
 
 3. DEVELOPER MODE: Full debugging and development features
    - All dev-tag elements visible
@@ -94,37 +100,19 @@ const DEFAULT_SETTINGS = {
     tr_temp: 0.1,
     tr_tok: 1024,
     tr_p: 0.9,
+    tr_k: 50,
     in_temp: 0.6,
     in_tok: 2048,
     in_p: 0.95,
+    in_k: 50,
     mission_context: "Isolated Medical Station offshore.",
     rep_penalty: 1.1,
     user_mode: "user",
-    resource_injection_mode: "category_counts",
     last_prompt_verbatim: "",
     vaccine_types: ["MMR", "DTaP", "HepB", "HepA", "Td/Tdap", "Influenza", "COVID-19"],
     pharmacy_labels: ["Antibiotic", "Analgesic", "Cardiac", "Respiratory", "Gastrointestinal", "Endocrine", "Emergency"],
-    equipment_categories: [
-        "Diagnostics & monitoring",
-        "Instruments & tools",
-        "Airway & breathing",
-        "Splints & supports",
-        "Eye care",
-        "Dental",
-        "PPE",
-        "Survival & utility",
-        "Other"
-    ],
-    consumable_categories: [
-        "Wound care & dressings",
-        "Burn care",
-        "Antiseptics & hygiene",
-        "Irrigation & syringes",
-        "Splints & supports",
-        "PPE",
-        "Survival & utility",
-        "Other"
-    ],
+    equipment_categories: [],
+    consumable_categories: [],
     offline_force_flags: false
 };
 
@@ -135,12 +123,65 @@ const DEFAULT_SETTINGS = {
 let settingsDirty = false;           // Track unsaved changes
 let settingsLoaded = false;          // Prevent premature saves during init
 let settingsAutoSaveTimer = null;    // Debounce timer for auto-save
+let settingsSaveSequence = 0;        // Monotonic save request id
 let offlineStatusCache = null;       // Cached offline status for UI updates
 let vaccineTypeList = [...DEFAULT_SETTINGS.vaccine_types];   // Active vaccine types
 let pharmacyLabelList = [...DEFAULT_SETTINGS.pharmacy_labels]; // Active pharmacy labels
 let equipmentCategoryList = [...DEFAULT_SETTINGS.equipment_categories];
 let consumableCategoryList = [...DEFAULT_SETTINGS.consumable_categories];
 let offlineInitialized = false;     // Prevent duplicate offline checks
+const PROMPT_TEMPLATE_CONFIG = {
+    triage_instruction: {
+        textareaId: 'triage_instruction',
+        nameInputId: 'triage_prompt_template_name',
+        selectId: 'triage_prompt_template_select',
+        statusId: 'triage_prompt_template_status',
+        emptyLabel: 'Select saved triage prompt…',
+    },
+    inquiry_instruction: {
+        textareaId: 'inquiry_instruction',
+        nameInputId: 'inquiry_prompt_template_name',
+        selectId: 'inquiry_prompt_template_select',
+        statusId: 'inquiry_prompt_template_status',
+        emptyLabel: 'Select saved inquiry prompt…',
+    },
+};
+const promptTemplateCache = {
+    triage_instruction: [],
+    inquiry_instruction: [],
+};
+let triagePromptTreePayload = null;
+let triageTreeEditorState = {
+    domain: '',
+    problem: '',
+    selectedOptionKeys: {
+        anatomy_guardrails: '',
+        severity_modifiers: '',
+        mechanism_modifiers: '',
+    },
+};
+const TRIAGE_TREE_OPTION_CATEGORY_LABELS = {
+    anatomy_guardrails: 'Anatomy',
+    severity_modifiers: 'Mechanism / Cause',
+    mechanism_modifiers: 'Severity / Complication',
+};
+const TRIAGE_TREE_CATEGORY_EDITOR_IDS = {
+    anatomy_guardrails: {
+        select: 'triage-tree-anatomy-key-select',
+        input: 'triage-tree-anatomy-key-new',
+        text: 'triage-tree-anatomy-text',
+    },
+    severity_modifiers: {
+        select: 'triage-tree-severity-key-select',
+        input: 'triage-tree-severity-key-new',
+        text: 'triage-tree-severity-text',
+    },
+    mechanism_modifiers: {
+        select: 'triage-tree-mechanism-key-select',
+        input: 'triage-tree-mechanism-key-new',
+        text: 'triage-tree-mechanism-text',
+    },
+};
 
 /**
  * Set application user mode and update visibility.
@@ -178,23 +219,6 @@ function setUserMode(mode) {
     document.querySelectorAll('.developer-only').forEach(el => {
         el.style.display = normalized === 'developer' ? '' : 'none';
     });
-    // Ensure triage sample inline respects user mode on load
-    try {
-        const triageHeader = document.getElementById('query-form-header');
-        if (triageHeader && typeof toggleSection === 'function') {
-            // Force a refresh of inline display based on current state and mode
-            const body = triageHeader.nextElementSibling;
-            const isExpanded = body && body.style.display !== 'none';
-            const icon = triageHeader.querySelector('.detail-icon');
-            if (icon && isExpanded) icon.textContent = '▾';
-            if (icon && !isExpanded) icon.textContent = '▸';
-            const sampleInline = triageHeader.querySelector('.triage-sample-inline');
-            if (sampleInline) {
-                const isAdvanced = normalized === 'advanced' || normalized === 'developer';
-                sampleInline.style.display = (isExpanded && isAdvanced) ? 'flex' : 'none';
-            }
-        }
-    } catch (err) { /* ignore */ }
     updateSettingsMeta(window.CACHED_SETTINGS || {});
     try {
         localStorage.setItem('user_mode', normalized);
@@ -330,6 +354,927 @@ function applySettingsToUI(data = {}) {
     updateSettingsMeta(merged);
 }
 
+/**
+ * getPromptTemplateConfig: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function getPromptTemplateConfig(promptKey) {
+    return PROMPT_TEMPLATE_CONFIG[promptKey] || null;
+}
+
+/**
+ * updatePromptTemplateStatus: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function updatePromptTemplateStatus(promptKey, message, isError = false) {
+    const cfg = getPromptTemplateConfig(promptKey);
+    if (!cfg) return;
+    const el = document.getElementById(cfg.statusId);
+    if (!el) return;
+    el.textContent = message || '';
+    el.style.color = isError ? 'var(--red)' : '#4a5568';
+}
+
+/**
+ * syncPromptTemplateSelectToEditor: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function syncPromptTemplateSelectToEditor(promptKey) {
+    const cfg = getPromptTemplateConfig(promptKey);
+    if (!cfg) return;
+    const textarea = document.getElementById(cfg.textareaId);
+    const select = document.getElementById(cfg.selectId);
+    if (!textarea || !select) return;
+    const currentText = (textarea.value || '').trim();
+    const items = promptTemplateCache[promptKey] || [];
+    const match = items.find((item) => (item.prompt_text || '').trim() === currentText);
+    select.value = match ? String(match.id) : '';
+}
+
+/**
+ * renderPromptTemplateOptions: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function renderPromptTemplateOptions(promptKey) {
+    const cfg = getPromptTemplateConfig(promptKey);
+    if (!cfg) return;
+    const select = document.getElementById(cfg.selectId);
+    if (!select) return;
+    const prev = select.value;
+    const items = promptTemplateCache[promptKey] || [];
+    const options = [
+        `<option value="">${cfg.emptyLabel}</option>`,
+        ...items.map((item) => {
+            const updated = item.updated_at ? new Date(item.updated_at).toLocaleString() : '';
+            const updatedSuffix = updated ? ` (${updated})` : '';
+            return `<option value="${item.id}">${item.name}${updatedSuffix}</option>`;
+        }),
+    ];
+    select.innerHTML = options.join('');
+    if (items.some((item) => String(item.id) === String(prev))) {
+        select.value = String(prev);
+    }
+    syncPromptTemplateSelectToEditor(promptKey);
+}
+
+async function loadPromptTemplates(promptKey = null) {
+    const cfg = promptKey ? getPromptTemplateConfig(promptKey) : null;
+    if (promptKey && !cfg) return;
+    try {
+        const query = promptKey ? `?prompt_key=${encodeURIComponent(promptKey)}` : '';
+        const res = await fetch(`/api/settings/prompt-library${query}`, { credentials: 'same-origin' });
+        if (!res.ok) throw new Error(`Prompt library load failed (${res.status})`);
+        const payload = await res.json();
+        const items = Array.isArray(payload?.items) ? payload.items : [];
+        if (promptKey) {
+            promptTemplateCache[promptKey] = items;
+            renderPromptTemplateOptions(promptKey);
+            updatePromptTemplateStatus(promptKey, '');
+            return;
+        }
+        Object.keys(promptTemplateCache).forEach((key) => {
+            promptTemplateCache[key] = items.filter((item) => item.prompt_key === key);
+            renderPromptTemplateOptions(key);
+            updatePromptTemplateStatus(key, '');
+        });
+    } catch (err) {
+        if (promptKey) {
+            updatePromptTemplateStatus(promptKey, `Load failed: ${err.message}`, true);
+        } else {
+            Object.keys(promptTemplateCache).forEach((key) => {
+                updatePromptTemplateStatus(key, `Load failed: ${err.message}`, true);
+            });
+        }
+    }
+}
+
+async function savePromptTemplate(promptKey) {
+    const cfg = getPromptTemplateConfig(promptKey);
+    if (!cfg) return;
+    const nameEl = document.getElementById(cfg.nameInputId);
+    const textEl = document.getElementById(cfg.textareaId);
+    if (!nameEl || !textEl) return;
+    const name = (nameEl.value || '').trim();
+    const promptText = (textEl.value || '').trim();
+    if (!name) {
+        updatePromptTemplateStatus(promptKey, 'Enter a prompt name before saving.', true);
+        return;
+    }
+    if (!promptText) {
+        updatePromptTemplateStatus(promptKey, 'Prompt text is empty.', true);
+        return;
+    }
+    try {
+        updatePromptTemplateStatus(promptKey, 'Saving prompt version…');
+        const res = await fetch('/api/settings/prompt-library', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({
+                prompt_key: promptKey,
+                name,
+                prompt_text: promptText,
+            }),
+        });
+        if (!res.ok) {
+            let detail = '';
+            try {
+                const err = await res.json();
+                detail = err?.error ? `: ${err.error}` : '';
+            } catch (_) { /* ignore */ }
+            throw new Error(`Save failed (${res.status})${detail}`);
+        }
+        const saved = await res.json();
+        await loadPromptTemplates(promptKey);
+        const select = document.getElementById(cfg.selectId);
+        if (select && saved?.id) {
+            select.value = String(saved.id);
+        }
+        updatePromptTemplateStatus(promptKey, `Saved "${saved?.name || name}".`);
+    } catch (err) {
+        updatePromptTemplateStatus(promptKey, `Save failed: ${err.message}`, true);
+    }
+}
+
+/**
+ * loadSelectedPromptTemplate: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function loadSelectedPromptTemplate(promptKey) {
+    const cfg = getPromptTemplateConfig(promptKey);
+    if (!cfg) return;
+    const select = document.getElementById(cfg.selectId);
+    const textEl = document.getElementById(cfg.textareaId);
+    const nameEl = document.getElementById(cfg.nameInputId);
+    if (!select || !textEl) return;
+    const selectedId = String(select.value || '');
+    if (!selectedId) {
+        updatePromptTemplateStatus(promptKey, 'Select a saved prompt first.', true);
+        return;
+    }
+    const items = promptTemplateCache[promptKey] || [];
+    const chosen = items.find((item) => String(item.id) === selectedId);
+    if (!chosen) {
+        updatePromptTemplateStatus(promptKey, 'Saved prompt not found. Reload prompt list.', true);
+        return;
+    }
+    textEl.value = chosen.prompt_text || '';
+    if (nameEl) {
+        nameEl.value = chosen.name || '';
+    }
+    textEl.dispatchEvent(new Event('input', { bubbles: true }));
+    updatePromptTemplateStatus(promptKey, `Loaded "${chosen.name}" into active settings.`);
+}
+
+/**
+ * updateTriageTreeStatus: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function updateTriageTreeStatus(message, isError = false) {
+    const el = document.getElementById('triage-tree-status');
+    if (!el) return;
+    el.textContent = message || '';
+    el.style.color = isError ? 'var(--red)' : '#4a5568';
+}
+
+/**
+ * saveTriageTreeOnFieldExit: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function saveTriageTreeOnFieldExit(reason = 'field-exit') {
+    if (!triagePromptTreePayload) return;
+    saveTriagePromptTree({ silentStatus: true, reason }).catch(() => {});
+}
+
+/**
+ * normalizeTriageTreePayload: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function normalizeTriageTreePayload(raw) {
+    if (!raw || typeof raw !== 'object') {
+        throw new Error('Payload must be a JSON object.');
+    }
+    const baseDoctrine = typeof raw.base_doctrine === 'string' ? raw.base_doctrine.trim() : '';
+    const tree = raw.tree;
+    if (!tree || typeof tree !== 'object' || Array.isArray(tree) || !Object.keys(tree).length) {
+        throw new Error('Payload must include a non-empty "tree" object.');
+    }
+    return {
+        base_doctrine: baseDoctrine,
+        tree,
+    };
+}
+
+/**
+ * ensureTriageTreeRoot: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function ensureTriageTreeRoot() {
+    if (!triagePromptTreePayload || typeof triagePromptTreePayload !== 'object') {
+        triagePromptTreePayload = { base_doctrine: '', tree: {} };
+    }
+    if (!triagePromptTreePayload.tree || typeof triagePromptTreePayload.tree !== 'object' || Array.isArray(triagePromptTreePayload.tree)) {
+        triagePromptTreePayload.tree = {};
+    }
+    return triagePromptTreePayload.tree;
+}
+
+/**
+ * getTriageTreeDomainNode: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function getTriageTreeDomainNode(domainKey, create = false) {
+    const tree = ensureTriageTreeRoot();
+    if (!domainKey) return null;
+    if (!tree[domainKey] || typeof tree[domainKey] !== 'object' || Array.isArray(tree[domainKey])) {
+        if (!create) return null;
+        tree[domainKey] = { mindset: '', problems: {} };
+    }
+    if (!tree[domainKey].problems || typeof tree[domainKey].problems !== 'object' || Array.isArray(tree[domainKey].problems)) {
+        tree[domainKey].problems = {};
+    }
+    return tree[domainKey];
+}
+
+/**
+ * getTriageTreeProblemNode: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function getTriageTreeProblemNode(domainKey, problemKey, create = false) {
+    const domainNode = getTriageTreeDomainNode(domainKey, create);
+    if (!domainNode || !problemKey) return null;
+    if (!domainNode.problems[problemKey] || typeof domainNode.problems[problemKey] !== 'object' || Array.isArray(domainNode.problems[problemKey])) {
+        if (!create) return null;
+        domainNode.problems[problemKey] = {
+            procedure: '',
+            exclusions: '',
+            anatomy_guardrails: {},
+            severity_modifiers: {},
+            mechanism_modifiers: {},
+        };
+    }
+    const problemNode = domainNode.problems[problemKey];
+    ['anatomy_guardrails', 'severity_modifiers', 'mechanism_modifiers'].forEach((category) => {
+        if (!problemNode[category] || typeof problemNode[category] !== 'object' || Array.isArray(problemNode[category])) {
+            problemNode[category] = {};
+        }
+    });
+    return problemNode;
+}
+
+/**
+ * getTriageTreeOptionMap: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function getTriageTreeOptionMap(domainKey, problemKey, categoryKey, create = false) {
+    const problemNode = getTriageTreeProblemNode(domainKey, problemKey, create);
+    if (!problemNode) return {};
+    if (!problemNode[categoryKey] || typeof problemNode[categoryKey] !== 'object' || Array.isArray(problemNode[categoryKey])) {
+        if (!create) return {};
+        problemNode[categoryKey] = {};
+    }
+    return problemNode[categoryKey];
+}
+
+/**
+ * setTriageTreeSelectOptions: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function setTriageTreeSelectOptions(selectId, options, selectedValue, emptyLabel) {
+    const select = document.getElementById(selectId);
+    if (!select) return '';
+    const values = Array.isArray(options) ? options.slice() : [];
+    const selected = values.includes(selectedValue) ? selectedValue : '';
+    select.innerHTML = `<option value="">${emptyLabel}</option>`;
+    values.forEach((value) => {
+        const opt = document.createElement('option');
+        opt.value = value;
+        opt.textContent = value;
+        select.appendChild(opt);
+    });
+    select.value = selected;
+    return selected;
+}
+
+/**
+ * setTriageTreePathHint: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function setTriageTreePathHint(elementId, segments, fallbackText) {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+    const cleaned = (Array.isArray(segments) ? segments : [])
+        .map((segment) => String(segment || '').trim())
+        .filter((segment) => !!segment);
+    el.textContent = cleaned.length
+        ? `Path: ${cleaned.join(' -> ')}`
+        : `Path: ${fallbackText}`;
+}
+
+/**
+ * syncTriageTreeEditorState: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function syncTriageTreeEditorState() {
+    const tree = ensureTriageTreeRoot();
+    const domains = Object.keys(tree);
+    if (!domains.includes(triageTreeEditorState.domain)) {
+        triageTreeEditorState.domain = domains[0] || '';
+    }
+    if (!triageTreeEditorState.selectedOptionKeys || typeof triageTreeEditorState.selectedOptionKeys !== 'object') {
+        triageTreeEditorState.selectedOptionKeys = {
+            anatomy_guardrails: '',
+            severity_modifiers: '',
+            mechanism_modifiers: '',
+        };
+    }
+    const domainNode = getTriageTreeDomainNode(triageTreeEditorState.domain, false);
+    const problems = domainNode ? Object.keys(domainNode.problems || {}) : [];
+    if (!problems.includes(triageTreeEditorState.problem)) {
+        triageTreeEditorState.problem = problems[0] || '';
+    }
+    Object.keys(TRIAGE_TREE_OPTION_CATEGORY_LABELS).forEach((categoryKey) => {
+        const optionMap = getTriageTreeOptionMap(
+            triageTreeEditorState.domain,
+            triageTreeEditorState.problem,
+            categoryKey,
+            false
+        );
+        const optionKeys = Object.keys(optionMap || {});
+        const current = triageTreeEditorState.selectedOptionKeys[categoryKey] || '';
+        if (!optionKeys.includes(current)) {
+            triageTreeEditorState.selectedOptionKeys[categoryKey] = optionKeys[0] || '';
+        }
+    });
+}
+
+/**
+ * syncTriageTreeInputsToState: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function syncTriageTreeInputsToState() {
+    if (!triagePromptTreePayload) return;
+    const baseEl = document.getElementById('triage-tree-base-doctrine');
+    if (baseEl) {
+        triagePromptTreePayload.base_doctrine = (baseEl.value || '').trim();
+    }
+    const domainNode = getTriageTreeDomainNode(triageTreeEditorState.domain, false);
+    const mindsetEl = document.getElementById('triage-tree-domain-mindset');
+    if (domainNode && mindsetEl) {
+        domainNode.mindset = (mindsetEl.value || '').trim();
+    }
+    const problemNode = getTriageTreeProblemNode(triageTreeEditorState.domain, triageTreeEditorState.problem, false);
+    const procedureEl = document.getElementById('triage-tree-procedure');
+    if (problemNode) {
+        if (procedureEl) {
+            problemNode.procedure = (procedureEl.value || '').trim();
+        }
+    }
+    if (problemNode) {
+        Object.entries(TRIAGE_TREE_CATEGORY_EDITOR_IDS).forEach(([categoryKey, ids]) => {
+            const selectedKey = triageTreeEditorState.selectedOptionKeys?.[categoryKey] || '';
+            const textEl = document.getElementById(ids.text);
+            if (!selectedKey || !textEl) return;
+            const optionMap = getTriageTreeOptionMap(
+                triageTreeEditorState.domain,
+                triageTreeEditorState.problem,
+                categoryKey,
+                true
+            );
+            optionMap[selectedKey] = (textEl.value || '').trim();
+        });
+    }
+}
+
+/**
+ * clearTriageTreeSelectedOptions: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function clearTriageTreeSelectedOptions() {
+    triageTreeEditorState.selectedOptionKeys = {
+        anatomy_guardrails: '',
+        severity_modifiers: '',
+        mechanism_modifiers: '',
+    };
+}
+
+/**
+ * bindTriageTreeEditorHandlers: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function bindTriageTreeEditorHandlers() {
+    const domainSelect = document.getElementById('triage-tree-domain-select');
+    if (domainSelect && !domainSelect.dataset.bound) {
+        domainSelect.dataset.bound = '1';
+        domainSelect.addEventListener('change', () => {
+            syncTriageTreeInputsToState();
+            triageTreeEditorState.domain = domainSelect.value || '';
+            triageTreeEditorState.problem = '';
+            clearTriageTreeSelectedOptions();
+            renderTriageTreeEditorControls();
+        });
+        domainSelect.addEventListener('blur', () => {
+            saveTriageTreeOnFieldExit('domain-blur');
+        });
+    }
+
+    const problemSelect = document.getElementById('triage-tree-problem-select');
+    if (problemSelect && !problemSelect.dataset.bound) {
+        problemSelect.dataset.bound = '1';
+        problemSelect.addEventListener('change', () => {
+            syncTriageTreeInputsToState();
+            triageTreeEditorState.problem = problemSelect.value || '';
+            clearTriageTreeSelectedOptions();
+            renderTriageTreeEditorControls();
+        });
+        problemSelect.addEventListener('blur', () => {
+            saveTriageTreeOnFieldExit('problem-blur');
+        });
+    }
+
+    Object.entries(TRIAGE_TREE_CATEGORY_EDITOR_IDS).forEach(([categoryKey, ids]) => {
+        const optionSelect = document.getElementById(ids.select);
+        if (optionSelect && !optionSelect.dataset.bound) {
+            optionSelect.dataset.bound = '1';
+            optionSelect.addEventListener('change', () => {
+                syncTriageTreeInputsToState();
+                triageTreeEditorState.selectedOptionKeys[categoryKey] = optionSelect.value || '';
+                renderTriageTreeEditorControls();
+            });
+            optionSelect.addEventListener('blur', () => {
+                saveTriageTreeOnFieldExit(`${categoryKey}-blur`);
+            });
+        }
+    });
+
+    const baseEl = document.getElementById('triage-tree-base-doctrine');
+    if (baseEl && !baseEl.dataset.bound) {
+        baseEl.dataset.bound = '1';
+        baseEl.addEventListener('input', () => {
+            if (!triagePromptTreePayload) return;
+            triagePromptTreePayload.base_doctrine = (baseEl.value || '').trim();
+        });
+        baseEl.addEventListener('blur', () => {
+            saveTriageTreeOnFieldExit('base-blur');
+        });
+    }
+
+    const mindsetEl = document.getElementById('triage-tree-domain-mindset');
+    if (mindsetEl && !mindsetEl.dataset.bound) {
+        mindsetEl.dataset.bound = '1';
+        mindsetEl.addEventListener('input', () => {
+            const domainNode = getTriageTreeDomainNode(triageTreeEditorState.domain, false);
+            if (domainNode) {
+                domainNode.mindset = (mindsetEl.value || '').trim();
+            }
+        });
+        mindsetEl.addEventListener('blur', () => {
+            saveTriageTreeOnFieldExit('mindset-blur');
+        });
+    }
+
+    const procedureEl = document.getElementById('triage-tree-procedure');
+    if (procedureEl && !procedureEl.dataset.bound) {
+        procedureEl.dataset.bound = '1';
+        procedureEl.addEventListener('input', () => {
+            const problemNode = getTriageTreeProblemNode(triageTreeEditorState.domain, triageTreeEditorState.problem, false);
+            if (problemNode) {
+                problemNode.procedure = (procedureEl.value || '').trim();
+            }
+        });
+        procedureEl.addEventListener('blur', () => {
+            saveTriageTreeOnFieldExit('procedure-blur');
+        });
+    }
+
+    Object.entries(TRIAGE_TREE_CATEGORY_EDITOR_IDS).forEach(([categoryKey, ids]) => {
+        const textEl = document.getElementById(ids.text);
+        if (textEl && !textEl.dataset.bound) {
+            textEl.dataset.bound = '1';
+            textEl.addEventListener('input', () => {
+                const selectedKey = triageTreeEditorState.selectedOptionKeys?.[categoryKey] || '';
+                if (!selectedKey) return;
+                const optionMap = getTriageTreeOptionMap(
+                    triageTreeEditorState.domain,
+                    triageTreeEditorState.problem,
+                    categoryKey,
+                    true
+                );
+                optionMap[selectedKey] = (textEl.value || '').trim();
+            });
+            textEl.addEventListener('blur', () => {
+                saveTriageTreeOnFieldExit(`${categoryKey}-text-blur`);
+            });
+        }
+    });
+}
+
+/**
+ * renderTriageTreeEditor: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function renderTriageTreeEditor(payload) {
+    const normalized = normalizeTriageTreePayload(payload);
+    triagePromptTreePayload = JSON.parse(JSON.stringify(normalized));
+    bindTriageTreeEditorHandlers();
+    renderTriageTreeEditorControls();
+}
+
+/**
+ * renderTriageTreeCategoryControls: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function renderTriageTreeCategoryControls(categoryKey, selectedDomain, selectedProblem, problemNode) {
+    const ids = TRIAGE_TREE_CATEGORY_EDITOR_IDS[categoryKey];
+    if (!ids) return;
+    const optionMap = getTriageTreeOptionMap(
+        selectedDomain,
+        selectedProblem,
+        categoryKey,
+        false
+    );
+    const optionKeys = Object.keys(optionMap || {});
+    const selectedOption = setTriageTreeSelectOptions(
+        ids.select,
+        optionKeys,
+        triageTreeEditorState.selectedOptionKeys?.[categoryKey] || '',
+        `Select ${TRIAGE_TREE_OPTION_CATEGORY_LABELS[categoryKey] || 'option'}...`
+    );
+    triageTreeEditorState.selectedOptionKeys[categoryKey] = selectedOption;
+
+    const selectEl = document.getElementById(ids.select);
+    if (selectEl) {
+        selectEl.disabled = !problemNode;
+    }
+
+    const inputEl = document.getElementById(ids.input);
+    if (inputEl) {
+        inputEl.disabled = !problemNode;
+    }
+
+    const textEl = document.getElementById(ids.text);
+    if (textEl) {
+        textEl.value = selectedOption ? (optionMap[selectedOption] || '') : '';
+        textEl.disabled = !problemNode || !selectedOption;
+    }
+}
+
+/**
+ * renderTriageTreeEditorControls: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function renderTriageTreeEditorControls() {
+    if (!triagePromptTreePayload) return;
+    syncTriageTreeEditorState();
+    const tree = ensureTriageTreeRoot();
+    const domains = Object.keys(tree);
+    const selectedDomain = setTriageTreeSelectOptions(
+        'triage-tree-domain-select',
+        domains,
+        triageTreeEditorState.domain,
+        'Select domain...'
+    );
+    triageTreeEditorState.domain = selectedDomain;
+    const domainNode = getTriageTreeDomainNode(selectedDomain, false);
+
+    const mindsetEl = document.getElementById('triage-tree-domain-mindset');
+    if (mindsetEl) {
+        mindsetEl.value = domainNode ? (domainNode.mindset || '') : '';
+        mindsetEl.disabled = !domainNode;
+    }
+
+    const problems = domainNode ? Object.keys(domainNode.problems || {}) : [];
+    const selectedProblem = setTriageTreeSelectOptions(
+        'triage-tree-problem-select',
+        problems,
+        triageTreeEditorState.problem,
+        'Select problem...'
+    );
+    triageTreeEditorState.problem = selectedProblem;
+    const problemSelectEl = document.getElementById('triage-tree-problem-select');
+    if (problemSelectEl) {
+        problemSelectEl.disabled = !domainNode;
+    }
+    const problemNode = getTriageTreeProblemNode(selectedDomain, selectedProblem, false);
+
+    const procedureEl = document.getElementById('triage-tree-procedure');
+    if (procedureEl) {
+        procedureEl.value = problemNode ? (problemNode.procedure || '') : '';
+        procedureEl.disabled = !problemNode;
+    }
+
+    const baseEl = document.getElementById('triage-tree-base-doctrine');
+    if (baseEl && document.activeElement !== baseEl) {
+        baseEl.value = triagePromptTreePayload.base_doctrine || '';
+    }
+
+    ['anatomy_guardrails', 'severity_modifiers', 'mechanism_modifiers'].forEach((categoryKey) => {
+        renderTriageTreeCategoryControls(categoryKey, selectedDomain, selectedProblem, problemNode);
+    });
+
+    const selectedAnatomy = triageTreeEditorState.selectedOptionKeys?.anatomy_guardrails || '';
+    const selectedMechanism = triageTreeEditorState.selectedOptionKeys?.severity_modifiers || '';
+    const selectedSeverity = triageTreeEditorState.selectedOptionKeys?.mechanism_modifiers || '';
+
+    setTriageTreePathHint('triage-tree-base-path', [], 'Global (all triage paths)');
+    setTriageTreePathHint('triage-tree-domain-path', [selectedDomain], '(select Domain)');
+    setTriageTreePathHint('triage-tree-procedure-path', [selectedDomain, selectedProblem], '(select Domain and Problem)');
+    setTriageTreePathHint('triage-tree-anatomy-path', [selectedDomain, selectedProblem, selectedAnatomy], '(select Domain, Problem, and Anatomy)');
+    setTriageTreePathHint('triage-tree-severity-path', [selectedDomain, selectedProblem, selectedAnatomy, selectedMechanism], '(select Domain, Problem, Anatomy, and Mechanism)');
+    setTriageTreePathHint('triage-tree-mechanism-path', [selectedDomain, selectedProblem, selectedAnatomy, selectedMechanism, selectedSeverity], '(select Domain, Problem, Anatomy, Mechanism, and Severity)');
+}
+
+/**
+ * addTriageTreeDomain: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function addTriageTreeDomain() {
+    if (!triagePromptTreePayload) return;
+    syncTriageTreeInputsToState();
+    const input = document.getElementById('triage-tree-domain-new');
+    const name = (input?.value || '').trim();
+    if (!name) {
+        updateTriageTreeStatus('Enter a domain name first.', true);
+        return;
+    }
+    const tree = ensureTriageTreeRoot();
+    const existing = Object.keys(tree).find((key) => key.trim().toLowerCase() === name.toLowerCase());
+    if (existing) {
+        updateTriageTreeStatus(`Domain "${existing}" already exists.`, true);
+        return;
+    }
+    tree[name] = { mindset: '', problems: {} };
+    triageTreeEditorState.domain = name;
+    triageTreeEditorState.problem = '';
+    clearTriageTreeSelectedOptions();
+    if (input) input.value = '';
+    renderTriageTreeEditorControls();
+    updateTriageTreeStatus(`Added domain "${name}".`);
+    saveTriageTreeOnFieldExit('domain-add');
+}
+
+/**
+ * deleteTriageTreeDomain: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function deleteTriageTreeDomain() {
+    if (!triagePromptTreePayload) return;
+    syncTriageTreeInputsToState();
+    const key = triageTreeEditorState.domain;
+    if (!key) {
+        updateTriageTreeStatus('Select a domain to delete.', true);
+        return;
+    }
+    if (!confirm(`Delete domain "${key}" and all its problems?`)) return;
+    const tree = ensureTriageTreeRoot();
+    delete tree[key];
+    triageTreeEditorState.domain = '';
+    triageTreeEditorState.problem = '';
+    clearTriageTreeSelectedOptions();
+    renderTriageTreeEditorControls();
+    updateTriageTreeStatus(`Deleted domain "${key}".`);
+    saveTriageTreeOnFieldExit('domain-delete');
+}
+
+/**
+ * addTriageTreeProblem: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function addTriageTreeProblem() {
+    if (!triagePromptTreePayload) return;
+    syncTriageTreeInputsToState();
+    const domainKey = triageTreeEditorState.domain;
+    if (!domainKey) {
+        updateTriageTreeStatus('Select a domain first.', true);
+        return;
+    }
+    const input = document.getElementById('triage-tree-problem-new');
+    const name = (input?.value || '').trim();
+    if (!name) {
+        updateTriageTreeStatus('Enter a problem name first.', true);
+        return;
+    }
+    const domainNode = getTriageTreeDomainNode(domainKey, true);
+    const existing = Object.keys(domainNode.problems || {}).find((key) => key.trim().toLowerCase() === name.toLowerCase());
+    if (existing) {
+        updateTriageTreeStatus(`Problem "${existing}" already exists in ${domainKey}.`, true);
+        return;
+    }
+    domainNode.problems[name] = {
+        procedure: '',
+        exclusions: '',
+        anatomy_guardrails: {},
+        severity_modifiers: {},
+        mechanism_modifiers: {},
+    };
+    triageTreeEditorState.problem = name;
+    clearTriageTreeSelectedOptions();
+    if (input) input.value = '';
+    renderTriageTreeEditorControls();
+    updateTriageTreeStatus(`Added problem "${name}" under ${domainKey}.`);
+    saveTriageTreeOnFieldExit('problem-add');
+}
+
+/**
+ * deleteTriageTreeProblem: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function deleteTriageTreeProblem() {
+    if (!triagePromptTreePayload) return;
+    syncTriageTreeInputsToState();
+    const domainKey = triageTreeEditorState.domain;
+    const problemKey = triageTreeEditorState.problem;
+    if (!domainKey || !problemKey) {
+        updateTriageTreeStatus('Select a problem to delete.', true);
+        return;
+    }
+    if (!confirm(`Delete problem "${problemKey}" from "${domainKey}"?`)) return;
+    const domainNode = getTriageTreeDomainNode(domainKey, false);
+    if (!domainNode || !domainNode.problems) return;
+    delete domainNode.problems[problemKey];
+    triageTreeEditorState.problem = '';
+    clearTriageTreeSelectedOptions();
+    renderTriageTreeEditorControls();
+    updateTriageTreeStatus(`Deleted problem "${problemKey}".`);
+    saveTriageTreeOnFieldExit('problem-delete');
+}
+
+/**
+ * addTriageTreeCategoryOption: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function addTriageTreeCategoryOption(categoryKey) {
+    if (!triagePromptTreePayload) return;
+    if (!TRIAGE_TREE_OPTION_CATEGORY_LABELS[categoryKey]) return;
+    syncTriageTreeInputsToState();
+    const domainKey = triageTreeEditorState.domain;
+    const problemKey = triageTreeEditorState.problem;
+    if (!domainKey || !problemKey) {
+        updateTriageTreeStatus('Select a domain and problem first.', true);
+        return;
+    }
+    const input = document.getElementById(TRIAGE_TREE_CATEGORY_EDITOR_IDS[categoryKey].input);
+    const key = (input?.value || '').trim();
+    if (!key) {
+        updateTriageTreeStatus('Enter an option name first.', true);
+        return;
+    }
+    const optionMap = getTriageTreeOptionMap(domainKey, problemKey, categoryKey, true);
+    const existing = Object.keys(optionMap).find((name) => name.trim().toLowerCase() === key.toLowerCase());
+    if (existing) {
+        updateTriageTreeStatus(`Option "${existing}" already exists in ${TRIAGE_TREE_OPTION_CATEGORY_LABELS[categoryKey]}.`, true);
+        return;
+    }
+    optionMap[key] = '';
+    triageTreeEditorState.selectedOptionKeys[categoryKey] = key;
+    if (input) input.value = '';
+    renderTriageTreeEditorControls();
+    updateTriageTreeStatus(`Added option "${key}" to ${TRIAGE_TREE_OPTION_CATEGORY_LABELS[categoryKey]}.`);
+    saveTriageTreeOnFieldExit(`${categoryKey}-add`);
+}
+
+/**
+ * deleteTriageTreeCategoryOption: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function deleteTriageTreeCategoryOption(categoryKey) {
+    if (!triagePromptTreePayload) return;
+    if (!TRIAGE_TREE_OPTION_CATEGORY_LABELS[categoryKey]) return;
+    syncTriageTreeInputsToState();
+    const domainKey = triageTreeEditorState.domain;
+    const problemKey = triageTreeEditorState.problem;
+    const optionKey = triageTreeEditorState.selectedOptionKeys?.[categoryKey] || '';
+    if (!domainKey || !problemKey || !optionKey) {
+        updateTriageTreeStatus('Select an option to delete.', true);
+        return;
+    }
+    if (!confirm(`Delete option "${optionKey}" from ${TRIAGE_TREE_OPTION_CATEGORY_LABELS[categoryKey]}?`)) return;
+    const optionMap = getTriageTreeOptionMap(domainKey, problemKey, categoryKey, false);
+    delete optionMap[optionKey];
+    triageTreeEditorState.selectedOptionKeys[categoryKey] = '';
+    renderTriageTreeEditorControls();
+    updateTriageTreeStatus(`Deleted option "${optionKey}".`);
+    saveTriageTreeOnFieldExit(`${categoryKey}-delete`);
+}
+
+/**
+ * addTriageTreeAnatomyOption: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function addTriageTreeAnatomyOption() {
+    addTriageTreeCategoryOption('anatomy_guardrails');
+}
+
+/**
+ * deleteTriageTreeAnatomyOption: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function deleteTriageTreeAnatomyOption() {
+    deleteTriageTreeCategoryOption('anatomy_guardrails');
+}
+
+/**
+ * addTriageTreeSeverityOption: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function addTriageTreeSeverityOption() {
+    addTriageTreeCategoryOption('severity_modifiers');
+}
+
+/**
+ * deleteTriageTreeSeverityOption: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function deleteTriageTreeSeverityOption() {
+    deleteTriageTreeCategoryOption('severity_modifiers');
+}
+
+/**
+ * addTriageTreeMechanismOption: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function addTriageTreeMechanismOption() {
+    addTriageTreeCategoryOption('mechanism_modifiers');
+}
+
+/**
+ * deleteTriageTreeMechanismOption: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function deleteTriageTreeMechanismOption() {
+    deleteTriageTreeCategoryOption('mechanism_modifiers');
+}
+
+async function loadTriagePromptTree() {
+    try {
+        updateTriageTreeStatus('Loading triage decision tree...');
+        const res = await fetch('/api/settings/triage-tree', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error(`Load failed (${res.status})`);
+        const payload = await res.json();
+        const normalized = normalizeTriageTreePayload(payload?.payload || payload);
+        renderTriageTreeEditor(normalized);
+        const domainCount = Object.keys(normalized.tree || {}).length;
+        updateTriageTreeStatus(`Loaded triage tree (${domainCount} domain${domainCount === 1 ? '' : 's'}).`);
+    } catch (err) {
+        updateTriageTreeStatus(`Load failed: ${err.message}`, true);
+    }
+}
+
+async function saveTriagePromptTree(options = {}) {
+    const silentStatus = !!options.silentStatus;
+    const reason = options.reason || 'manual';
+    if (!triagePromptTreePayload) {
+        updateTriageTreeStatus('No triage tree is loaded.', true);
+        return;
+    }
+    syncTriageTreeInputsToState();
+
+    let normalized;
+    try {
+        normalized = normalizeTriageTreePayload(triagePromptTreePayload);
+    } catch (err) {
+        updateTriageTreeStatus(err.message || 'Invalid triage tree payload.', true);
+        return;
+    }
+
+    try {
+        if (!silentStatus) {
+            updateTriageTreeStatus('Saving triage decision tree...');
+        }
+        const res = await fetch('/api/settings/triage-tree', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ payload: normalized }),
+        });
+        if (!res.ok) {
+            let detail = '';
+            try {
+                const err = await res.json();
+                detail = err?.error ? `: ${err.error}` : '';
+            } catch (_) { /* ignore */ }
+            throw new Error(`Save failed (${res.status})${detail}`);
+        }
+        const payload = await res.json();
+        const saved = normalizeTriageTreePayload(payload?.payload || normalized);
+        renderTriageTreeEditor(saved);
+        const domainCount = Object.keys(saved.tree || {}).length;
+        if (silentStatus) {
+            updateTriageTreeStatus(
+                `Auto-saved triage tree (${domainCount} domain${domainCount === 1 ? '' : 's'}) at ${new Date().toLocaleTimeString()}.`
+            );
+        } else {
+            updateTriageTreeStatus(`Saved triage tree (${domainCount} domain${domainCount === 1 ? '' : 's'}).`);
+        }
+        if (typeof refreshPromptPreview === 'function') {
+            refreshPromptPreview(true);
+        }
+        console.log('[settings] triage tree saved', { reason, domainCount });
+    } catch (err) {
+        updateTriageTreeStatus(`Save failed: ${err.message}`, true);
+    }
+}
+
 if (document.readyState !== 'loading') {
     applyStoredUserMode();
     loadSettingsUI().catch(() => {});
@@ -365,11 +1310,11 @@ if (document.readyState !== 'loading') {
 function bindSettingsDirtyTracking() {
     const fields = document.querySelectorAll('#Settings input, #Settings textarea, #Settings select');
     fields.forEach(el => {
+        if (el.dataset.settingsNoAutosave === '1') return;
         if (el.dataset.settingsDirtyBound) return;
         el.dataset.settingsDirtyBound = 'true';
         el.addEventListener('input', () => {
             settingsDirty = true;
-            scheduleAutoSave('input-change');
             if (el.id === 'user_mode') {
                 setUserMode(el.value);
                 // Persist immediately to avoid losing mode if navigation happens quickly
@@ -383,7 +1328,6 @@ function bindSettingsDirtyTracking() {
         });
         el.addEventListener('change', () => {
             settingsDirty = true;
-            scheduleAutoSave('input-change');
             if (el.id === 'user_mode') {
                 setUserMode(el.value);
                 saveSettings(false, 'user-mode-change').catch(() => {});
@@ -392,6 +1336,11 @@ function bindSettingsDirtyTracking() {
                 setUserMode(document.getElementById('user_mode')?.value || 'user');
             }
             updateSettingsMeta(window.CACHED_SETTINGS || {});
+        });
+        el.addEventListener('blur', () => {
+            if (!settingsDirty) return;
+            if (el.id === 'user_mode') return;
+            saveSettings(false, 'field-blur').catch(() => {});
         });
     });
 }
@@ -431,6 +1380,8 @@ async function loadSettingsUI() {
         const s = await res.json();
         console.log('[settings] loaded settings:', s);
         applySettingsToUI(s);
+        loadPromptTemplates().catch(() => {});
+        loadTriagePromptTree().catch(() => {});
         console.log('[settings] settings applied to UI');
         try { localStorage.setItem('user_mode', s.user_mode || 'user'); } catch (err) { /* ignore */ }
         if (!offlineInitialized) {
@@ -446,6 +1397,8 @@ async function loadSettingsUI() {
             try { return localStorage.getItem('user_mode') || 'user'; } catch (e) { return 'user'; }
         })();
         applySettingsToUI({ ...DEFAULT_SETTINGS, user_mode: localMode });
+        loadPromptTemplates().catch(() => {});
+        loadTriagePromptTree().catch(() => {});
     }
 }
 
@@ -492,7 +1445,7 @@ function applyStoredUserMode() {
  */
 function scheduleAutoSave(reason = 'auto') {
     if (settingsAutoSaveTimer) clearTimeout(settingsAutoSaveTimer);
-    settingsAutoSaveTimer = setTimeout(() => saveSettings(false, reason), 800);
+    settingsAutoSaveTimer = setTimeout(() => saveSettings(false, reason), 1500);
 }
 
 /**
@@ -511,7 +1464,7 @@ function scheduleAutoSave(reason = 'auto') {
  * 
  * Numeric Fields:
  * Validated and coerced to numbers. Falls back to defaults if invalid.
- * Includes: tr_temp, tr_tok, tr_p, in_temp, in_tok, in_p, rep_penalty
+ * Includes: tr_temp, tr_tok, tr_p, tr_k, in_temp, in_tok, in_p, in_k, rep_penalty
  * 
  * Side Effects:
  * - Updates window.CACHED_SETTINGS
@@ -527,10 +1480,11 @@ function scheduleAutoSave(reason = 'auto') {
  * @param {string} reason - Reason for save (for logging and debugging)
  */
 async function saveSettings(showAlert = true, reason = 'manual') {
+    const saveSeq = ++settingsSaveSequence;
     try {
         const s = {};
-        const numeric = new Set(['tr_temp','tr_tok','tr_p','in_temp','in_tok','in_p','rep_penalty']);
-        ['triage_instruction','inquiry_instruction','tr_temp','tr_tok','tr_p','in_temp','in_tok','in_p','mission_context','rep_penalty','user_mode','resource_injection_mode'].forEach(k => {
+        const numeric = new Set(['tr_temp','tr_tok','tr_p','tr_k','in_temp','in_tok','in_p','in_k','rep_penalty']);
+        ['triage_instruction','inquiry_instruction','tr_temp','tr_tok','tr_p','tr_k','in_temp','in_tok','in_p','in_k','mission_context','rep_penalty','user_mode'].forEach(k => {
             const el = document.getElementById(k);
             if (!el) return;
             const val = el.type === 'checkbox' ? el.checked : el.value;
@@ -545,8 +1499,6 @@ async function saveSettings(showAlert = true, reason = 'manual') {
         if (offlineToggle) s.offline_force_flags = !!offlineToggle.checked;
         s.vaccine_types = normalizeVaccineTypes(vaccineTypeList);
         s.pharmacy_labels = normalizePharmacyLabels(pharmacyLabelList);
-        s.equipment_categories = normalizeEquipmentCategories(equipmentCategoryList);
-        s.consumable_categories = normalizeConsumableCategories(consumableCategoryList);
         console.log('[settings] saving', { reason, payload: s });
         updateSettingsStatus('Saving…', false);
         const headers = { 'Content-Type': 'application/json' };
@@ -566,15 +1518,17 @@ async function saveSettings(showAlert = true, reason = 'manual') {
             throw new Error(`Save failed (${res.status})${detail}`);
         }
         const updated = await res.json();
+        if (saveSeq !== settingsSaveSequence) {
+            console.log('[settings] ignoring stale save response', { saveSeq, latest: settingsSaveSequence, reason });
+            return false;
+        }
         console.log('[settings] save response', updated);
         // Preserve the locally selected user_mode to avoid flicker if the server echoes stale data
         const merged = {
             ...updated,
             user_mode: s.user_mode || updated.user_mode,
             vaccine_types: s.vaccine_types || updated.vaccine_types,
-            pharmacy_labels: s.pharmacy_labels || updated.pharmacy_labels,
-            equipment_categories: s.equipment_categories || updated.equipment_categories,
-            consumable_categories: s.consumable_categories || updated.consumable_categories
+            pharmacy_labels: s.pharmacy_labels || updated.pharmacy_labels
         };
         applySettingsToUI(merged);
         try { localStorage.setItem('user_mode', updated.user_mode || 'user'); } catch (err) { /* ignore */ }
@@ -587,20 +1541,45 @@ async function saveSettings(showAlert = true, reason = 'manual') {
             refreshPromptPreview();
         }
         updateSettingsMeta(updated);
+        return true;
     } catch (err) {
+        if (saveSeq !== settingsSaveSequence) {
+            console.log('[settings] ignoring stale save error', { saveSeq, latest: settingsSaveSequence, reason, error: err?.message });
+            return false;
+        }
         if (showAlert) {
             alert(`Unable to save settings: ${err.message}`);
         }
         updateSettingsStatus(`Save error: ${err.message}`, true);
         console.error('[settings] save error', err);
+        return false;
     }
+}
+
+/**
+ * Ensure pending settings changes are persisted before chat submission.
+ *
+ * This prevents a race where triage/inquiry requests use older persisted
+ * model parameters if the user edits Settings and submits chat immediately.
+ *
+ * @returns {Promise<boolean>} True when settings are synchronized.
+ */
+async function flushSettingsBeforeChat() {
+    if (!settingsLoaded) return true;
+    if (settingsAutoSaveTimer) {
+        clearTimeout(settingsAutoSaveTimer);
+        settingsAutoSaveTimer = null;
+    }
+    if (!settingsDirty) return true;
+    updateSettingsStatus('Saving before consultation…');
+    return await saveSettings(false, 'pre-chat-flush');
 }
 
 /**
  * Reset a settings section to default values.
  * 
  * Sections:
- * - 'triage': Triage prompt and parameters (temp, tokens, top-p)
+ * - 'triage': Triage prompt and parameters (temp, tokens, top-p, top-k)
  * - 'inquiry': Inquiry prompt and parameters
  * - 'mission': Mission context description
  * 
@@ -614,11 +1593,13 @@ function resetSection(section) {
         document.getElementById('tr_temp').value = DEFAULT_SETTINGS.tr_temp;
         document.getElementById('tr_tok').value = DEFAULT_SETTINGS.tr_tok;
         document.getElementById('tr_p').value = DEFAULT_SETTINGS.tr_p;
+        document.getElementById('tr_k').value = DEFAULT_SETTINGS.tr_k;
     } else if (section === 'inquiry') {
         document.getElementById('inquiry_instruction').value = DEFAULT_SETTINGS.inquiry_instruction;
         document.getElementById('in_temp').value = DEFAULT_SETTINGS.in_temp;
         document.getElementById('in_tok').value = DEFAULT_SETTINGS.in_tok;
         document.getElementById('in_p').value = DEFAULT_SETTINGS.in_p;
+        document.getElementById('in_k').value = DEFAULT_SETTINGS.in_k;
     } else if (section === 'mission') {
         document.getElementById('mission_context').value = DEFAULT_SETTINGS.mission_context;
     }
@@ -925,6 +1906,10 @@ function normalizeEquipmentCategories(list) {
         });
 }
 
+/**
+ * renderEquipmentCategories: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function renderEquipmentCategories() {
     const container = document.getElementById('equipment-categories-list');
     if (!container) return;
@@ -953,6 +1938,10 @@ function renderEquipmentCategories() {
     updateSettingsMeta(window.CACHED_SETTINGS || {});
 }
 
+/**
+ * addEquipmentCategory: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function addEquipmentCategory() {
     const input = document.getElementById('equipment-category-input');
     if (!input) return;
@@ -968,6 +1957,10 @@ function addEquipmentCategory() {
     scheduleAutoSave('equipment-category-add');
 }
 
+/**
+ * removeEquipmentCategory: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function removeEquipmentCategory(idx) {
     if (idx < 0 || idx >= equipmentCategoryList.length) return;
     equipmentCategoryList.splice(idx, 1);
@@ -977,6 +1970,10 @@ function removeEquipmentCategory(idx) {
     scheduleAutoSave('equipment-category-remove');
 }
 
+/**
+ * moveEquipmentCategory: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function moveEquipmentCategory(idx, delta) {
     const newIndex = idx + delta;
     if (newIndex < 0 || newIndex >= equipmentCategoryList.length) return;
@@ -1007,6 +2004,10 @@ function normalizeConsumableCategories(list) {
         });
 }
 
+/**
+ * renderConsumableCategories: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function renderConsumableCategories() {
     const container = document.getElementById('consumable-categories-list');
     if (!container) return;
@@ -1035,6 +2036,10 @@ function renderConsumableCategories() {
     updateSettingsMeta(window.CACHED_SETTINGS || {});
 }
 
+/**
+ * addConsumableCategory: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function addConsumableCategory() {
     const input = document.getElementById('consumable-category-input');
     if (!input) return;
@@ -1050,6 +2055,10 @@ function addConsumableCategory() {
     scheduleAutoSave('consumable-category-add');
 }
 
+/**
+ * removeConsumableCategory: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function removeConsumableCategory(idx) {
     if (idx < 0 || idx >= consumableCategoryList.length) return;
     consumableCategoryList.splice(idx, 1);
@@ -1059,6 +2068,10 @@ function removeConsumableCategory(idx) {
     scheduleAutoSave('consumable-category-remove');
 }
 
+/**
+ * moveConsumableCategory: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
 function moveConsumableCategory(idx, delta) {
     const newIndex = idx + delta;
     if (newIndex < 0 || newIndex >= consumableCategoryList.length) return;
@@ -1375,7 +2388,6 @@ async function toggleOfflineFlags(forceEnable) {
  * Exports:
  * - Sample crew members with medical histories
  * - Example medications
- * - Triage test cases
  * - Sample chat history
  * 
  * Use Cases:
@@ -1521,11 +2533,32 @@ function debouncedSaveCred(id) {
     credSaveTimers[id] = setTimeout(() => saveCrewCredential(id), 400);
 }
 
+/**
+ * Return to login/splash from Settings.
+ *
+ * Behavior:
+ * - If crew credentials exist, log out current session first so next access requires login.
+ * - If no credentials exist, just navigate to the login/splash screen.
+ */
+async function returnToLoginSplash() {
+    try {
+        const res = await fetch('/api/auth/meta', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error(`Status ${res.status}`);
+        const data = await res.json();
+        window.location.href = data && data.has_credentials ? '/logout' : '/login';
+    } catch (_) {
+        // Fail safe: force logout to avoid keeping an authenticated session unexpectedly.
+        window.location.href = '/logout';
+    }
+}
+
 // Expose functions to window for inline onclick handlers
 window.saveSettings = saveSettings;
+window.flushSettingsBeforeChat = flushSettingsBeforeChat;
 window.resetSection = resetSection;
 window.loadCrewCredentials = loadCrewCredentials;
 window.saveCrewCredential = saveCrewCredential;
+window.returnToLoginSplash = returnToLoginSplash;
 window.setUserMode = setUserMode;
 window.runOfflineCheck = runOfflineCheck;
 window.createOfflineBackup = createOfflineBackup;
@@ -1542,3 +2575,176 @@ window.moveEquipmentCategory = moveEquipmentCategory;
 window.addConsumableCategory = addConsumableCategory;
 window.removeConsumableCategory = removeConsumableCategory;
 window.moveConsumableCategory = moveConsumableCategory;
+
+
+// COMMENTARY REFERENCE BLOCK: EXTENDED MAINTENANCE NOTES
+// Note 001: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 002: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 003: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 004: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 005: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 006: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 007: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 008: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 009: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 010: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 011: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 012: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 013: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 014: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 015: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 016: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 017: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 018: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 019: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 020: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 021: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 022: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 023: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 024: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 025: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 026: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 027: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 028: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 029: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 030: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 031: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 032: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 033: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 034: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 035: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 036: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 037: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 038: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 039: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 040: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 041: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 042: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 043: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 044: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 045: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 046: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 047: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 048: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 049: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 050: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 051: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 052: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 053: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 054: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 055: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 056: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 057: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 058: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 059: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 060: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 061: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 062: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 063: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 064: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 065: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 066: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 067: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 068: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 069: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 070: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 071: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 072: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 073: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 074: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 075: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 076: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 077: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 078: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 079: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 080: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 081: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 082: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 083: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 084: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 085: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 086: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 087: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 088: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 089: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 090: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 091: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 092: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 093: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 094: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 095: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 096: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 097: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 098: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 099: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 100: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 101: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 102: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 103: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 104: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 105: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 106: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 107: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 108: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 109: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 110: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 111: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 112: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 113: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 114: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 115: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 116: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 117: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 118: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 119: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 120: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 121: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 122: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 123: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 124: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 125: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 126: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 127: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 128: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 129: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 130: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 131: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 132: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 133: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 134: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 135: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 136: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 137: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 138: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 139: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 140: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 141: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 142: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 143: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 144: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 145: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 146: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 147: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 148: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 149: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 150: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 151: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 152: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 153: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 154: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 155: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 156: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 157: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 158: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 159: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 160: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+// Note 161: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
+// Note 162: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
+// Note 163: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
+// Note 164: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
+// Note 165: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
+// Note 166: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
+// Note 167: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
+// Note 168: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
+// Note 169: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
+// Note 170: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.

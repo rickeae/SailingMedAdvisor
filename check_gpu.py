@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # =============================================================================
 # Author: Rick Escher
-# Project: SilingMedAdvisor (SailingMedAdvisor)
+# Project: SailingMedAdvisor
 # Context: Google HAI-DEF Framework
 # Models: Google MedGemmas
 # Program: Kaggle Impact Challenge
 # =============================================================================
 """
 GPU Detection Diagnostic Script
-Run this to check if PyTorch can see your NVIDIA GPU
+Run this to check if PyTorch can see our NVIDIA GPU
 """
 
 import sys

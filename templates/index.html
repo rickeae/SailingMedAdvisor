@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <!-- =============================================================================
      Author: Rick Escher
-     Project: SilingMedAdvisor (SailingMedAdvisor)
+     Project: SailingMedAdvisor
      Context: Google HAI-DEF Framework
      Models: Google MedGemmas
      Program: Kaggle Impact Challenge
@@ -1190,19 +1190,22 @@
                             <span id="offline-meta" style="margin-left:auto; font-size:12px; color:#4a5568;"></span>
                         </div>
                         <div class="col-body" style="padding:12px; background:#f8f9fa;">
-                            <div id="offline-status" style="font-size:13px; color:#2c3e50; margin-bottom:10px;">Not checked yet.</div>
+                            <div style="font-size:12px; color:#475569; margin-bottom:8px;">
+                                Run this check before departure to confirm all required models and cache files are available without internet.
+                            </div>
+                            <div id="offline-status" style="font-size:13px; color:#2c3e50; margin-bottom:10px; min-height:40px;">Not checked yet.</div>
                             <div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:8px;">
-                                <button id="offline-check-btn" class="btn btn-sm" style="background:var(--inquiry);" onclick="runOfflineCheck(false)">Check cache status</button>
+                                <button id="offline-check-btn" class="btn btn-sm" style="background:var(--inquiry);" onclick="runOfflineCheck(false)">Run readiness check</button>
                                 <button id="offline-download-btn" class="btn btn-sm" style="background:#1f2d3d;" onclick="runOfflineCheck(true)">Download missing models</button>
-                                <button id="offline-backup-btn" class="btn btn-sm" style="background:#00695c;" onclick="createOfflineBackup()">Backup cache</button>
-                                <button id="offline-restore-btn" class="btn btn-sm" style="background:#8e44ad;" onclick="restoreOfflineBackup()">Restore last backup</button>
-                                <button id="offline-flag-btn" class="btn btn-sm" style="background:#b26a00;" onclick="toggleOfflineFlags()">Enable offline flags</button>
+                                <button id="offline-backup-btn" class="btn btn-sm" style="background:#00695c;" onclick="createOfflineBackup()">Create backup snapshot</button>
+                                <button id="offline-restore-btn" class="btn btn-sm" style="background:#8e44ad;" onclick="restoreOfflineBackup()">Restore latest backup</button>
+                                <button id="offline-flag-btn" class="btn btn-sm" style="background:#b26a00;" onclick="toggleOfflineFlags()">Enable offline mode</button>
                             </div>
                             <label style="display:flex; align-items:center; gap:8px; font-size:12px; color:#333; margin-bottom:6px;">
                                 <input type="checkbox" id="offline-force-flags" onclick="toggleOfflineFlags(this.checked)" />
-                                Keep offline flags enabled until I turn them off
+                                Persist offline mode in settings (recommended before going offshore)
                             </label>
-                            <div style="font-size:12px; color:#555;">Ensures all required models are cached and lets you back up/restore the cache before going offline.</div>
+                            <div style="font-size:12px; color:#555;">Recommended sequence: Run readiness check → Download missing models → Create backup snapshot → Enable offline mode.</div>
                         </div>
                     </div>
                     <div class="collapsible" style="margin-bottom:12px;">

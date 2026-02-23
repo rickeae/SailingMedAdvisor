@@ -1,6 +1,6 @@
 /* =============================================================================
  * Author: Rick Escher
- * Project: SilingMedAdvisor (SailingMedAdvisor)
+ * Project: SailingMedAdvisor
  * Context: Google HAI-DEF Framework
  * Models: Google MedGemmas
  * Program: Kaggle Impact Challenge
@@ -665,8 +665,8 @@ function renderHistoryEntries(entries) {
                         <span class="toggle-label history-arrow" style="font-size:16px; margin-right:8px;">▸</span>
                         <span style="flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:600; font-size:13px;">${date || 'Entry'}${preview ? ' — ' + preview : ''}</span>
                         <div style="display:flex; gap:6px; align-items:center;">
-                            <button class="btn btn-sm history-entry-action user-adv-only" style="background:#3949ab; visibility:hidden;" onclick="event.stopPropagation(); restoreChatSession('${item.id || ''}')">↩ Restore</button>
-                            <button class="btn btn-sm history-entry-action user-adv-only" style="background:#0d6b50; visibility:hidden;" onclick="event.stopPropagation(); restoreChatAsReturned('${item.id || ''}')">Demo Restore</button>
+                            <button class="btn btn-sm history-entry-action" style="background:#3949ab; visibility:hidden;" onclick="event.stopPropagation(); restoreChatSession('${item.id || ''}')">↩ Restore</button>
+                            <button class="btn btn-sm history-entry-action developer-only" style="${devEditDisplay} background:#0d6b50; visibility:hidden;" onclick="event.stopPropagation(); restoreChatAsReturned('${item.id || ''}')">Demo Restore</button>
                             <button class="btn btn-sm history-entry-action user-adv-only" style="background:var(--inquiry); visibility:hidden;" onclick="event.stopPropagation(); exportHistoryItemById('${item.id || ''}')">Export</button>
                             <button class="btn btn-sm history-entry-action developer-only" style="${devEditDisplay} background:#6d4c41; visibility:hidden;" onclick="event.stopPropagation(); toggleHistoryEntryEditor('${item.id || ''}')">Edit</button>
                             <button class="btn btn-sm history-entry-action" style="background:var(--red); visibility:hidden;" onclick="event.stopPropagation(); deleteHistoryItemById('${item.id || ''}')">Delete</button>
@@ -1231,13 +1231,7 @@ function loadCrewData(data, history = [], settings = {}) {
     }
 }
 
-// Expose for other scripts during startup
-window.loadCrewData = loadCrewData;
-
-// Ensure availability for other scripts that call it during startup
-window.loadCrewData = loadCrewData;
-
-// Expose for other scripts that call loadData() before bundling
+// Expose for cross-file calls (main.js/chat.js) that reference this loader.
 window.loadCrewData = loadCrewData;
 window.toggleLogEntry = toggleLogEntry;
 window.exportHistoryItemById = exportHistoryItemById;
@@ -1246,12 +1240,6 @@ window.saveHistoryItemById = saveHistoryItemById;
 window.deleteHistoryItemById = deleteHistoryItemById;
 console.log('[DEBUG] crew.js loaded and loadCrewData attached');
 
-// Debug immediately after attach
-if (typeof window.loadCrewData === 'function') {
-    console.log('[DEBUG] window.loadCrewData is available');
-} else {
-    console.error('[DEBUG] window.loadCrewData is NOT available after attach');
-}
 
 /**
  * Add a new crew member from the "Add New Crew Member" form.
@@ -2247,85 +2235,74 @@ async function loadVesselInfo() {
  * Displays "Saved at [time]" message in green for 4 seconds.
  * 
  * Called By:
- * - scheduleVesselSave() (debounced auto-save)
- * - Direct user action (Save button)
- * - mouseleave events on fields with pending changes
+ * - mouseleave events on vessel text fields with pending edits
  */
+let vesselSaveInFlight = false;
+let vesselSaveQueued = false;
 async function saveVesselInfo() {
-    console.log('[VESSEL] saveVesselInfo start');
-    const v = {};
-    Object.entries(VESSEL_INPUT_MAP).forEach(([id, key]) => {
-        v[key] = document.getElementById(id)?.value || '';
-    });
-    console.log('[VESSEL] saveVesselInfo payload', v);
-    const resp = await fetch('/api/data/vessel', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(v), credentials:'same-origin'});
-    const respText = await resp.text();
-    console.log('[VESSEL] saveVesselInfo resp', resp.status, respText.slice(0,200));
-    if (!resp.ok) {
-        console.warn('[VESSEL] saveVesselInfo failed', resp.status, respText);
-        throw new Error(`Save failed (${resp.status})`);
+    // Serialize vessel saves: mouseleave can fire in quick succession as the
+    // cursor moves across fields. Queue one follow-up save if needed.
+    if (vesselSaveInFlight) {
+        vesselSaveQueued = true;
+        return;
     }
-    const statusEl = document.getElementById('vessel-save-status');
-    if (statusEl) {
-        statusEl.textContent = 'Saved at ' + new Date().toLocaleTimeString();
-        statusEl.style.color = '#2e7d32';
-        setTimeout(() => { statusEl.textContent = ''; }, 4000);
-    }
-    // After save, pull latest to ensure UI matches persisted state
-    try {
-        const latestResp = await fetch('/api/data/vessel', {credentials:'same-origin'});
-        const latestText = await latestResp.text();
-        console.log('[VESSEL] post-save fetch status', latestResp.status, 'body', latestText.slice(0,200));
-        const latest = latestText ? JSON.parse(latestText) : {};
-        setVesselFieldValues(latest, 'post-save');
-        renderAllVesselPhotoPreviews(latest);
-        window.VESSEL_PREFILL = latest;
-    } catch (err) {
-        console.warn('[VESSEL] post-save refresh failed', err);
-    }
-    // Clear user-edited flags after successful save so subsequent loads can refresh
-    Object.keys(VESSEL_INPUT_MAP).forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.dataset.userEdited = '';
-    });
-}
+    vesselSaveInFlight = true;
 
-/**
- * Schedule a debounced auto-save for vessel information.
- * 
- * Debounce Period: 200ms
- * 
- * Triggered by:
- * - input events on vessel fields
- * - change events on vessel fields
- * 
- * Shorter debounce than crew profiles (200ms vs 1000ms) because vessel
- * edits are typically less frequent and users expect faster feedback.
- */
-let vesselSaveTimer = null;
-/**
- * scheduleVesselSave: function-level behavior note for maintainers.
- * Keep this block synchronized with implementation changes.
- */
-function scheduleVesselSave() {
-    if (vesselSaveTimer) clearTimeout(vesselSaveTimer);
-    vesselSaveTimer = setTimeout(() => {
-        console.log('[VESSEL] autosave triggered');
-        saveVesselInfo().catch(err => console.warn('[VESSEL] autosave failed', err));
-    }, 200);
+    console.log('[VESSEL] saveVesselInfo start');
+    try {
+        const v = {};
+        Object.entries(VESSEL_INPUT_MAP).forEach(([id, key]) => {
+            v[key] = document.getElementById(id)?.value || '';
+        });
+        console.log('[VESSEL] saveVesselInfo payload', v);
+        const resp = await fetch('/api/data/vessel', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(v), credentials:'same-origin'});
+        const respText = await resp.text();
+        console.log('[VESSEL] saveVesselInfo resp', resp.status, respText.slice(0,200));
+        if (!resp.ok) {
+            console.warn('[VESSEL] saveVesselInfo failed', resp.status, respText);
+            throw new Error(`Save failed (${resp.status})`);
+        }
+        const statusEl = document.getElementById('vessel-save-status');
+        if (statusEl) {
+            statusEl.textContent = 'Saved at ' + new Date().toLocaleTimeString();
+            statusEl.style.color = '#2e7d32';
+            setTimeout(() => { statusEl.textContent = ''; }, 4000);
+        }
+        // After save, pull latest to ensure UI matches persisted state
+        try {
+            const latestResp = await fetch('/api/data/vessel', {credentials:'same-origin'});
+            const latestText = await latestResp.text();
+            console.log('[VESSEL] post-save fetch status', latestResp.status, 'body', latestText.slice(0,200));
+            const latest = latestText ? JSON.parse(latestText) : {};
+            setVesselFieldValues(latest, 'post-save');
+            renderAllVesselPhotoPreviews(latest);
+            window.VESSEL_PREFILL = latest;
+        } catch (err) {
+            console.warn('[VESSEL] post-save refresh failed', err);
+        }
+        // Clear user-edited flags after successful save so subsequent loads can refresh
+        Object.keys(VESSEL_INPUT_MAP).forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.dataset.userEdited = '';
+        });
+    } finally {
+        vesselSaveInFlight = false;
+        if (vesselSaveQueued) {
+            vesselSaveQueued = false;
+            saveVesselInfo().catch(err => console.warn('[VESSEL] queued save failed', err));
+        }
+    }
 }
 
 /**
  * Bind auto-save event listeners to all vessel input fields.
  * 
  * Event Strategy:
- * - input: Triggers debounced save, marks field as edited
- * - change: Triggers debounced save, marks field as edited  
+ * - input: Marks field as edited
  * - mouseleave: Immediate save if field has pending edits
  * 
- * The mouseleave trigger ensures changes are saved when user moves away
- * from a field, even if they haven't triggered change event (e.g., by
- * clicking outside instead of tabbing away).
+ * This intentionally does NOT save on every keystroke/change event. Vessel
+ * text fields persist only when the user leaves the field area with the mouse.
  * 
  * Idempotent:
  * Uses data-vesselAutosave flag to prevent duplicate binding on repeated calls.
@@ -2337,8 +2314,8 @@ function bindVesselAutosave() {
         if (el && !el.dataset.vesselAutosave) {
             el.dataset.vesselAutosave = '1';
             const logVal = (evType) => console.log('[VESSEL] field event', evType, id, 'value=', el.value);
-            el.addEventListener('input', () => { el.dataset.userEdited = '1'; logVal('input'); scheduleVesselSave(); });
-            el.addEventListener('change', () => { el.dataset.userEdited = '1'; logVal('change'); scheduleVesselSave(); });
+            el.addEventListener('input', () => { el.dataset.userEdited = '1'; logVal('input'); });
+            el.addEventListener('change', () => { el.dataset.userEdited = '1'; logVal('change'); });
             el.addEventListener('mouseleave', () => {
                 if (el.dataset.userEdited) {
                     logVal('mouseleave');
@@ -2395,174 +2372,10 @@ window.saveVesselInfo = saveVesselInfo;
 window.ensureVesselLoaded = ensureVesselLoaded;
 
 
-// COMMENTARY REFERENCE BLOCK: EXTENDED MAINTENANCE NOTES
-// Note 001: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 002: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 003: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 004: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 005: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 006: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 007: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 008: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 009: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 010: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 011: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 012: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 013: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 014: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 015: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 016: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 017: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 018: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 019: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 020: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 021: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 022: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 023: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 024: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 025: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 026: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 027: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 028: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 029: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 030: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 031: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 032: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 033: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 034: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 035: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 036: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 037: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 038: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 039: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 040: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 041: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 042: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 043: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 044: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 045: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 046: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 047: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 048: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 049: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 050: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 051: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 052: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 053: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 054: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 055: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 056: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 057: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 058: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 059: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 060: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 061: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 062: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 063: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 064: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 065: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 066: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 067: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 068: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 069: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 070: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 071: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 072: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 073: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 074: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 075: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 076: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 077: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 078: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 079: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 080: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 081: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 082: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 083: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 084: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 085: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 086: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 087: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 088: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 089: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 090: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 091: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 092: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 093: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 094: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 095: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 096: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 097: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 098: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 099: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 100: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 101: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 102: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 103: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 104: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 105: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 106: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 107: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 108: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 109: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 110: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 111: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 112: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 113: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 114: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 115: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 116: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 117: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 118: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 119: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 120: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 121: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 122: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 123: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 124: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 125: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 126: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 127: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 128: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 129: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 130: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 131: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 132: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 133: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 134: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 135: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 136: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 137: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 138: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 139: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 140: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 141: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 142: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 143: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 144: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 145: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 146: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 147: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 148: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 149: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 150: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 151: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 152: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 153: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 154: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 155: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 156: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 157: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 158: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 159: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 160: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 161: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 162: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 163: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 164: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 165: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 166: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 167: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 168: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 169: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 170: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+//
+
+// MAINTENANCE NOTE
+// Historical auto-generated note blocks were removed because they were repetitive and
+// obscured real logic changes during review. Keep focused comments close to behavior-
+// critical code paths (UI state hydration, async fetch lifecycle, and mode-gated
+// controls) so maintenance remains actionable.

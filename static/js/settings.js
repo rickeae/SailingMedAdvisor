@@ -1,6 +1,6 @@
 /* =============================================================================
  * Author: Rick Escher
- * Project: SilingMedAdvisor (SailingMedAdvisor)
+ * Project: SailingMedAdvisor
  * Context: Google HAI-DEF Framework
  * Models: Google MedGemmas
  * Program: Kaggle Impact Challenge
@@ -254,10 +254,13 @@ function updateSettingsMeta(settings = {}) {
     if (offlineEl) {
         const flagsOn = !!settings.offline_force_flags;
         if (isAdvanced && offlineStatusCache) {
-            const cached = offlineStatusCache.cached_models || 0;
-            offlineEl.textContent = `Cached models: ${cached} | Flags ${flagsOn ? 'ON' : 'OFF'}`;
+            const models = Array.isArray(offlineStatusCache.models) ? offlineStatusCache.models : [];
+            const cached = models.filter((m) => !!m.cached).length;
+            const total = models.length || (Number(offlineStatusCache.total_models) || 0);
+            offlineEl.textContent = `Cached models: ${cached}/${total || '?'} | Flags ${flagsOn ? 'ON' : 'OFF'}`;
         } else {
-            const mode = (offlineStatusCache && offlineStatusCache.offline_mode) || flagsOn ? 'Offline' : 'Online';
+            const isOffline = !!((offlineStatusCache && offlineStatusCache.offline_mode) || flagsOn);
+            const mode = isOffline ? 'Offline' : 'Online';
             offlineEl.textContent = `Mode: ${mode}`;
         }
     }
@@ -352,6 +355,7 @@ function applySettingsToUI(data = {}) {
     settingsDirty = false;
     settingsLoaded = true;
     updateSettingsMeta(merged);
+    updateOfflineFlagButton();
 }
 
 /**
@@ -2127,6 +2131,8 @@ function setOfflineControlsEnabled(enabled) {
             btn.style.cursor = enabled ? 'pointer' : 'not-allowed';
         }
     });
+    const chk = document.getElementById('offline-force-flags');
+    if (chk) chk.disabled = !enabled;
 }
 
 /**
@@ -2134,7 +2140,7 @@ function setOfflineControlsEnabled(enabled) {
  * 
  * Backup Process:
  * 1. Calls /api/offline/backup (POST)
- * 2. Backend creates tar.gz of cache directory
+ * 2. Backend creates a timestamped ZIP snapshot
  * 3. Stores with timestamp in filename
  * 4. Returns backup filename
  * 
@@ -2148,13 +2154,17 @@ function setOfflineControlsEnabled(enabled) {
  */
 async function createOfflineBackup() {
     renderOfflineStatus('Creating offline backup…');
+    setOfflineControlsEnabled(false);
     try {
         const res = await fetch('/api/offline/backup', { method: 'POST', credentials: 'same-origin' });
         const data = await res.json();
         if (!res.ok || data.error) throw new Error(data.error || `Status ${res.status}`);
-        renderOfflineStatus(`Backup created: ${data.backup}`);
+        const file = (data.backup || '').split('/').pop() || data.backup;
+        renderOfflineStatus(`Backup created successfully: ${file}`);
     } catch (err) {
         renderOfflineStatus(`Backup failed: ${err.message}`, true);
+    } finally {
+        setOfflineControlsEnabled(true);
     }
 }
 
@@ -2163,7 +2173,7 @@ async function createOfflineBackup() {
  * 
  * Restoration Process:
  * 1. Calls /api/offline/restore (POST)
- * 2. Backend finds latest .tar.gz backup
+ * 2. Backend finds latest ZIP backup
  * 3. Extracts to cache directory (overwrites existing)
  * 4. Returns restored backup filename
  * 
@@ -2176,14 +2186,18 @@ async function createOfflineBackup() {
  */
 async function restoreOfflineBackup() {
     renderOfflineStatus('Restoring latest backup…');
+    setOfflineControlsEnabled(false);
     try {
         const res = await fetch('/api/offline/restore', { method: 'POST', credentials: 'same-origin' });
         const data = await res.json();
         if (!res.ok || data.error) throw new Error(data.error || `Status ${res.status}`);
-        renderOfflineStatus(`Restored backup: ${data.restored}`);
+        const file = (data.restored || '').split('/').pop() || data.restored;
+        renderOfflineStatus(`Backup restored: ${file}`);
         alert('Cache restored. Please reload the app.');
     } catch (err) {
         renderOfflineStatus(`Restore failed: ${err.message}`, true);
+    } finally {
+        setOfflineControlsEnabled(true);
     }
 }
 
@@ -2213,36 +2227,97 @@ function formatOfflineStatus(data) {
     const offline = data.offline_mode;
     const env = data.env || {};
     const disk = data.disk || {};
-    const modelLines = models
-        .map((m) => `${m.model}: ${m.cached ? 'Cached ✅' : 'Missing ❌'}${m.downloaded ? ' (downloaded)' : ''}${m.error ? ` (err: ${m.error})` : ''}`)
-        .join('<br>');
-    const envLines = Object.entries(env)
-        .map(([k, v]) => `${k}: ${v || 'unset'}`)
-        .join('<br>');
-    let note = '';
-    if (missing.length) {
-        note = `<div style="color:var(--red); margin-top:6px;">Missing ${missing.length} model(s). Click "Download missing models" while online.</div>`;
+    const esc = (value) => {
+        const raw = value == null ? '' : String(value);
+        if (window.escapeHtml) return window.escapeHtml(raw);
+        return raw
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    };
+    const totalModels = Number(data.total_models) || models.length;
+    const cachedModels = Number(data.cached_models) || models.filter((m) => !!m.cached).length;
+    const ready = missing.length === 0;
+    const readinessLabel = ready ? 'READY FOR OFFLINE USE' : 'NOT READY FOR OFFLINE USE';
+    const readinessColor = ready ? 'var(--green)' : 'var(--red)';
+
+    const modelRows = models.map((m) => {
+        const state = m.cached ? 'Cached' : 'Missing';
+        const stateColor = m.cached ? 'var(--green)' : 'var(--red)';
+        const detailParts = [];
+        if (m.downloaded) detailParts.push('downloaded now');
+        if (m.error) detailParts.push(`error: ${m.error}`);
+        const detail = detailParts.length ? detailParts.join(' | ') : '';
+        return `
+            <tr>
+                <td style="padding:4px 6px; border-bottom:1px solid #e5e7eb;">${esc(m.model)}</td>
+                <td style="padding:4px 6px; border-bottom:1px solid #e5e7eb; color:${stateColor}; font-weight:700;">${state}</td>
+                <td style="padding:4px 6px; border-bottom:1px solid #e5e7eb; color:#475569;">${esc(detail)}</td>
+            </tr>
+        `;
+    }).join('');
+
+    let nextAction = '';
+    if (!ready) {
+        nextAction = offline
+            ? 'Offline flags are enabled. Disable offline mode temporarily, connect to internet, and download missing models.'
+            : 'Connect to internet and click "Download missing models", then re-run readiness check.';
+    } else if (!offline) {
+        nextAction = 'All models are cached. Before departure, enable offline mode so runtime will not attempt network access.';
     } else {
-        note = `<div style="color:var(--green); margin-top:6px;">All required models cached.</div>`;
+        nextAction = 'All checks passed. Keep current state for offshore use.';
     }
-    if (offline) {
-        note += `<div style="margin-top:6px;">Offline mode flags detected.</div>`;
-    } else {
-        note += `<div style="margin-top:6px; color:#b26a00;">Offline flags not set; set HF_HUB_OFFLINE=1 and TRANSFORMERS_OFFLINE=1 before going offline.</div>`;
-    }
-    const diskLine = disk.total_gb ? `<div style="margin-top:6px; font-size:12px;">Cache disk (${disk.path || ''}): ${disk.free_gb || '?'}GB free / ${disk.total_gb || '?'}GB total.</div>` : '';
-    const howTo = `<div style="margin-top:8px; font-size:12px; color:#333;">
-<strong>Steps:</strong> 1) While online, click "Download missing models". 2) Then click "Backup cache". 3) Before sailing, set offline env flags and rerun "Check cache status".<br>
-<strong>Required models:</strong> medgemma-1.5-4b-it, medgemma-27b-text-it.
-</div>`;
-    return (
-        `<strong>Models</strong><br>${modelLines || 'None'}<br><br>` +
-        `<strong>Env</strong><br>${envLines}<br><br>` +
-        `<strong>Cache</strong><br>${data.cache_dir || ''}` +
-        note +
-        diskLine +
-        howTo
-    );
+
+    const diskLine = disk.total_gb
+        ? `${esc(disk.free_gb)} GB free of ${esc(disk.total_gb)} GB`
+        : 'Disk information unavailable';
+
+    const envLines = [
+        `HF_HUB_OFFLINE=${env.HF_HUB_OFFLINE || 'unset'}`,
+        `TRANSFORMERS_OFFLINE=${env.TRANSFORMERS_OFFLINE || 'unset'}`,
+        `HF_HOME=${env.HF_HOME || 'unset'}`,
+        `HUGGINGFACE_HUB_CACHE=${env.HUGGINGFACE_HUB_CACHE || 'unset'}`,
+        `AUTO_DOWNLOAD_MODELS=${env.AUTO_DOWNLOAD_MODELS || 'unset'}`,
+    ].map((line) => esc(line)).join('<br>');
+
+    return `
+        <div style="padding:10px; border:1px solid #d1d5db; border-radius:8px; background:#ffffff;">
+            <div style="font-weight:800; color:${readinessColor}; margin-bottom:6px;">${readinessLabel}</div>
+            <div style="font-size:13px; color:#1f2937; margin-bottom:6px;">
+                Models cached: <strong>${cachedModels}/${totalModels || '?'}</strong>
+            </div>
+            <div style="font-size:13px; color:#1f2937; margin-bottom:6px;">
+                Offline mode: <strong>${offline ? 'ENABLED' : 'DISABLED'}</strong>
+            </div>
+            <div style="font-size:13px; color:#1f2937; margin-bottom:8px;">
+                Cache disk: <strong>${diskLine}</strong>
+            </div>
+            <div style="font-size:13px; color:${ready ? '#14532d' : '#991b1b'}; margin-bottom:8px;">
+                Next action: ${esc(nextAction)}
+            </div>
+            <table style="width:100%; border-collapse:collapse; font-size:12px; margin-bottom:8px;">
+                <thead>
+                    <tr style="background:#f8fafc; text-align:left; color:#334155;">
+                        <th style="padding:4px 6px; border-bottom:1px solid #cbd5e1;">Model</th>
+                        <th style="padding:4px 6px; border-bottom:1px solid #cbd5e1;">Status</th>
+                        <th style="padding:4px 6px; border-bottom:1px solid #cbd5e1;">Details</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${modelRows || '<tr><td colspan="3" style="padding:6px;">No model status available.</td></tr>'}
+                </tbody>
+            </table>
+            <details style="font-size:12px; color:#475569;">
+                <summary style="cursor:pointer; font-weight:700;">Technical details</summary>
+                <div style="margin-top:6px;">
+                    <strong>Cache dir:</strong> ${esc(data.cache_dir || '')}<br>
+                    ${envLines}
+                </div>
+            </details>
+        </div>
+    `;
 }
 
 /**
@@ -2259,9 +2334,14 @@ function updateOfflineFlagButton() {
     const chk = document.getElementById('offline-force-flags');
     if (!btn) return;
     const offline = offlineStatusCache ? !!offlineStatusCache.offline_mode : false;
-    btn.textContent = offline ? 'Disable offline flags' : 'Enable offline flags';
+    btn.textContent = offline ? 'Disable offline mode' : 'Enable offline mode';
     btn.style.background = offline ? '#555' : '#b26a00';
-    if (chk) chk.checked = offlineStatusCache ? !!(offlineStatusCache.env?.HF_HUB_OFFLINE === '1' || offlineStatusCache.offline_mode || DEFAULT_SETTINGS.offline_force_flags) : !!DEFAULT_SETTINGS.offline_force_flags;
+    if (chk) {
+        const persisted = !!(window.CACHED_SETTINGS && window.CACHED_SETTINGS.offline_force_flags);
+        chk.checked = offlineStatusCache
+            ? !!(offlineStatusCache.env?.HF_HUB_OFFLINE === '1' || offlineStatusCache.offline_mode || persisted)
+            : persisted;
+    }
 }
 
 /**
@@ -2320,12 +2400,14 @@ async function runOfflineCheck(downloadMissing = false) {
         if (!res.ok || data.error) throw new Error(data.error || `Status ${res.status}`);
         offlineStatusCache = data;
         let message = formatOfflineStatus(data);
-        if (downloadMissing && data.offline_mode) {
-            message += '<div style="margin-top:6px; color:#b26a00;">Offline flags are enabled; downloads were skipped. Temporarily disable offline flags while online to fetch models.</div>';
+        if (downloadMissing && data.download_requested && !data.download_allowed) {
+            message += '<div style="margin-top:6px; color:#b26a00;">Download was not allowed in the current mode. Disable offline mode and retry while connected.</div>';
         } else if (downloadMissing && data.missing && data.missing.length) {
             message += '<div style="margin-top:6px; color:#b26a00;">Some models still missing. Stay online and try again.</div>';
         } else if (downloadMissing && data.models && data.models.some(m => m.downloaded)) {
             message += '<div style="margin-top:6px; color:var(--green);">Downloads completed.</div>';
+        } else if (downloadMissing && (!data.models || !data.models.some(m => m.downloaded))) {
+            message += '<div style="margin-top:6px; color:#475569;">No downloads were needed; cache was already complete.</div>';
         }
         renderOfflineStatus(message);
         updateOfflineFlagButton();
@@ -2577,174 +2659,10 @@ window.removeConsumableCategory = removeConsumableCategory;
 window.moveConsumableCategory = moveConsumableCategory;
 
 
-// COMMENTARY REFERENCE BLOCK: EXTENDED MAINTENANCE NOTES
-// Note 001: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 002: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 003: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 004: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 005: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 006: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 007: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 008: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 009: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 010: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 011: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 012: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 013: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 014: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 015: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 016: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 017: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 018: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 019: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 020: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 021: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 022: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 023: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 024: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 025: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 026: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 027: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 028: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 029: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 030: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 031: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 032: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 033: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 034: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 035: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 036: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 037: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 038: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 039: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 040: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 041: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 042: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 043: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 044: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 045: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 046: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 047: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 048: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 049: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 050: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 051: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 052: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 053: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 054: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 055: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 056: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 057: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 058: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 059: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 060: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 061: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 062: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 063: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 064: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 065: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 066: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 067: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 068: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 069: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 070: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 071: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 072: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 073: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 074: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 075: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 076: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 077: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 078: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 079: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 080: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 081: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 082: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 083: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 084: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 085: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 086: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 087: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 088: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 089: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 090: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 091: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 092: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 093: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 094: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 095: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 096: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 097: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 098: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 099: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 100: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 101: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 102: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 103: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 104: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 105: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 106: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 107: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 108: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 109: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 110: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 111: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 112: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 113: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 114: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 115: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 116: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 117: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 118: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 119: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 120: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 121: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 122: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 123: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 124: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 125: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 126: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 127: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 128: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 129: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 130: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 131: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 132: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 133: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 134: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 135: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 136: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 137: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 138: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 139: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 140: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 141: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 142: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 143: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 144: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 145: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 146: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 147: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 148: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 149: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 150: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 151: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 152: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 153: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 154: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 155: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 156: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 157: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 158: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 159: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 160: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
-// Note 161: UI state hydration and localStorage reconciliation; verify implications when modifying adjacent logic.
-// Note 162: async fetch lifecycle and optimistic rendering behavior; verify implications when modifying adjacent logic.
-// Note 163: event-handler coupling to inline template callbacks; verify implications when modifying adjacent logic.
-// Note 164: mode-gated controls and permission-by-visibility contracts; verify implications when modifying adjacent logic.
-// Note 165: chat transcript rendering safety and markdown constraints; verify implications when modifying adjacent logic.
-// Note 166: form persistence, debouncing, and autosave boundaries; verify implications when modifying adjacent logic.
-// Note 167: data-model normalization between API and DOM layers; verify implications when modifying adjacent logic.
-// Note 168: collapsible panel behavior and sidebar synchronization; verify implications when modifying adjacent logic.
-// Note 169: error-surface consistency for operator feedback; verify implications when modifying adjacent logic.
-// Note 170: performance safeguards for large lists and long sessions; verify implications when modifying adjacent logic.
+//
+
+// MAINTENANCE NOTE
+// Historical auto-generated note blocks were removed because they were repetitive and
+// obscured real logic changes during review. Keep focused comments close to behavior-
+// critical code paths (UI state hydration, async fetch lifecycle, and mode-gated
+// controls) so maintenance remains actionable.

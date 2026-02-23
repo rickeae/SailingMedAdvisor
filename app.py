@@ -1,6 +1,6 @@
 # =============================================================================
 # Author: Rick Escher
-# Project: SilingMedAdvisor (SailingMedAdvisor)
+# Project: SailingMedAdvisor
 # Context: Google HAI-DEF Framework
 # Models: Google MedGemmas
 # Program: Kaggle Impact Challenge
@@ -137,14 +137,14 @@ elif os.environ.get("PYTORCH_CUDA_ALLOC_CONF") and not os.environ.get("PYTORCH_A
     os.environ["PYTORCH_ALLOC_CONF"] = os.environ["PYTORCH_CUDA_ALLOC_CONF"]
 elif os.environ.get("PYTORCH_ALLOC_CONF") and not os.environ.get("PYTORCH_CUDA_ALLOC_CONF"):
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = os.environ["PYTORCH_ALLOC_CONF"]
-# Allow online downloads by default (HF Spaces first run needs this). You can set these to "1" after caches are warm.
+# Allow online downloads by default (HF Spaces first run needs this). We can set these to "1" after caches are warm.
 os.environ.setdefault("HF_HUB_OFFLINE", "0")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "0")
 # Feature flag for tab bar theme:
 # 0 = existing gray, 1 = splash-screen purple (#7452B9).
 USE_SPLASH_PURPLE_TABBAR = os.environ.get("USE_SPLASH_PURPLE_TABBAR", "0").strip().lower() in {"1", "true", "yes", "on"}
 AUTO_DOWNLOAD_MODELS = os.environ.get("AUTO_DOWNLOAD_MODELS", "1" if os.environ.get("HUGGINGFACE_SPACE_ID") else "0") == "1"
-# Default off for faster startup; set to "1" when you explicitly want cache verification
+# Default off for faster startup; set to "1" when we explicitly want cache verification
 VERIFY_MODELS_ON_START = os.environ.get("VERIFY_MODELS_ON_START", "0") == "1"
 # Background model verification/download when online (non-blocking) — default off for speed
 AUTO_VERIFY_ONLINE = os.environ.get("AUTO_VERIFY_ONLINE", "0") == "1"
@@ -3534,16 +3534,23 @@ def _resolve_local_model_dir(model_name: str):
     return resolved
 
 
-def verify_required_models(download_missing: bool = False):
-    """Check cache presence for required models; optionally download missing if online."""
+def verify_required_models(download_missing: bool = False, force_download: bool = False):
+    """Check required model cache; optionally download missing models when online.
+
+    Notes:
+    - ``download_missing`` enables fetch attempts for missing models.
+    - ``force_download`` lets an explicit UI action (Readiness -> Download missing)
+      override AUTO_DOWNLOAD_MODELS so local deployments can fetch on demand.
+    """
     results = []
     offline = is_offline_mode()
+    download_allowed = (AUTO_DOWNLOAD_MODELS or force_download) and not offline
     for m in REQUIRED_MODELS:
         cached, cache_err = model_cache_status(m)
         downloaded = False
         error = ""
         # Allow download attempt unless offline flags are set
-        if not cached and download_missing and AUTO_DOWNLOAD_MODELS and not offline:
+        if not cached and download_missing and download_allowed:
             downloaded, error = download_model_cache(m)
             cached, cache_err = model_cache_status(m)
         if not cached and not error:
@@ -3552,33 +3559,46 @@ def verify_required_models(download_missing: bool = False):
     return results
 
 
+def _offline_status_payload(model_status, *, download_requested: bool = False, force_download: bool = False):
+    """Return a consistent payload for all Offline Readiness endpoints."""
+    usage = shutil.disk_usage(CACHE_DIR)
+    disk = {
+        "path": str(CACHE_DIR.resolve()),
+        "free_gb": round(usage.free / (1024**3), 2),
+        "total_gb": round(usage.total / (1024**3), 2),
+    }
+    env_flags = {
+        "HF_HUB_OFFLINE": os.environ.get("HF_HUB_OFFLINE"),
+        "TRANSFORMERS_OFFLINE": os.environ.get("TRANSFORMERS_OFFLINE"),
+        "HF_HOME": os.environ.get("HF_HOME"),
+        "HUGGINGFACE_HUB_CACHE": os.environ.get("HUGGINGFACE_HUB_CACHE"),
+        "AUTO_DOWNLOAD_MODELS": str(AUTO_DOWNLOAD_MODELS),
+    }
+    missing = [m for m in model_status if not m.get("cached")]
+    cached_count = len([m for m in model_status if m.get("cached")])
+    offline_mode = is_offline_mode()
+    download_allowed = bool((AUTO_DOWNLOAD_MODELS or force_download) and not offline_mode)
+    return {
+        "models": model_status,
+        "missing": missing,
+        "cached_models": cached_count,
+        "total_models": len(model_status),
+        "env": env_flags,
+        "cache_dir": str(CACHE_DIR.resolve()),
+        "offline_mode": offline_mode,
+        "disk": disk,
+        "download_requested": bool(download_requested),
+        "download_allowed": download_allowed,
+        "auto_download": AUTO_DOWNLOAD_MODELS,
+    }
+
+
 @app.get("/api/offline/check")
 async def offline_check(_=Depends(require_auth)):
     """Report cache status/disk usage without downloading models."""
     try:
         model_status = verify_required_models(download_missing=False)
-        usage = shutil.disk_usage(CACHE_DIR)
-        disk = {
-            "path": str(CACHE_DIR.resolve()),
-            "free_gb": round(usage.free / (1024**3), 2),
-            "total_gb": round(usage.total / (1024**3), 2),
-        }
-        env_flags = {
-            "HF_HUB_OFFLINE": os.environ.get("HF_HUB_OFFLINE"),
-            "TRANSFORMERS_OFFLINE": os.environ.get("TRANSFORMERS_OFFLINE"),
-            "HF_HOME": os.environ.get("HF_HOME"),
-            "HUGGINGFACE_HUB_CACHE": os.environ.get("HUGGINGFACE_HUB_CACHE"),
-            "AUTO_DOWNLOAD_MODELS": str(AUTO_DOWNLOAD_MODELS),
-        }
-        missing = [m for m in model_status if not m["cached"]]
-        return {
-            "models": model_status,
-            "missing": missing,
-            "env": env_flags,
-            "cache_dir": str(CACHE_DIR.resolve()),
-            "offline_mode": is_offline_mode(),
-            "disk": disk,
-        }
+        return _offline_status_payload(model_status, download_requested=False, force_download=False)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -3611,15 +3631,24 @@ async def offline_backup(request: Request, _=Depends(require_auth)):
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         dest = store["backup"] / f"offline_backup_{ts}.zip"
         base = APP_HOME.resolve()
+        roots = [
+            (store["data"], "data"),
+            (store["uploads"], "uploads"),
+            (CACHE_DIR, "models_cache"),
+        ]
         with zipfile.ZipFile(dest, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            for root in [store["data"], store["uploads"], CACHE_DIR]:
+            for root, root_label in roots:
                 for path in root.rglob("*"):
                     if path.is_file():
                         try:
                             arcname = path.resolve().relative_to(base)
                         except Exception:
-                            # Fallback to basename if the file is unexpectedly outside APP_HOME
-                            arcname = path.name
+                            # Preserve folder structure even when storage lives outside APP_HOME.
+                            try:
+                                rel = path.resolve().relative_to(root.resolve())
+                                arcname = Path(root_label) / rel
+                            except Exception:
+                                arcname = Path(root_label) / path.name
                         zf.write(path, arcname=str(arcname))
         return {"backup": str(dest.resolve())}
     except Exception as e:
@@ -3651,30 +3680,8 @@ async def offline_flags(request: Request, _=Depends(require_auth)):
             db_op("settings", existing, store=request.state.store)
         except Exception:
             pass
-        # Return a status payload identical to offline_check for UI reuse
         model_status = verify_required_models(download_missing=False)
-        usage = shutil.disk_usage(CACHE_DIR)
-        disk = {
-            "path": str(CACHE_DIR.resolve()),
-            "free_gb": round(usage.free / (1024**3), 2),
-            "total_gb": round(usage.total / (1024**3), 2),
-        }
-        env_flags = {
-            "HF_HUB_OFFLINE": os.environ.get("HF_HUB_OFFLINE"),
-            "TRANSFORMERS_OFFLINE": os.environ.get("TRANSFORMERS_OFFLINE"),
-            "HF_HOME": os.environ.get("HF_HOME"),
-            "HUGGINGFACE_HUB_CACHE": os.environ.get("HUGGINGFACE_HUB_CACHE"),
-            "AUTO_DOWNLOAD_MODELS": str(AUTO_DOWNLOAD_MODELS),
-        }
-        missing = [m for m in model_status if not m["cached"]]
-        return {
-            "models": model_status,
-            "missing": missing,
-            "env": env_flags,
-            "cache_dir": str(CACHE_DIR.resolve()),
-            "offline_mode": is_offline_mode(),
-            "disk": disk,
-        }
+        return _offline_status_payload(model_status, download_requested=False, force_download=False)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -3701,9 +3708,21 @@ async def offline_restore(request: Request, _=Depends(require_auth)):
             target = candidates[-1]
         if not target:
             return JSONResponse({"error": "No backup found to restore"}, status_code=status.HTTP_400_BAD_REQUEST)
-        # Safety: ensure extraction stays inside app root
+        # Safety: ensure extraction stays inside APP_HOME and never writes
+        # outside the application directory tree.
+        app_root = APP_HOME.resolve()
         with zipfile.ZipFile(target, "r") as zf:
-            zf.extractall(Path("."))
+            for member in zf.infolist():
+                member_name = (member.filename or "").strip()
+                if not member_name:
+                    continue
+                destination = (app_root / member_name).resolve()
+                if not str(destination).startswith(str(app_root)):
+                    return JSONResponse(
+                        {"error": f"Unsafe path in backup archive: {member_name}"},
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                    )
+            zf.extractall(app_root)
         return {"restored": str(target.resolve())}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -3711,16 +3730,12 @@ async def offline_restore(request: Request, _=Depends(require_auth)):
 
 @app.post("/api/offline/ensure")
 async def offline_ensure(_=Depends(require_auth)):
-    """Check cache and attempt to download any missing models (if online and allowed)."""
+    """Check cache and download missing models when explicitly requested by UI."""
     try:
-        results = verify_required_models(download_missing=True)
-        missing = [m for m in results if not m["cached"]]
-        return {
-            "models": results,
-            "missing": missing,
-            "offline_mode": is_offline_mode(),
-            "auto_download": AUTO_DOWNLOAD_MODELS,
-        }
+        # force_download=True intentionally overrides AUTO_DOWNLOAD_MODELS for
+        # explicit operator-initiated readiness actions in Settings.
+        results = verify_required_models(download_missing=True, force_download=True)
+        return _offline_status_payload(results, download_requested=True, force_download=True)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -3800,224 +3815,10 @@ def _apply_default_dataset(store):
                 shutil.copy2(item, dest_med / item.name)
 
 
-# COMMENTARY REFERENCE BLOCK: EXTENDED MAINTENANCE NOTES
-# Note 001: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
-# Note 002: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
-# Note 003: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
-# Note 004: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
-# Note 005: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
-# Note 006: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
-# Note 007: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
-# Note 008: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
-# Note 009: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
-# Note 010: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
-# Note 011: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
-# Note 012: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
-# Note 013: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
-# Note 014: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
-# Note 015: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
-# Note 016: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
-# Note 017: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
-# Note 018: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
-# Note 019: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
-# Note 020: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
-# Note 021: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
-# Note 022: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
-# Note 023: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
-# Note 024: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
-# Note 025: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
-# Note 026: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
-# Note 027: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
-# Note 028: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
-# Note 029: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
-# Note 030: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
-# Note 031: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
-# Note 032: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
-# Note 033: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
-# Note 034: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
-# Note 035: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
-# Note 036: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
-# Note 037: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
-# Note 038: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
-# Note 039: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
-# Note 040: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
-# Note 041: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
-# Note 042: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
-# Note 043: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
-# Note 044: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
-# Note 045: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
-# Note 046: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
-# Note 047: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
-# Note 048: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
-# Note 049: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
-# Note 050: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
-# Note 051: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
-# Note 052: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
-# Note 053: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
-# Note 054: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
-# Note 055: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
-# Note 056: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
-# Note 057: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
-# Note 058: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
-# Note 059: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
-# Note 060: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
-# Note 061: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
-# Note 062: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
-# Note 063: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
-# Note 064: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
-# Note 065: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
-# Note 066: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
-# Note 067: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
-# Note 068: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
-# Note 069: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
-# Note 070: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
-# Note 071: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
-# Note 072: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
-# Note 073: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
-# Note 074: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
-# Note 075: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
-# Note 076: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
-# Note 077: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
-# Note 078: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
-# Note 079: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
-# Note 080: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
-# Note 081: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
-# Note 082: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
-# Note 083: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
-# Note 084: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
-# Note 085: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
-# Note 086: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
-# Note 087: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
-# Note 088: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
-# Note 089: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
-# Note 090: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
-# Note 091: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
-# Note 092: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
-# Note 093: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
-# Note 094: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
-# Note 095: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
-# Note 096: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
-# Note 097: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
-# Note 098: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
-# Note 099: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
-# Note 100: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
-# Note 101: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
-# Note 102: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
-# Note 103: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
-# Note 104: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
-# Note 105: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
-# Note 106: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
-# Note 107: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
-# Note 108: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
-# Note 109: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
-# Note 110: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
-# Note 111: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
-# Note 112: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
-# Note 113: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
-# Note 114: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
-# Note 115: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
-# Note 116: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
-# Note 117: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
-# Note 118: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
-# Note 119: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
-# Note 120: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
-# Note 121: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
-# Note 122: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
-# Note 123: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
-# Note 124: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
-# Note 125: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
-# Note 126: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
-# Note 127: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
-# Note 128: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
-# Note 129: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
-# Note 130: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
-# Note 131: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
-# Note 132: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
-# Note 133: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
-# Note 134: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
-# Note 135: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
-# Note 136: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
-# Note 137: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
-# Note 138: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
-# Note 139: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
-# Note 140: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
-# Note 141: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
-# Note 142: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
-# Note 143: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
-# Note 144: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
-# Note 145: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
-# Note 146: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
-# Note 147: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
-# Note 148: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
-# Note 149: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
-# Note 150: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
-# Note 151: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
-# Note 152: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
-# Note 153: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
-# Note 154: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
-# Note 155: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
-# Note 156: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
-# Note 157: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
-# Note 158: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
-# Note 159: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
-# Note 160: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
-# Note 161: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
-# Note 162: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
-# Note 163: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
-# Note 164: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
-# Note 165: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
-# Note 166: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
-# Note 167: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
-# Note 168: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
-# Note 169: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
-# Note 170: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
-# Note 171: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
-# Note 172: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
-# Note 173: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
-# Note 174: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
-# Note 175: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
-# Note 176: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
-# Note 177: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
-# Note 178: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
-# Note 179: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
-# Note 180: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
-# Note 181: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
-# Note 182: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
-# Note 183: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
-# Note 184: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
-# Note 185: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
-# Note 186: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
-# Note 187: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
-# Note 188: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
-# Note 189: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
-# Note 190: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
-# Note 191: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
-# Note 192: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
-# Note 193: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
-# Note 194: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
-# Note 195: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
-# Note 196: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
-# Note 197: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
-# Note 198: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
-# Note 199: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
-# Note 200: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
-# Note 201: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
-# Note 202: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
-# Note 203: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
-# Note 204: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
-# Note 205: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
-# Note 206: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
-# Note 207: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
-# Note 208: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
-# Note 209: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
-# Note 210: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
-# Note 211: API routing contract and backward-compat behavior; keep this section aligned with code-path changes before release.
-# Note 212: authentication/session flow and access gating; keep this section aligned with code-path changes before release.
-# Note 213: startup bootstrap sequencing and DB initialization; keep this section aligned with code-path changes before release.
-# Note 214: GPU inference dispatch and model selection boundaries; keep this section aligned with code-path changes before release.
-# Note 215: offline-mode resilience and local cache assumptions; keep this section aligned with code-path changes before release.
-# Note 216: error-handling semantics for user-visible endpoints; keep this section aligned with code-path changes before release.
-# Note 217: history persistence invariants and replay semantics; keep this section aligned with code-path changes before release.
-# Note 218: triage prompt assembly contracts and fallback behavior; keep this section aligned with code-path changes before release.
-# Note 219: settings synchronization and mode-based visibility contracts; keep this section aligned with code-path changes before release.
-# Note 220: import/export data-shape guarantees and migration safety; keep this section aligned with code-path changes before release.
+#
+
+# MAINTENANCE NOTE
+# Historical auto-generated note blocks were removed because they were repetitive and
+# obscured real logic changes during review. Keep focused comments close to behavior-
+# critical code paths (auth/session flow, startup/bootstrap, prompt assembly, and
+# persistence contracts) so maintenance remains actionable.

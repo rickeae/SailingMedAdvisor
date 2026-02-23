@@ -1,3 +1,11 @@
+/* ============================================================================
+   Author: Rick Escher
+   Project: SailingMedAdvisor
+   Context: Google HAI-DEF Framework
+   Models: Google MedGemmas
+   Program: Kaggle Impact Challenge
+   ========================================================================== */
+
 /* GENERAL STYLING */
 body { font-family: sans-serif; background: #eceff1; margin: 0; padding: 10px; }
 .tab-container { display: flex; background: #263238; border-radius: 5px; padding: 5px; margin-bottom: 10px; }

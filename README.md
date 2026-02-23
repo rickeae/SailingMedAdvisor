@@ -68,6 +68,17 @@ chmod +x run_med_advisor.sh
 - Local: `http://127.0.0.1:5000`
 - LAN: `http://<your-machine-ip>:5000`
 
+## Demo Reproduction (27B scenario)
+
+For the Kaggle demo scenario, use the 27B model path in the UI:
+
+1. Open `http://127.0.0.1:5000`.
+2. In MedGemma Consultation, choose `Triage Consultation`.
+3. Set model to `google/medgemma-27b-text-it`.
+4. Enter the fish-hook cheek scenario used in the demo.
+5. Select the matching clinical triage pathway values.
+6. Submit and compare output structure against the demo video.
+
 ## Authentication Behavior
 
 - If crew credentials are configured, login is required.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 # Author: Rick Escher
-# Project: SilingMedAdvisor (SailingMedAdvisor)
+# Project: SailingMedAdvisor
 # Context: Google HAI-DEF Framework
 # Models: Google MedGemmas
 # Program: Kaggle Impact Challenge

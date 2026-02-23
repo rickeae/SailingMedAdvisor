@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # Author: Rick Escher
-# Project: SilingMedAdvisor (SailingMedAdvisor)
+# Project: SailingMedAdvisor
 # Context: Google HAI-DEF Framework
 # Models: Google MedGemmas
 # Program: Kaggle Impact Challenge
@@ -46,7 +46,7 @@ export USE_FLASH_ATTENTION="${USE_FLASH_ATTENTION:-$USE_FAST_SDP}"
 export TORCH_USE_CUDA_DSA=0
 # Force CUDA placement when available
 export FORCE_CUDA="${FORCE_CUDA:-1}"
-# Keep GPU-only behavior by default; set to 1 only if you explicitly want CPU fallback on CUDA runtime faults.
+# Keep GPU-only behavior by default; set to 1 only if we explicitly want CPU fallback on CUDA runtime faults.
 export ALLOW_CPU_FALLBACK_ON_CUDA_ERROR="${ALLOW_CPU_FALLBACK_ON_CUDA_ERROR:-0}"
 # Keep global cap high for 4B but reserve headroom for 27B KV cache.
 export MODEL_MAX_GPU_MEM="${MODEL_MAX_GPU_MEM:-15GiB}"

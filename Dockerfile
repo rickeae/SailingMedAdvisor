@@ -1,3 +1,11 @@
+# =============================================================================
+# Author: Rick Escher
+# Project: SailingMedAdvisor
+# Context: Google HAI-DEF Framework
+# Models: Google MedGemmas
+# Program: Kaggle Impact Challenge
+# =============================================================================
+
 FROM python:3.10-slim
 
 # 1. Install system tools as ROOT

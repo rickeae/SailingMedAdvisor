@@ -1382,6 +1382,96 @@ async function resetTriagePromptTreeToDefault() {
     }
 }
 
+function setRuntimeLogStatus(message, isError = false) {
+    const el = document.getElementById('runtime-log-status');
+    if (!el) return;
+    el.textContent = message || '';
+    el.style.color = isError ? 'var(--red)' : '#2c3e50';
+}
+
+function updateRuntimeLogMeta(meta = {}) {
+    const el = document.getElementById('runtime-log-meta');
+    if (!el) return;
+    const exists = !!meta.exists;
+    const size = Number(meta.size || 0);
+    if (!exists) {
+        el.textContent = 'No log file yet';
+        return;
+    }
+    const kb = (size / 1024).toFixed(1);
+    el.textContent = `${kb} KB`;
+}
+
+function getRuntimeLogLinesRequested() {
+    const el = document.getElementById('runtime-log-lines');
+    const parsed = Number(el?.value || 600);
+    if (Number.isFinite(parsed) && parsed >= 50 && parsed <= 5000) {
+        return Math.floor(parsed);
+    }
+    return 600;
+}
+
+async function loadRuntimeLog(lines = null) {
+    const textarea = document.getElementById('runtime-log-text');
+    const lineCount = lines == null ? getRuntimeLogLinesRequested() : Number(lines);
+    if (textarea) {
+        textarea.value = '';
+    }
+    setRuntimeLogStatus('Loading runtime log...');
+    try {
+        const res = await fetch(`/api/runtime-log?lines=${encodeURIComponent(lineCount)}`, {
+            credentials: 'same-origin',
+        });
+        const payload = await res.json();
+        if (!res.ok || payload?.error) {
+            throw new Error(payload?.error || `Status ${res.status}`);
+        }
+        const text = String(payload?.text || '');
+        if (textarea) {
+            textarea.value = text || '[Runtime log is currently empty]';
+            textarea.scrollTop = textarea.scrollHeight;
+        }
+        updateRuntimeLogMeta(payload || {});
+        const loadedLines = text ? text.split('\n').length : 0;
+        const pathLabel = payload?.path ? ` (${payload.path})` : '';
+        setRuntimeLogStatus(`Loaded ${loadedLines} line${loadedLines === 1 ? '' : 's'}${pathLabel}.`);
+    } catch (err) {
+        setRuntimeLogStatus(`Runtime log load failed: ${err.message}`, true);
+    }
+}
+
+function downloadRuntimeLog() {
+    setRuntimeLogStatus('Downloading runtime log...');
+    const anchor = document.createElement('a');
+    anchor.href = '/api/runtime-log/download';
+    anchor.download = 'runtime.log';
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => {
+        setRuntimeLogStatus('Runtime log download requested.');
+    }, 100);
+}
+
+async function clearRuntimeLog() {
+    if (!confirm('Clear the runtime log file?')) return;
+    setRuntimeLogStatus('Clearing runtime log...');
+    try {
+        const res = await fetch('/api/runtime-log/clear', {
+            method: 'POST',
+            credentials: 'same-origin',
+        });
+        const payload = await res.json();
+        if (!res.ok || payload?.error) {
+            throw new Error(payload?.error || `Status ${res.status}`);
+        }
+        await loadRuntimeLog(getRuntimeLogLinesRequested());
+        setRuntimeLogStatus('Runtime log cleared.');
+    } catch (err) {
+        setRuntimeLogStatus(`Runtime log clear failed: ${err.message}`, true);
+    }
+}
+
 if (document.readyState !== 'loading') {
     applyStoredUserMode();
     loadSettingsUI().catch(() => {});
@@ -1486,6 +1576,7 @@ async function loadSettingsUI() {
         applySettingsToUI(s);
         loadPromptTemplates().catch(() => {});
         loadTriagePromptTree().catch(() => {});
+        loadRuntimeLog().catch(() => {});
         try { localStorage.setItem('user_mode', s.user_mode || 'user'); } catch (err) { /* ignore */ }
         if (!offlineInitialized) {
             offlineInitialized = true;
@@ -1502,6 +1593,7 @@ async function loadSettingsUI() {
         applySettingsToUI({ ...DEFAULT_SETTINGS, user_mode: localMode });
         loadPromptTemplates().catch(() => {});
         loadTriagePromptTree().catch(() => {});
+        loadRuntimeLog().catch(() => {});
     }
 }
 
@@ -2758,6 +2850,9 @@ window.moveEquipmentCategory = moveEquipmentCategory;
 window.addConsumableCategory = addConsumableCategory;
 window.removeConsumableCategory = removeConsumableCategory;
 window.moveConsumableCategory = moveConsumableCategory;
+window.loadRuntimeLog = loadRuntimeLog;
+window.downloadRuntimeLog = downloadRuntimeLog;
+window.clearRuntimeLog = clearRuntimeLog;
 
 
 //

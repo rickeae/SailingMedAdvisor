@@ -50,6 +50,8 @@ import re
 import mimetypes
 import io
 import logging
+import traceback
+from logging.handlers import RotatingFileHandler
 
 import medgemma4
 import medgemma27b
@@ -232,6 +234,12 @@ HF_REMOTE_TOKEN = (
 )
 # Default remote text model; when MedGemma 4B/27B is selected we pass that through instead.
 REMOTE_MODEL = os.environ.get("REMOTE_MODEL") or "google/medgemma-1.5-4b-it"
+try:
+    HF_REMOTE_TIMEOUT_SECONDS = float(os.environ.get("HF_REMOTE_TIMEOUT_SECONDS", "300").strip())
+except Exception:
+    HF_REMOTE_TIMEOUT_SECONDS = 300.0
+if HF_REMOTE_TIMEOUT_SECONDS < 10:
+    HF_REMOTE_TIMEOUT_SECONDS = 10.0
 
 _dbg(
     "env flags: "
@@ -322,6 +330,74 @@ if LEGACY_CACHE.exists() and not (CACHE_DIR / ".migrated").exists() and CACHE_DI
 
 BACKUP_ROOT = BASE_STORE / "backups"
 BACKUP_ROOT.mkdir(parents=True, exist_ok=True)
+
+# Runtime log file (used heavily for HF debugging and support snapshots).
+LOG_ROOT = BASE_STORE / "logs"
+LOG_ROOT.mkdir(parents=True, exist_ok=True)
+RUNTIME_LOG_PATH = LOG_ROOT / "runtime.log"
+try:
+    RUNTIME_LOG_MAX_BYTES = int((os.environ.get("RUNTIME_LOG_MAX_BYTES") or "5242880").strip())
+except Exception:
+    RUNTIME_LOG_MAX_BYTES = 5242880
+if RUNTIME_LOG_MAX_BYTES < 65536:
+    RUNTIME_LOG_MAX_BYTES = 65536
+try:
+    RUNTIME_LOG_BACKUPS = int((os.environ.get("RUNTIME_LOG_BACKUPS") or "3").strip())
+except Exception:
+    RUNTIME_LOG_BACKUPS = 3
+if RUNTIME_LOG_BACKUPS < 1:
+    RUNTIME_LOG_BACKUPS = 1
+RUNTIME_LOG_ENABLED = (os.environ.get("RUNTIME_LOG_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"})
+
+runtime_logger = logging.getLogger("sma.runtime")
+runtime_logger.setLevel(logging.INFO)
+runtime_logger.propagate = False
+if RUNTIME_LOG_ENABLED:
+    has_runtime_handler = any(getattr(h, "_sma_runtime_handler", False) for h in runtime_logger.handlers)
+    if not has_runtime_handler:
+        runtime_handler = RotatingFileHandler(
+            str(RUNTIME_LOG_PATH),
+            maxBytes=RUNTIME_LOG_MAX_BYTES,
+            backupCount=RUNTIME_LOG_BACKUPS,
+            encoding="utf-8",
+        )
+        runtime_handler._sma_runtime_handler = True  # type: ignore[attr-defined]
+        runtime_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
+        runtime_logger.addHandler(runtime_handler)
+
+
+def _trim_log_value(value, limit: int = 900) -> str:
+    """Convert values to compact single-line strings for runtime logs."""
+    text = str(value)
+    if len(text) > limit:
+        text = text[: limit - 3] + "..."
+    return text.replace("\n", "\\n")
+
+
+def _runtime_log(event: str, level: int = logging.INFO, **fields):
+    """Write structured runtime log entries to rotating file."""
+    if not RUNTIME_LOG_ENABLED:
+        return
+    parts = [f"event={_trim_log_value(event, 120)}"]
+    for key, val in fields.items():
+        parts.append(f"{key}={_trim_log_value(val)}")
+    runtime_logger.log(level, " | ".join(parts))
+
+
+def _runtime_log_tail(lines: int = 500) -> str:
+    """Read the tail of the runtime log file as UTF-8 text."""
+    max_lines = max(50, min(int(lines or 500), 5000))
+    if not RUNTIME_LOG_PATH.exists():
+        return ""
+    try:
+        text = RUNTIME_LOG_PATH.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return ""
+    log_lines = text.splitlines()
+    if len(log_lines) <= max_lines:
+        return text
+    return "\n".join(log_lines[-max_lines:])
+
 # Prefer keeping the DB alongside app.py; migrate from legacy data/ path if present
 DB_PATH = APP_HOME / "app.db"
 LEGACY_DB = APP_HOME / "data" / "app.db"
@@ -495,6 +571,15 @@ async def _log_db_path():
     """Print the fully-resolved database path at startup for operational visibility."""
     try:
         print(f"[startup] Database path: {DB_PATH.resolve()}", flush=True)
+        _runtime_log(
+            "startup.ready",
+            db_path=DB_PATH.resolve(),
+            runtime_log_path=RUNTIME_LOG_PATH.resolve(),
+            is_hf_space=IS_HF_SPACE,
+            disable_local_inference=DISABLE_LOCAL_INFERENCE,
+            remote_timeout_s=HF_REMOTE_TIMEOUT_SECONDS,
+            remote_token_set=bool(HF_REMOTE_TOKEN),
+        )
     except Exception as exc:
         print(f"[startup] Database path unavailable: {exc}", flush=True)
 
@@ -2421,6 +2506,39 @@ def _local_model_availability_payload() -> dict:
     """
     Report local cache availability for required MedGemma models.
     """
+    if DISABLE_LOCAL_INFERENCE:
+        remote_models_env = (os.environ.get("REMOTE_AVAILABLE_MODELS") or "").strip()
+        if remote_models_env:
+            remote_models = [
+                item.strip()
+                for item in remote_models_env.split(",")
+                if item.strip()
+            ]
+        else:
+            remote_models = [REMOTE_MODEL] if (REMOTE_MODEL or "").strip() else list(REQUIRED_MODELS)
+        has_remote = bool(HF_REMOTE_TOKEN)
+        models = [
+            {
+                "model": model_name,
+                "installed": has_remote,
+                "error": "" if has_remote else "remote inference token missing",
+            }
+            for model_name in remote_models
+        ]
+        message = "" if has_remote else (
+            "Remote MedGemma is not configured. Set HF_REMOTE_TOKEN in Hugging Face Space secrets."
+        )
+        return {
+            "mode": "remote",
+            "models": models,
+            "required_models": remote_models,
+            "available_models": remote_models if has_remote else [],
+            "missing_models": [] if has_remote else remote_models,
+            "has_any_local_model": has_remote,
+            "disable_submit": not has_remote,
+            "message": message,
+        }
+
     models = []
     available_models = []
     missing_models = []
@@ -2467,6 +2585,49 @@ async def chat_queue_status(request: Request, _=Depends(require_auth)):
     """Return the current in-memory inference queue state."""
     try:
         return {"queue": _chat_queue_snapshot()}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.get("/api/runtime-log")
+async def runtime_log_view(request: Request, lines: int = 500, _=Depends(require_auth)):
+    """Return tail lines from runtime log for in-app debugging."""
+    try:
+        text = _runtime_log_tail(lines)
+        exists = RUNTIME_LOG_PATH.exists()
+        size = RUNTIME_LOG_PATH.stat().st_size if exists else 0
+        return {
+            "path": str(RUNTIME_LOG_PATH),
+            "exists": bool(exists),
+            "size": size,
+            "lines_requested": lines,
+            "text": text,
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.get("/api/runtime-log/download")
+async def runtime_log_download(request: Request, _=Depends(require_auth)):
+    """Download complete runtime log file as text/plain."""
+    try:
+        if not RUNTIME_LOG_PATH.exists():
+            return Response(content="", media_type="text/plain; charset=utf-8")
+        content = RUNTIME_LOG_PATH.read_text(encoding="utf-8", errors="replace")
+        headers = {"Content-Disposition": 'attachment; filename="runtime.log"'}
+        return Response(content=content, media_type="text/plain; charset=utf-8", headers=headers)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.post("/api/runtime-log/clear")
+async def runtime_log_clear(request: Request, _=Depends(require_auth)):
+    """Clear runtime log content while preserving file and handler."""
+    try:
+        RUNTIME_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        RUNTIME_LOG_PATH.write_text("", encoding="utf-8")
+        _runtime_log("runtime.log.cleared", actor=request.session.get("user") or "unknown")
+        return {"status": "cleared", "path": str(RUNTIME_LOG_PATH)}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -3262,7 +3423,7 @@ def _cap_new_tokens(max_new_tokens, input_len, model_max_len):
     return max_new_tokens
 
 
-def _generate_response_local(model_choice: str, force_cpu_slow: bool, prompt: str, cfg: dict):
+def _generate_response_local(model_choice: str, force_cpu_slow: bool, prompt: str, cfg: dict, trace_id: str = ""):
     """
      Generate Response Local helper.
     Detailed inline notes are included to support safe maintenance and future edits.
@@ -3284,6 +3445,15 @@ def _generate_response_local(model_choice: str, force_cpu_slow: bool, prompt: st
         raise RuntimeError(f"CUDA_NOT_AVAILABLE{detail}")
     if is_large_model and runtime_device != "cuda" and not force_cpu_slow:
         raise RuntimeError("SLOW_28B_CPU")
+    local_started = time.perf_counter()
+    _runtime_log(
+        "inference.local.start",
+        trace_id=trace_id,
+        model=model_name,
+        runtime_device=runtime_device,
+        is_large_model=is_large_model,
+        force_cpu_slow=force_cpu_slow,
+    )
     try:
         if is_large_model:
             # Ensure only one model family occupies VRAM at a time.
@@ -3326,6 +3496,16 @@ def _generate_response_local(model_choice: str, force_cpu_slow: bool, prompt: st
             )
         )
         if not cuda_runtime_failure:
+            _runtime_log(
+                "inference.local.error",
+                level=logging.ERROR,
+                trace_id=trace_id,
+                model=model_name,
+                runtime_device=runtime_device,
+                error_type=type(exc).__name__,
+                error=err_txt,
+                elapsed_ms=int((time.perf_counter() - local_started) * 1000),
+            )
             raise
 
         _dbg(f"generate_response: cuda runtime failure detected: {err_txt}")
@@ -3367,11 +3547,26 @@ def _generate_response_local(model_choice: str, force_cpu_slow: bool, prompt: st
             )
     models["active_name"] = model_name
     models["is_text"] = True
+    _runtime_log(
+        "inference.local.success",
+        trace_id=trace_id,
+        model=model_name,
+        runtime_device=runtime_device,
+        response_len=len(res),
+        elapsed_ms=int((time.perf_counter() - local_started) * 1000),
+    )
     _dbg(f"generate_response: local response_len={len(res)}")
     return res
 
 
-def _generate_response(model_choice: str, force_cpu_slow: bool, prompt: str, cfg: dict, prelocked: bool = False):
+def _generate_response(
+    model_choice: str,
+    force_cpu_slow: bool,
+    prompt: str,
+    cfg: dict,
+    prelocked: bool = False,
+    trace_id: str = "",
+):
     """
      Generate Response helper.
     Detailed inline notes are included to support safe maintenance and future edits.
@@ -3386,38 +3581,80 @@ def _generate_response(model_choice: str, force_cpu_slow: bool, prompt: str, cfg
     if DISABLE_LOCAL_INFERENCE:
         if not HF_REMOTE_TOKEN:
             _dbg("generate_response: remote path selected but HF_REMOTE_TOKEN missing")
+            _runtime_log(
+                "inference.remote.token_missing",
+                level=logging.ERROR,
+                trace_id=trace_id,
+                model_choice=model_choice,
+            )
             raise RuntimeError("REMOTE_TOKEN_MISSING")
-        client = InferenceClient(token=HF_REMOTE_TOKEN)
+        client = InferenceClient(token=HF_REMOTE_TOKEN, timeout=HF_REMOTE_TIMEOUT_SECONDS)
         # Use requested model when provided (e.g., MedGemma) else default
         model_name = model_choice or REMOTE_MODEL
         _dbg(f"generate_response: remote inference model={model_name}")
-        resp = client.text_generation(
-            prompt,
+        call_started = time.perf_counter()
+        _runtime_log(
+            "inference.remote.start",
+            trace_id=trace_id,
             model=model_name,
-            max_new_tokens=cfg["tk"],
-            temperature=cfg["t"],
-            top_p=cfg["p"],
+            prompt_len=len(prompt or ""),
+            max_new_tokens=cfg.get("tk"),
+            temperature=cfg.get("t"),
+            top_p=cfg.get("p"),
             top_k=cfg.get("k"),
+            timeout_s=HF_REMOTE_TIMEOUT_SECONDS,
         )
+        try:
+            resp = client.text_generation(
+                prompt,
+                model=model_name,
+                max_new_tokens=cfg["tk"],
+                temperature=cfg["t"],
+                top_p=cfg["p"],
+                top_k=cfg.get("k"),
+            )
+        except Exception as exc:
+            elapsed_ms = int((time.perf_counter() - call_started) * 1000)
+            _runtime_log(
+                "inference.remote.error",
+                level=logging.ERROR,
+                trace_id=trace_id,
+                model=model_name,
+                elapsed_ms=elapsed_ms,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            raise RuntimeError(f"REMOTE_INFERENCE_FAILED: {exc}") from exc
         out = resp.strip()
+        elapsed_ms = int((time.perf_counter() - call_started) * 1000)
+        _runtime_log(
+            "inference.remote.success",
+            trace_id=trace_id,
+            model=model_name,
+            elapsed_ms=elapsed_ms,
+            response_len=len(out),
+        )
         _dbg(f"generate_response: remote response_len={len(out)}")
         return out
 
     if prelocked:
-        return _generate_response_local(model_choice, force_cpu_slow, prompt, cfg)
+        return _generate_response_local(model_choice, force_cpu_slow, prompt, cfg, trace_id=trace_id)
     with MODEL_MUTEX:
-        return _generate_response_local(model_choice, force_cpu_slow, prompt, cfg)
+        return _generate_response_local(model_choice, force_cpu_slow, prompt, cfg, trace_id=trace_id)
 
 
 @app.post("/api/chat")
 async def chat(request: Request, _=Depends(require_auth)):
     """Session-based chat endpoint (triage + inquiry)."""
+    trace_id = "unassigned"
     try:
         store = request.state.store
         start_time = datetime.now()
+        trace_id = uuid.uuid4().hex[:12]
         form = await request.form()
         msg = (form.get("message") or "").strip()
         if not msg:
+            _runtime_log("chat.request.invalid", level=logging.WARNING, trace_id=trace_id, reason="empty_message")
             return JSONResponse({"error": "Message is required."}, status_code=status.HTTP_400_BAD_REQUEST)
         user_msg_raw = msg
         p_name = form.get("patient") or ""
@@ -3438,10 +3675,32 @@ async def chat(request: Request, _=Depends(require_auth)):
         is_start = session_action == "start" or not session_id
         if not session_id:
             session_id = f"session-{uuid.uuid4().hex}"
+        _runtime_log(
+            "chat.request.received",
+            trace_id=trace_id,
+            mode=mode,
+            model_choice=model_choice or "",
+            force_cpu_slow=force_cpu_slow,
+            queue_wait_requested=queue_wait_requested,
+            private=is_priv,
+            session_action=session_action or ("start" if is_start else "message"),
+            session_id=session_id,
+            patient=p_name or "",
+            message_len=len(msg),
+            disable_local_inference=DISABLE_LOCAL_INFERENCE,
+            is_hf_space=IS_HF_SPACE,
+        )
 
         if not DISABLE_LOCAL_INFERENCE:
             model_availability = _local_model_availability_payload()
             if not model_availability.get("has_any_local_model"):
+                _runtime_log(
+                    "chat.request.rejected",
+                    level=logging.WARNING,
+                    trace_id=trace_id,
+                    reason="no_local_models",
+                    available_models=(model_availability.get("available_models") or []),
+                )
                 return JSONResponse(
                     {
                         "error": (
@@ -3459,6 +3718,14 @@ async def chat(request: Request, _=Depends(require_auth)):
                 if not chosen_model:
                     model_choice = available_models[0]
                 elif chosen_model not in available_models:
+                    _runtime_log(
+                        "chat.request.rejected",
+                        level=logging.WARNING,
+                        trace_id=trace_id,
+                        reason="model_not_installed",
+                        chosen_model=chosen_model,
+                        available_models=available_models,
+                    )
                     return JSONResponse(
                         {
                             "error": (
@@ -3513,11 +3780,33 @@ async def chat(request: Request, _=Depends(require_auth)):
         if override_prompt.strip():
             prompt = override_prompt.strip()
 
+        _runtime_log(
+            "chat.prompt.ready",
+            trace_id=trace_id,
+            mode=mode,
+            model_choice=model_choice or "",
+            prompt_len=len(prompt or ""),
+            override_prompt=bool(override_prompt.strip()),
+            cfg_tokens=cfg.get("tk"),
+            cfg_temp=cfg.get("t"),
+            cfg_top_p=cfg.get("p"),
+            cfg_top_k=cfg.get("k"),
+            triage_pathway_status=prompt_meta.get("triage_pathway_status") or "",
+            triage_pathway_reason=prompt_meta.get("triage_pathway_reason") or "",
+            triage_pathway_supplemented=bool(prompt_meta.get("triage_pathway_supplemented")),
+        )
+
         # Persist the exact prompt submitted for debug visibility in Settings.
         try:
             set_settings_meta(last_prompt_verbatim=prompt)
         except Exception:
             logger.exception("Unable to persist last_prompt_verbatim")
+            _runtime_log(
+                "chat.prompt.persist_failed",
+                level=logging.WARNING,
+                trace_id=trace_id,
+                error="Unable to persist last_prompt_verbatim",
+            )
 
         model_lock_acquired = False
         busy_meta_set = False
@@ -3526,6 +3815,15 @@ async def chat(request: Request, _=Depends(require_auth)):
         queue_snapshot = {}
         queue_ticket, queue_snapshot = _chat_queue_enqueue(model_choice or "", mode, session_id, p_name)
         if queue_ticket is None:
+            _runtime_log(
+                "chat.queue.rejected",
+                level=logging.WARNING,
+                trace_id=trace_id,
+                reason="queue_full",
+                mode=mode,
+                model_choice=model_choice or "",
+                queue_size=(queue_snapshot or {}).get("size"),
+            )
             return JSONResponse(
                 {
                     "error": (
@@ -3538,10 +3836,26 @@ async def chat(request: Request, _=Depends(require_auth)):
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             )
         queue_position = safe_int(queue_snapshot.get("position"), 1)
+        _runtime_log(
+            "chat.queue.enqueued",
+            trace_id=trace_id,
+            mode=mode,
+            model_choice=model_choice or "",
+            queue_ticket=queue_ticket,
+            queue_position=queue_position,
+            queue_snapshot_size=(queue_snapshot or {}).get("size"),
+        )
         if queue_position > 1 and not queue_wait_requested:
             _chat_queue_release(queue_ticket)
             active = queue_snapshot.get("active") or {}
             active_model = (active.get("model_choice") or "").strip() or "another consultation"
+            _runtime_log(
+                "chat.queue.wait_required",
+                level=logging.WARNING,
+                trace_id=trace_id,
+                queue_position=queue_position,
+                active_model=active_model,
+            )
             return JSONResponse(
                 {
                     "error": (
@@ -3558,10 +3872,25 @@ async def chat(request: Request, _=Depends(require_auth)):
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             )
         queue_wait_seconds = await asyncio.to_thread(_chat_queue_wait_turn, queue_ticket)
+        _runtime_log(
+            "chat.queue.turn_acquired",
+            trace_id=trace_id,
+            queue_ticket=queue_ticket,
+            wait_seconds=queue_wait_seconds,
+            queue_wait_requested=queue_wait_requested,
+        )
         _set_model_busy_meta(model_choice or "", mode, session_id, p_name)
         busy_meta_set = True
 
         try:
+            _runtime_log(
+                "chat.inference.start",
+                trace_id=trace_id,
+                mode=mode,
+                model_choice=model_choice or "",
+                disable_local_inference=DISABLE_LOCAL_INFERENCE,
+                force_cpu_slow=force_cpu_slow,
+            )
             if not DISABLE_LOCAL_INFERENCE:
                 MODEL_MUTEX.acquire()
                 model_lock_acquired = True
@@ -3572,11 +3901,34 @@ async def chat(request: Request, _=Depends(require_auth)):
                     prompt,
                     cfg,
                     True,
+                    trace_id,
                 )
             else:
-                res = await asyncio.to_thread(_generate_response, model_choice, force_cpu_slow, prompt, cfg)
+                res = await asyncio.to_thread(
+                    _generate_response,
+                    model_choice,
+                    force_cpu_slow,
+                    prompt,
+                    cfg,
+                    False,
+                    trace_id,
+                )
+            _runtime_log(
+                "chat.inference.success",
+                trace_id=trace_id,
+                mode=mode,
+                model_choice=model_choice or "",
+                response_len=len(res or ""),
+            )
         except RuntimeError as e:
             _dbg(f"chat runtime error: {e}")
+            _runtime_log(
+                "chat.inference.runtime_error",
+                level=logging.ERROR,
+                trace_id=trace_id,
+                error=str(e),
+                error_type=type(e).__name__,
+            )
             if str(e) == "CHAT_QUEUE_TICKET_MISSING":
                 return JSONResponse(
                     {"error": "Queue ticket was lost. Please submit again."},
@@ -3602,6 +3954,18 @@ async def chat(request: Request, _=Depends(require_auth)):
                         "details": str(e),
                     },
                     status_code=status.HTTP_400_BAD_REQUEST,
+                )
+            if str(e).startswith("REMOTE_INFERENCE_FAILED"):
+                return JSONResponse(
+                    {
+                        "error": (
+                            "Remote MedGemma inference failed before a response was returned. "
+                            "Open Settings -> Runtime Debug Log (HF) for full details."
+                        ),
+                        "remote_inference_failed": True,
+                        "details": str(e),
+                    },
+                    status_code=status.HTTP_502_BAD_GATEWAY,
                 )
             if "Missing model cache" in str(e) or str(e) in {"REMOTE_TOKEN_MISSING", "LOCAL_INFERENCE_DISABLED"}:
                 return JSONResponse(
@@ -3691,6 +4055,16 @@ async def chat(request: Request, _=Depends(require_auth)):
             upsert_history_entry(entry)
 
         metrics = _update_chat_metrics(store, models["active_name"])
+        _runtime_log(
+            "chat.response.ready",
+            trace_id=trace_id,
+            mode=mode,
+            model=models["active_name"],
+            duration_ms=elapsed_ms,
+            queue_wait_seconds=queue_wait_seconds,
+            session_id=session_id,
+            private=is_priv,
+        )
 
         return JSONResponse(
             {
@@ -3717,6 +4091,14 @@ async def chat(request: Request, _=Depends(require_auth)):
             }
         )
     except Exception as e:
+        _runtime_log(
+            "chat.request.exception",
+            level=logging.ERROR,
+            trace_id=trace_id,
+            error_type=type(e).__name__,
+            error=str(e),
+            traceback=traceback.format_exc(),
+        )
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 

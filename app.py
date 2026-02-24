@@ -3344,6 +3344,7 @@ async def chat(request: Request, _=Depends(require_auth)):
         is_priv = form.get("private") == "true"
         model_choice = form.get("model_choice")
         force_cpu_slow = form.get("force_28b") == "true"
+        queue_wait_requested = form.get("queue_wait") == "true"
         override_prompt = form.get("override_prompt") or ""
         session_action = (form.get("session_action") or "").strip()
         session_id = (form.get("session_id") or "").strip()
@@ -3419,6 +3420,26 @@ async def chat(request: Request, _=Depends(require_auth)):
                         "Please wait for active consultations to finish and submit again."
                     ),
                     "queue_full": True,
+                    "queue": queue_snapshot,
+                },
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+        queue_position = safe_int(queue_snapshot.get("position"), 1)
+        if queue_position > 1 and not queue_wait_requested:
+            _chat_queue_release(queue_ticket)
+            active = queue_snapshot.get("active") or {}
+            active_model = (active.get("model_choice") or "").strip() or "another consultation"
+            return JSONResponse(
+                {
+                    "error": (
+                        f"Another user is currently running {active_model}. "
+                        f"Your request would be queued at position {queue_position}. "
+                        "Choose Wait to join the queue, or Cancel to try later."
+                    ),
+                    "gpu_busy": True,
+                    "queue_prompt": True,
+                    "queue_position": queue_position,
+                    "active_model": active_model,
                     "queue": queue_snapshot,
                 },
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,

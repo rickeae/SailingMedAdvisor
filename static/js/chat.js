@@ -1261,7 +1261,7 @@ function buildSessionMetaPayload({ initialQuery, patientId, patientName, mode })
     return meta;
 }
 
-async function submitChatMessage({ message, isStart, force28b = false }) {
+async function submitChatMessage({ message, isStart, force28b = false, queueWait = false }) {
     const txt = (message || '').trim();
     if (!txt || isProcessing) return;
     isProcessing = true;
@@ -1288,7 +1288,13 @@ async function submitChatMessage({ message, isStart, force28b = false }) {
     if (blocker) {
         clearBlockerCountdown();
         const title = blocker.querySelector('h3');
-        if (title) title.textContent = mode === 'triage' ? 'Processing Triage Chat…' : 'Processing Inquiry Chat…';
+        if (title) {
+            if (queueWait) {
+                title.textContent = 'Model Busy - Waiting in Queue…';
+            } else {
+                title.textContent = mode === 'triage' ? 'Processing Triage Chat…' : 'Processing Inquiry Chat…';
+            }
+        }
         const modelLine = document.getElementById('chat-model-line');
         const etaLine = document.getElementById('chat-eta-line');
         if (modelLine) modelLine.textContent = `Model: ${modelName}`;
@@ -1296,11 +1302,19 @@ async function submitChatMessage({ message, isStart, force28b = false }) {
         if (etaLine) {
             const expectedSeconds = Math.max(1, Math.round(avgMs / 1000));
             let remainingSeconds = expectedSeconds;
-            etaLine.textContent = `Expected duration: ~${expectedSeconds}s • Remaining: ${remainingSeconds}s`;
+            if (queueWait) {
+                etaLine.textContent = `Waiting for active consultation to finish. Expected run duration after start: ~${expectedSeconds}s`;
+            } else {
+                etaLine.textContent = `Expected duration: ~${expectedSeconds}s • Remaining: ${remainingSeconds}s`;
+            }
             blockerCountdownTimer = setInterval(() => {
                 remainingSeconds = Math.max(0, remainingSeconds - 1);
                 const remainingLabel = remainingSeconds > 0 ? `${remainingSeconds}s` : '<1s';
-                etaLine.textContent = `Expected duration: ~${expectedSeconds}s • Remaining: ${remainingLabel}`;
+                if (queueWait) {
+                    etaLine.textContent = `Waiting for active consultation to finish. Expected run duration after start: ~${expectedSeconds}s`;
+                } else {
+                    etaLine.textContent = `Expected duration: ~${expectedSeconds}s • Remaining: ${remainingLabel}`;
+                }
             }, 1000);
         }
         blocker.classList.add('active');
@@ -1335,6 +1349,7 @@ async function submitChatMessage({ message, isStart, force28b = false }) {
         fd.append('private', isPrivate ? 'true' : 'false');
         fd.append('model_choice', modelName);
         fd.append('force_28b', force28b ? 'true' : 'false');
+        fd.append('queue_wait', queueWait ? 'true' : 'false');
         if (isStart && mode === 'triage') {
             fd.append('triage_consciousness', document.getElementById('triage-consciousness')?.value || '');
             fd.append('triage_breathing', document.getElementById('triage-breathing')?.value || '');
@@ -1388,12 +1403,28 @@ async function submitChatMessage({ message, isStart, force28b = false }) {
         loadingDiv.remove();
 
         if (res.gpu_busy) {
-            if (display && normalizeMode(currentMode) === mode) {
-                display.innerHTML += `<div class="response-block" style="border-left-color:#b26a00;"><b>GPU BUSY:</b> ${res.error || 'GPU is currently busy. Please retry in a moment.'}</div>`;
-                display.scrollTop = display.scrollHeight;
-            }
-            if (res.error) {
-                alert(res.error);
+            if (res.queue_prompt) {
+                const waitChoice = confirm(
+                    `${res.error || 'Another user is currently running a model.'}\n\nPress OK to wait in queue.\nPress Cancel to try again later.`
+                );
+                if (waitChoice) {
+                    isProcessing = false;
+                    document.getElementById('run-btn').disabled = false;
+                    if (sendBtn) sendBtn.disabled = false;
+                    return submitChatMessage({ message: txt, isStart, force28b, queueWait: true });
+                }
+                if (display && normalizeMode(currentMode) === mode) {
+                    display.innerHTML += `<div class="response-block" style="border-left-color:#b26a00;"><b>INFO:</b> Consultation request cancelled. You can retry later.</div>`;
+                    display.scrollTop = display.scrollHeight;
+                }
+            } else {
+                if (display && normalizeMode(currentMode) === mode) {
+                    display.innerHTML += `<div class="response-block" style="border-left-color:#b26a00;"><b>GPU BUSY:</b> ${res.error || 'GPU is currently busy. Please retry in a moment.'}</div>`;
+                    display.scrollTop = display.scrollHeight;
+                }
+                if (res.error) {
+                    alert(res.error);
+                }
             }
         } else if (res.confirm_28b) {
             const ok = confirm(res.error || 'The 28B model on CPU can take an hour or more. Continue?');

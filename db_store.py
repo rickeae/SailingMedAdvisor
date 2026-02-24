@@ -26,6 +26,7 @@ from typing import Optional, Any, Dict
 logger = logging.getLogger("uvicorn.error")
 
 DB_PATH: Path
+TRIAGE_TREE_DEFAULT_JSON_PATH = Path(__file__).resolve().parent / "seed" / "triage_prompt_tree.default.json"
 
 
 def configure_db(path: Path):
@@ -1372,21 +1373,18 @@ def _default_triage_prompt_tree():
                 "problems": {
                     "Laceration": {
                         "procedure": "Control bleeding -> Irrigate -> Inspect -> Decide closure.",
-                        "exclusions": "Do NOT close if >6 hours old, crush, puncture, or marine/saltwater contamination.",
                         "anatomy_guardrails": dict(trauma_anatomy),
                         "severity_modifiers": dict(trauma_severity),
                         "mechanism_modifiers": dict(trauma_mechanism),
                     },
                     "Bleeding wound (non-laceration)": {
                         "procedure": "Direct pressure or packing for full 10m without interruption.",
-                        "exclusions": "Do NOT delay hemorrhage control for cleaning or closure decisions.",
                         "anatomy_guardrails": dict(trauma_anatomy),
                         "severity_modifiers": dict(trauma_severity),
                         "mechanism_modifiers": dict(trauma_mechanism),
                     },
                     "Embedded foreign body": {
                         "procedure": "Stabilize object, control bleeding, and plan extraction-safe pathway.",
-                        "exclusions": "Do NOT close over retained material. Fish hook exception protocol only in non-critical areas.",
                         "anatomy_guardrails": dict(trauma_anatomy),
                         "severity_modifiers": dict(trauma_severity),
                         "mechanism_modifiers": dict(trauma_mechanism),
@@ -1399,28 +1397,24 @@ def _default_triage_prompt_tree():
                     },
                     "Burn": {
                         "procedure": "Stop burn source -> cool with room-temp water -> non-adherent coverage.",
-                        "exclusions": "Do NOT break blisters or apply caustic home remedies.",
                         "anatomy_guardrails": dict(trauma_anatomy),
                         "severity_modifiers": dict(trauma_severity),
                         "mechanism_modifiers": dict(trauma_mechanism),
                     },
                     "Eye injury": {
                         "procedure": "Protect globe, irrigate if chemical exposure, and reassess vision trends.",
-                        "exclusions": "Do NOT apply globe pressure when penetrating injury is possible.",
                         "anatomy_guardrails": dict(trauma_anatomy),
                         "severity_modifiers": dict(trauma_severity),
                         "mechanism_modifiers": dict(trauma_mechanism),
                     },
                     "Marine bite / sting / envenomation": {
                         "procedure": "Stabilize wound, pain control, and monitor for allergic/systemic progression.",
-                        "exclusions": "Do NOT tightly close high-contamination marine wounds.",
                         "anatomy_guardrails": dict(trauma_anatomy),
                         "severity_modifiers": dict(trauma_severity),
                         "mechanism_modifiers": dict(trauma_mechanism),
                     },
                     "Head injury / concussion": {
                         "procedure": "Baseline neuro exam, serial checks, and strict deterioration triggers.",
-                        "exclusions": "Do NOT sedate heavily before baseline neurologic documentation.",
                         "anatomy_guardrails": dict(trauma_anatomy),
                         "severity_modifiers": dict(trauma_severity),
                         "mechanism_modifiers": dict(trauma_mechanism),
@@ -1590,6 +1584,21 @@ def _default_triage_prompt_tree():
     }
 
 
+def _strip_legacy_exclusions(node: Any):
+    """
+     Strip Legacy Exclusions helper.
+    Remove deprecated exclusions fields from triage prompt tree payloads.
+    """
+    if isinstance(node, dict):
+        node.pop("exclusions", None)
+        for child in node.values():
+            _strip_legacy_exclusions(child)
+        return
+    if isinstance(node, list):
+        for child in node:
+            _strip_legacy_exclusions(child)
+
+
 def _normalize_triage_prompt_tree_payload(payload: Any) -> Dict[str, Any]:
     """
      Normalize Triage Prompt Tree Payload helper.
@@ -1614,9 +1623,11 @@ def _normalize_triage_prompt_tree_payload(payload: Any) -> Dict[str, Any]:
         "tree": tree,
     }
     try:
-        return json.loads(json.dumps(normalized, ensure_ascii=False))
+        cleaned = json.loads(json.dumps(normalized, ensure_ascii=False))
     except Exception as exc:
         raise ValueError("Triage tree payload must be JSON-serializable.") from exc
+    _strip_legacy_exclusions(cleaned.get("tree"))
+    return cleaned
 
 
 def _seed_triage_prompt_tree(conn, now: str):
@@ -3684,6 +3695,25 @@ def upsert_history_entry(entry: dict):
         conn.commit()
 
 
+def delete_history_entry_by_id(history_id: str) -> bool:
+    """
+    Delete one history row by ID.
+    Returns True when a row was deleted, False when no matching ID exists.
+    """
+    if not history_id:
+        return False
+    with _conn() as conn:
+        cur = conn.execute(
+            """
+            DELETE FROM history_entries
+            WHERE id = ?
+            """,
+            (history_id,),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
 def get_chats():
     """
     Get Chats helper.
@@ -3885,6 +3915,30 @@ def set_triage_prompt_tree(payload: Dict[str, Any]) -> Dict[str, Any]:
         )
         conn.commit()
     return normalized
+
+
+def get_triage_prompt_tree_default() -> Dict[str, Any]:
+    """
+    Get Triage Prompt Tree Default helper.
+    Load canonical default triage tree from JSON file for reset/import workflows.
+    """
+    if not TRIAGE_TREE_DEFAULT_JSON_PATH.exists():
+        raise FileNotFoundError(f"Default triage tree file not found: {TRIAGE_TREE_DEFAULT_JSON_PATH}")
+    raw = TRIAGE_TREE_DEFAULT_JSON_PATH.read_text(encoding="utf-8")
+    try:
+        payload = json.loads(raw or "{}")
+    except Exception as exc:
+        raise ValueError("Default triage tree JSON is invalid.") from exc
+    return _normalize_triage_prompt_tree_payload(payload)
+
+
+def reset_triage_prompt_tree_to_default() -> Dict[str, Any]:
+    """
+    Reset Triage Prompt Tree To Default helper.
+    Replace database triage tree payload with canonical default JSON content.
+    """
+    defaults = get_triage_prompt_tree_default()
+    return set_triage_prompt_tree(defaults)
 
 
 def get_triage_prompt_modules():

@@ -611,13 +611,15 @@ function getTriageTreeProblemNode(domainKey, problemKey, create = false) {
         if (!create) return null;
         domainNode.problems[problemKey] = {
             procedure: '',
-            exclusions: '',
             anatomy_guardrails: {},
             severity_modifiers: {},
             mechanism_modifiers: {},
         };
     }
     const problemNode = domainNode.problems[problemKey];
+    if (Object.prototype.hasOwnProperty.call(problemNode, 'exclusions')) {
+        delete problemNode.exclusions;
+    }
     ['anatomy_guardrails', 'severity_modifiers', 'mechanism_modifiers'].forEach((category) => {
         if (!problemNode[category] || typeof problemNode[category] !== 'object' || Array.isArray(problemNode[category])) {
             problemNode[category] = {};
@@ -1066,7 +1068,6 @@ function addTriageTreeProblem() {
     }
     domainNode.problems[name] = {
         procedure: '',
-        exclusions: '',
         anatomy_guardrails: {},
         severity_modifiers: {},
         mechanism_modifiers: {},
@@ -1276,6 +1277,97 @@ async function saveTriagePromptTree(options = {}) {
         console.log('[settings] triage tree saved', { reason, domainCount });
     } catch (err) {
         updateTriageTreeStatus(`Save failed: ${err.message}`, true);
+    }
+}
+
+function exportTriagePromptTreeJson() {
+    if (!triagePromptTreePayload) {
+        updateTriageTreeStatus('No triage tree is loaded.', true);
+        return;
+    }
+    syncTriageTreeInputsToState();
+    let normalized;
+    try {
+        normalized = normalizeTriageTreePayload(triagePromptTreePayload);
+    } catch (err) {
+        updateTriageTreeStatus(err.message || 'Unable to export triage tree.', true);
+        return;
+    }
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filename = `clinical_triage_pathway_${stamp}.json`;
+    const blob = new Blob([JSON.stringify(normalized, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+    updateTriageTreeStatus(`Exported triage pathway JSON (${filename}).`);
+}
+
+function triggerTriagePromptTreeImportPicker() {
+    const input = document.getElementById('triage-tree-import-file');
+    if (!input) {
+        updateTriageTreeStatus('Import input is unavailable.', true);
+        return;
+    }
+    input.value = '';
+    input.click();
+}
+
+async function importTriagePromptTreeJson(event) {
+    const file = event?.target?.files?.[0];
+    if (!file) return;
+    try {
+        updateTriageTreeStatus(`Importing ${file.name}...`);
+        const raw = await file.text();
+        let parsed;
+        try {
+            parsed = JSON.parse(raw || '{}');
+        } catch (err) {
+            throw new Error('Selected file is not valid JSON.');
+        }
+        const normalized = normalizeTriageTreePayload(parsed?.payload || parsed);
+        renderTriageTreeEditor(normalized);
+        await saveTriagePromptTree({ silentStatus: false, reason: 'import-json' });
+        updateTriageTreeStatus(`Imported triage pathway from ${file.name}.`);
+    } catch (err) {
+        updateTriageTreeStatus(`Import failed: ${err.message}`, true);
+    } finally {
+        if (event?.target) event.target.value = '';
+    }
+}
+
+async function resetTriagePromptTreeToDefault() {
+    if (!confirm('Reset the entire Clinical Triage Pathway to the default JSON file? This will overwrite current pathway edits.')) {
+        return;
+    }
+    try {
+        updateTriageTreeStatus('Resetting triage pathway to default JSON...');
+        const res = await fetch('/api/settings/triage-tree/reset', {
+            method: 'POST',
+            credentials: 'same-origin',
+        });
+        if (!res.ok) {
+            let detail = '';
+            try {
+                const err = await res.json();
+                detail = err?.error ? `: ${err.error}` : '';
+            } catch (_) { /* ignore */ }
+            throw new Error(`Reset failed (${res.status})${detail}`);
+        }
+        const payload = await res.json();
+        const normalized = normalizeTriageTreePayload(payload?.payload || payload);
+        renderTriageTreeEditor(normalized);
+        const domainCount = Object.keys(normalized.tree || {}).length;
+        updateTriageTreeStatus(`Reset complete. Loaded default triage tree (${domainCount} domain${domainCount === 1 ? '' : 's'}).`);
+        if (typeof refreshPromptPreview === 'function') {
+            refreshPromptPreview(true);
+        }
+    } catch (err) {
+        updateTriageTreeStatus(`Reset failed: ${err.message}`, true);
     }
 }
 

@@ -1224,7 +1224,7 @@ function togglePriv() {
  * - Saves chat to history.json (unless logging disabled)
  * - Updates crew member's medical log
  * - Refreshes chat metrics
- * - Triggers loadData() to update crew history UI
+ * - Triggers lightweight loadData({skipPatients:true}) refresh for crew history UI
  * 
  * @param {string} promptText - Optional override for message text
  * @param {boolean} force28b - Skip 28B confirmation (after user confirms)
@@ -1441,7 +1441,8 @@ async function submitChatMessage({ message, isStart, force28b = false }) {
             }
             try { localStorage.setItem(SKIP_LAST_CHAT_KEY, '0'); } catch (err) { /* ignore */ }
             if (typeof loadData === 'function') {
-                loadData();
+                // After a response we only need history/settings freshness; roster reuse is faster.
+                loadData({ skipPatients: true });
             }
             const chatInput = document.getElementById('chat-input');
             if (chatInput) chatInput.value = '';
@@ -1507,6 +1508,10 @@ async function sendChatMessage() {
 // Handle Enter key for submission
 document.addEventListener('DOMContentLoaded', () => {
     console.log('[DEBUG] chat.js DOMContentLoaded');
+    // Apply mode/model UI state immediately so selectors are ready before
+    // deferred startup work completes.
+    updateUI();
+    syncModelSelects();
     setupPromptInjectionPanel();
     loadTriageDecisionTree()
         .then(() => {
@@ -1634,11 +1639,11 @@ function findMostRecentHistoryEntry(entries) {
 
 async function loadHistoryEntryById(historyId) {
     if (!historyId) return null;
-    const res = await fetch('/api/data/history', { credentials: 'same-origin' });
+    const res = await fetch(`/api/history/${encodeURIComponent(historyId)}`, { credentials: 'same-origin' });
+    if (res.status === 404) return null;
     if (!res.ok) throw new Error(`History load failed (${res.status})`);
-    const data = await res.json();
-    if (!Array.isArray(data)) return null;
-    return data.find((h) => h.id === historyId) || null;
+    const entry = await res.json();
+    return (entry && typeof entry === 'object') ? entry : null;
 }
 
 async function restoreChatAsReturned(historyId) {

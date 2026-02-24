@@ -94,9 +94,15 @@ const renderAssistantMarkdownMain = (window.Utils && window.Utils.renderAssistan
 let globalSidebarCollapsed = false;  // Sidebar collapse state (synced across all tabs)
 let crewDataLoaded = false;          // Prevent duplicate crew data loads
 let crewDataPromise = null;          // Promise for concurrent load protection
+let loadDataInFlight = null;         // Shared promise so concurrent refreshes collapse into one request
+let cachedPatientsRoster = null;     // Last successful /api/data/patients payload for lightweight refreshes
 const LAST_PATIENT_KEY_MAIN = 'sailingmed:lastPatient';
+const CREW_OPTIONS_CACHE_KEY = 'sailingmed:crewOptionsCache';
 const COLLAPSIBLE_PREF_SCHEMA_KEY = 'sailingmed:collapsiblePrefSchema';
 const COLLAPSIBLE_PREF_SCHEMA_VERSION = '2';
+let startupCriticalInitDone = false;   // Prevent duplicate critical bootstrap runs
+let startupDeferredInitDone = false;   // Prevent duplicate deferred bootstrap runs
+let startupCrewReadyPromise = null;    // Shared crew-ready promise across startup phases
 
 /**
  * migrateCollapsiblePrefs: function-level behavior note for maintainers.
@@ -171,6 +177,44 @@ function populateCrewSelectFast(patients) {
         return;
     }
     select.value = '';
+}
+
+/**
+ * cacheCrewOptionsFast: persist lightweight crew selector options for instant hydration.
+ */
+function cacheCrewOptionsFast(patients) {
+    if (!Array.isArray(patients)) return;
+    const compact = patients
+        .map((crew) => {
+            const id = String((crew && crew.id) || '').trim();
+            if (!id) return null;
+            const label = getCrewFullNameFast(crew);
+            return { id, label };
+        })
+        .filter(Boolean);
+    if (!compact.length) return;
+    try {
+        localStorage.setItem(CREW_OPTIONS_CACHE_KEY, JSON.stringify(compact));
+    } catch (err) { /* ignore */ }
+}
+
+/**
+ * hydrateCrewSelectFromCache: render cached crew options before network completes.
+ */
+function hydrateCrewSelectFromCache() {
+    try {
+        const raw = localStorage.getItem(CREW_OPTIONS_CACHE_KEY);
+        if (!raw) return false;
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed) || !parsed.length) return false;
+        populateCrewSelectFast(parsed.map((entry) => ({
+            id: entry && entry.id,
+            name: entry && entry.label,
+        })));
+        return true;
+    } catch (err) {
+        return false;
+    }
 }
 
 /**
@@ -444,7 +488,7 @@ function syncSidebarSections(sectionId, isOpen) {
  * 2. Applies state to all sidebars
  * 3. Syncs sidebar sections with main content collapsible states
  * 
- * Called once on page load (window.onload).
+ * Called once during startup initialization.
  */
 function initSidebarSync() {
     try {
@@ -586,10 +630,19 @@ window.showTab = showTab;
  * Load crew, history, and settings data from server.
  * 
  * Loading Strategy:
- * - Concurrent fetch of all 3 endpoints (Promise.all)
+ * - Concurrent fetch of history/settings on every call
+ * - Optional patient roster reuse for lightweight refresh paths
  * - Patients: Hard requirement, fails if unavailable
  * - History: Soft requirement, continues if fails (empty array)
  * - Settings: Optional, uses defaults if unavailable
+ *
+ * Concurrency Strategy:
+ * - If a refresh is already in flight, concurrent callers share that promise
+ *   unless `options.force === true`
+ *
+ * Lightweight Refresh Mode:
+ * - `options.skipPatients === true` reuses cached roster when available
+ * - This keeps post-chat refreshes fast while still updating history/settings
  * 
  * Error Handling:
  * - History parse failure: Warns and continues with []
@@ -613,101 +666,137 @@ window.showTab = showTab;
  * 
  * @throws {Error} If patients data unavailable or malformed
  */
-async function loadData() {
-    console.log('[DEBUG] loadData: start');
-    try {
-        // Prioritize patient roster fetch so #p-select is usable as early as possible.
-        const patientsResPromise = fetch('/api/data/patients', { credentials: 'same-origin' });
-        const patientOptionsPromise = fetch('/api/patients/options', { credentials: 'same-origin' })
-            .then(async (res) => {
-                if (!res.ok) return null;
-                const data = await res.json();
-                return Array.isArray(data) ? data : null;
-            })
-            .then((options) => {
-                if (Array.isArray(options) && options.length) {
-                    populateCrewSelectFast(options);
-                }
-                return options;
-            })
-            .catch((err) => {
-                console.warn('Patient options request failed before response; falling back to full patients payload.', err);
-                return null;
-            });
-        const historyResPromise = fetch('/api/data/history', { credentials: 'same-origin' })
-            .catch((err) => {
-                console.warn('History request failed before response; continuing without history.', err);
-                return null;
-            });
-        const settingsResPromise = fetch('/api/data/settings', { credentials: 'same-origin' })
-            .catch((err) => {
-                console.warn('Settings request failed before response; using defaults.', err);
-                return null;
-            });
-        const res = await patientsResPromise;
-        if (!res.ok) throw new Error(`Patients request failed: ${res.status}`);
-
-        // Parse patients (hard requirement) and immediately hydrate chat dropdown.
-        const data = await res.json();
-        console.log('[DEBUG] loadData: patients status', res.status, 'length', Array.isArray(data) ? data.length : 'n/a');
-        if (!Array.isArray(data)) throw new Error('Unexpected patients data format');
-        populateCrewSelectFast(data);
-        // Ensure fast options request has settled; failures are already handled.
-        await patientOptionsPromise;
-
-        const [historyRes, settingsRes] = await Promise.all([historyResPromise, settingsResPromise]);
-        console.log('[DEBUG] loadData: status history', historyRes ? historyRes.status : 'error', 'settings', settingsRes ? settingsRes.status : 'error');
-        if (!settingsRes || !settingsRes.ok) console.warn('Settings request failed:', settingsRes ? settingsRes.status : 'network');
-
-        // Parse history, but never block crew rendering if it fails
-        let history = [];
-        if (historyRes && historyRes.ok) {
-            try {
-                const parsedHistory = await historyRes.json();
-                history = Array.isArray(parsedHistory) ? parsedHistory : [];
-            } catch (err) {
-                console.warn('History parse failed; continuing without history.', err);
-                history = [];
-            }
-        } else {
-            console.warn('History request failed; continuing without history. Status:', historyRes ? historyRes.status : 'network');
-        }
-
-        // Parse settings (optional)
-        let settings = {};
-        try {
-            settings = (settingsRes && settingsRes.ok) ? await settingsRes.json() : {};
-        } catch (err) {
-            console.warn('Settings parse failed, using defaults.', err);
-        }
-        window.CACHED_SETTINGS = settings || {};
-
-        // Ensure crew renderer is ready; retry briefly if the script is still loading
-        if (typeof loadCrewData !== 'function') {
-            console.warn('[DEBUG] loadCrewData missing; retrying shortly…');
-            setTimeout(() => {
-                if (typeof loadCrewData === 'function') {
-                    loadCrewData(data, history, settings || {});
-                } else {
-                    console.error('[DEBUG] loadCrewData still missing after retry.');
-                }
-            }, 150);
-            return;
-        }
-        loadCrewData(data, history, settings || {});
-        crewDataLoaded = true;
-
-    } catch (err) {
-        console.error('[DEBUG] Failed to load crew data', err);
-        window.CACHED_SETTINGS = window.CACHED_SETTINGS || {};
-        // Gracefully clear UI to avoid JS errors
-        const pSelect = document.getElementById('p-select');
-        if (pSelect) pSelect.innerHTML = '<option value=\"\">Unnamed Crew Member</option>';
-        const medicalContainer = document.getElementById('crew-medical-list');
-        if (medicalContainer) medicalContainer.innerHTML = `<div style="color:#666;">Unable to load crew data. ${err.message}</div>`;
-        const infoContainer = document.getElementById('crew-info-list');
-        if (infoContainer) infoContainer.innerHTML = `<div style="color:#666;">Unable to load crew data. ${err.message}</div>`;
+async function loadData(options = {}) {
+    const opts = {
+        skipPatients: false,
+        force: false,
+        forcePatients: false,
+        ...(options && typeof options === 'object' ? options : {}),
+    };
+    if (!opts.force && loadDataInFlight) {
+        return loadDataInFlight;
     }
+    loadDataInFlight = (async () => {
+        console.log('[DEBUG] loadData: start', opts);
+        try {
+            const historyResPromise = fetch('/api/data/history', { credentials: 'same-origin' })
+                .catch((err) => {
+                    console.warn('History request failed before response; continuing without history.', err);
+                    return null;
+                });
+            const settingsResPromise = fetch('/api/data/settings', { credentials: 'same-origin' })
+                .catch((err) => {
+                    console.warn('Settings request failed before response; using defaults.', err);
+                    return null;
+                });
+
+            const shouldFetchPatients = !opts.skipPatients
+                || opts.forcePatients
+                || !Array.isArray(cachedPatientsRoster)
+                || !cachedPatientsRoster.length;
+
+            let data = Array.isArray(cachedPatientsRoster) ? cachedPatientsRoster : [];
+            if (shouldFetchPatients) {
+                // Prioritize patient roster fetch so #p-select is usable as early as possible.
+                const patientsResPromise = fetch('/api/data/patients', { credentials: 'same-origin' });
+                const patientOptionsPromise = fetch('/api/patients/options', { credentials: 'same-origin' })
+                    .then(async (res) => {
+                        if (!res.ok) return null;
+                        const optionsData = await res.json();
+                        return Array.isArray(optionsData) ? optionsData : null;
+                    })
+                    .then((optionsData) => {
+                        if (Array.isArray(optionsData) && optionsData.length) {
+                            populateCrewSelectFast(optionsData);
+                            cacheCrewOptionsFast(optionsData);
+                        }
+                        return optionsData;
+                    })
+                    .catch((err) => {
+                        console.warn('Patient options request failed before response; falling back to full patients payload.', err);
+                        return null;
+                    });
+
+                const res = await patientsResPromise;
+                if (!res.ok) {
+                    if (!Array.isArray(cachedPatientsRoster) || !cachedPatientsRoster.length) {
+                        throw new Error(`Patients request failed: ${res.status}`);
+                    }
+                    console.warn('Patients request failed; reusing cached roster. Status:', res.status);
+                    data = cachedPatientsRoster;
+                } else {
+                    data = await res.json();
+                    console.log('[DEBUG] loadData: patients status', res.status, 'length', Array.isArray(data) ? data.length : 'n/a');
+                    if (!Array.isArray(data)) throw new Error('Unexpected patients data format');
+                    cachedPatientsRoster = data;
+                    populateCrewSelectFast(data);
+                    cacheCrewOptionsFast(data);
+                }
+
+                // Ensure fast options request has settled; failures are already handled.
+                await patientOptionsPromise;
+            } else {
+                // Reuse cached roster for lightweight refreshes (e.g., after chat completion).
+                populateCrewSelectFast(data);
+            }
+
+            const [historyRes, settingsRes] = await Promise.all([historyResPromise, settingsResPromise]);
+            console.log('[DEBUG] loadData: status history', historyRes ? historyRes.status : 'error', 'settings', settingsRes ? settingsRes.status : 'error');
+            if (!settingsRes || !settingsRes.ok) console.warn('Settings request failed:', settingsRes ? settingsRes.status : 'network');
+
+            // Parse history, but never block crew rendering if it fails
+            let history = [];
+            if (historyRes && historyRes.ok) {
+                try {
+                    const parsedHistory = await historyRes.json();
+                    history = Array.isArray(parsedHistory) ? parsedHistory : [];
+                } catch (err) {
+                    console.warn('History parse failed; continuing without history.', err);
+                    history = [];
+                }
+            } else {
+                console.warn('History request failed; continuing without history. Status:', historyRes ? historyRes.status : 'network');
+            }
+
+            // Parse settings (optional)
+            let settings = {};
+            try {
+                settings = (settingsRes && settingsRes.ok) ? await settingsRes.json() : {};
+            } catch (err) {
+                console.warn('Settings parse failed, using defaults.', err);
+            }
+            window.CACHED_SETTINGS = settings || {};
+
+            // Ensure crew renderer is ready; retry briefly if the script is still loading
+            if (typeof loadCrewData !== 'function') {
+                console.warn('[DEBUG] loadCrewData missing; retrying shortly…');
+                setTimeout(() => {
+                    if (typeof loadCrewData === 'function') {
+                        loadCrewData(data, history, settings || {});
+                    } else {
+                        console.error('[DEBUG] loadCrewData still missing after retry.');
+                    }
+                }, 150);
+                return;
+            }
+            loadCrewData(data, history, settings || {});
+            crewDataLoaded = true;
+
+        } catch (err) {
+            console.error('[DEBUG] Failed to load crew data', err);
+            window.CACHED_SETTINGS = window.CACHED_SETTINGS || {};
+            // Gracefully clear UI to avoid JS errors
+            const pSelect = document.getElementById('p-select');
+            if (pSelect) pSelect.innerHTML = '<option value=\"\">Unnamed Crew Member</option>';
+            const medicalContainer = document.getElementById('crew-medical-list');
+            if (medicalContainer) medicalContainer.innerHTML = `<div style="color:#666;">Unable to load crew data. ${err.message}</div>`;
+            const infoContainer = document.getElementById('crew-info-list');
+            if (infoContainer) infoContainer.innerHTML = `<div style="color:#666;">Unable to load crew data. ${err.message}</div>`;
+        } finally {
+            loadDataInFlight = null;
+        }
+    })();
+    return loadDataInFlight;
 }
 
 /**
@@ -774,9 +863,32 @@ window.toggleBannerControls = toggleBannerControls;
  * 
  * Called By: Browser on page load completion
  */
-window.onload = () => { 
-    console.log('[DEBUG] window.onload: start');
+function runCriticalStartup() {
+    if (startupCriticalInitDone) return;
+    startupCriticalInitDone = true;
+    console.log('[DEBUG] runCriticalStartup: start');
     migrateCollapsiblePrefs();
+    // Use cached lightweight crew options immediately to avoid a blank selector
+    // while network requests are still in flight.
+    hydrateCrewSelectFromCache();
+    startupCrewReadyPromise = ensureCrewData().catch((err) => {
+        console.warn('[DEBUG] ensureCrewData failed during critical boot:', err);
+    });
+    updateUI();
+    toggleBannerControls('Chat');
+    initSidebarSync();
+    if (typeof window.syncStartPanelWithConsultationState === 'function') {
+        window.syncStartPanelWithConsultationState();
+    } else {
+        restoreCollapsibleState('query-form-header', true);
+    }
+    restoreCollapsibleState('triage-pathway-header', false);
+}
+
+function runDeferredStartup() {
+    if (startupDeferredInitDone) return;
+    startupDeferredInitDone = true;
+    console.log('[DEBUG] runDeferredStartup: start');
     const preloadMedicalChest = () => {
         // Preload Medical Chest after crew dropdown hydration to prioritize chat readiness.
         if (typeof preloadPharmacy === 'function') {
@@ -792,8 +904,8 @@ window.onload = () => {
             loadPharmacy(); // pre-warm Medical Chest so list is ready when tab opens
         }
     };
-    const crewReady = ensureCrewData().catch((err) => {
-        console.warn('[DEBUG] ensureCrewData failed during boot:', err);
+    const crewReady = startupCrewReadyPromise || ensureCrewData().catch((err) => {
+        console.warn('[DEBUG] ensureCrewData failed during deferred boot:', err);
     });
     crewReady.finally(() => {
         if (typeof window.requestIdleCallback === 'function') {
@@ -802,17 +914,19 @@ window.onload = () => {
             setTimeout(preloadMedicalChest, 0);
         }
     });
-    updateUI(); 
-    toggleBannerControls('Chat');
-    initSidebarSync();
-    if (typeof window.syncStartPanelWithConsultationState === 'function') {
-        window.syncStartPanelWithConsultationState();
-    } else {
-        restoreCollapsibleState('query-form-header', true);
-    }
-    restoreCollapsibleState('triage-pathway-header', false);
     restoreLastChatView();
-};
+}
+
+document.addEventListener('DOMContentLoaded', runCriticalStartup);
+window.addEventListener('load', runDeferredStartup);
+
+// If scripts are injected late, run startup paths immediately as needed.
+if (document.readyState === 'interactive' || document.readyState === 'complete') {
+    runCriticalStartup();
+}
+if (document.readyState === 'complete') {
+    runDeferredStartup();
+}
 
 // Ensure loadCrewData exists before any calls (safety for race conditions)
 if (typeof window.loadCrewData !== 'function') {

@@ -32,17 +32,16 @@ Runtime schema (current app expects):
 {
   "base_doctrine": "...",
   "tree": {
-    "Trauma": {
-      "mindset": "...",
-      "problems": {
-        "Laceration": {
-          "procedure": "...",
-          "exclusions": "...",
-          "anatomy_guardrails": {"Head": "..."},
-          "severity_modifiers": {"Stable": "..."},
-          "mechanism_modifiers": {"Fall mechanism": "..."}
-        }
-      }
+        "Trauma": {
+          "mindset": "...",
+          "problems": {
+            "Laceration": {
+              "procedure": "...",
+              "anatomy_guardrails": {"Head": "..."},
+              "severity_modifiers": {"Stable": "..."},
+              "mechanism_modifiers": {"Fall mechanism": "..."}
+            }
+          }
     }
   }
 }
@@ -216,10 +215,6 @@ def convert_clean_to_runtime(
                     "Use selected region/system, condition state, and risk modifier to drive step priorities."
                 )
 
-            exclusions = (presentation_payload.get("exclusions") or "").strip()
-            if not exclusions:
-                exclusions = (existing_problem.get("exclusions") or "").strip()
-
             existing_anatomy = existing_problem.get("anatomy_guardrails") if isinstance(existing_problem, dict) else {}
             existing_severity = existing_problem.get("severity_modifiers") if isinstance(existing_problem, dict) else {}
             existing_mechanism = existing_problem.get("mechanism_modifiers") if isinstance(existing_problem, dict) else {}
@@ -279,7 +274,6 @@ def convert_clean_to_runtime(
 
             problems_out[presentation_name] = {
                 "procedure": procedure,
-                "exclusions": exclusions,
                 "anatomy_guardrails": anatomy_guardrails,
                 "severity_modifiers": severity_modifiers,
                 "mechanism_modifiers": mechanism_modifiers,

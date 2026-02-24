@@ -356,14 +356,11 @@ async function saveHistoryItemById(id) {
         if (statusEl) statusEl.textContent = 'Saving...';
         if (saveBtn) saveBtn.disabled = true;
 
-        const res = await fetch('/api/data/history', { credentials: 'same-origin' });
-        if (!res.ok) throw new Error(res.statusText || 'Failed to load history');
-        const data = await res.json();
-        if (!Array.isArray(data)) throw new Error('History payload is not an array');
-
-        const idx = data.findIndex((entry) => entry && entry.id === id);
-        if (idx < 0) throw new Error('Entry not found');
-        const entry = { ...(data[idx] || {}) };
+        const entryPath = `/api/history/${encodeURIComponent(id)}`;
+        const res = await fetch(entryPath, { credentials: 'same-origin' });
+        if (!res.ok) throw new Error(res.statusText || 'Failed to load history entry');
+        const entry = await res.json();
+        if (!entry || typeof entry !== 'object') throw new Error('History payload is invalid');
 
         entry.date = editedDate;
         entry.query = editedQuery;
@@ -416,19 +413,19 @@ async function saveHistoryItemById(id) {
             }
         }
         entry.response = updatedResponse;
-        data[idx] = entry;
-
-        const saveRes = await fetch('/api/data/history', {
-            method: 'POST',
+        
+        const saveRes = await fetch(entryPath, {
+            method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(data),
+            body: JSON.stringify(entry),
             credentials: 'same-origin',
         });
-        if (!saveRes.ok) throw new Error(saveRes.statusText || 'Failed to save history');
+        if (!saveRes.ok) throw new Error(saveRes.statusText || 'Failed to save history entry');
 
         if (statusEl) statusEl.textContent = 'Saved';
         if (typeof loadData === 'function') {
-            await loadData();
+            // History edits do not change crew roster records.
+            await loadData({ skipPatients: true });
         }
     } catch (err) {
         if (statusEl) statusEl.textContent = '';
@@ -463,18 +460,13 @@ async function deleteHistoryItemById(id) {
         return;
     }
     try {
-        const res = await fetch('/api/data/history', { credentials: 'same-origin' });
-        if (!res.ok) throw new Error(res.statusText || 'Failed to load history');
-        const data = await res.json();
-        const filtered = Array.isArray(data) ? data.filter((h) => h.id !== id) : [];
-        const saveRes = await fetch('/api/data/history', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(filtered),
+        const res = await fetch(`/api/history/${encodeURIComponent(id)}`, {
+            method: 'DELETE',
             credentials: 'same-origin',
         });
-        if (!saveRes.ok) throw new Error(saveRes.statusText || 'Failed to delete');
-        loadData(); // refresh UI with new history
+        if (!res.ok) throw new Error(res.statusText || 'Failed to delete');
+        // Deleting a history row only affects history/settings-dependent panels.
+        await loadData({ skipPatients: true }); // refresh UI with new history
     } catch (err) {
         alert(`Failed to delete: ${err.message}`);
     }

@@ -87,6 +87,7 @@ from db_store import (
     set_history_entries,
     get_history_entry_by_id,
     upsert_history_entry,
+    delete_history_entry_by_id,
     get_who_medicines,
     get_chats,
     set_chats,
@@ -99,6 +100,8 @@ from db_store import (
     set_triage_prompt_modules,
     get_triage_prompt_tree,
     set_triage_prompt_tree,
+    get_triage_prompt_tree_default,
+    reset_triage_prompt_tree_to_default,
     get_settings_meta,
     set_settings_meta,
     get_history_latency_metrics,
@@ -1461,7 +1464,7 @@ def evaluate_triage_pathway_definition(selections):
     extra_problem_text = any(
         isinstance(v, str) and v.strip()
         for k, v in problem_node.items()
-        if k not in {"procedure", "exclusions", "anatomy_guardrails", "severity_modifiers", "mechanism_modifiers"}
+        if k not in {"procedure", "anatomy_guardrails", "severity_modifiers", "mechanism_modifiers"}
     )
     map_text_exists = any(
         isinstance(v, str) and v.strip()
@@ -1517,7 +1520,7 @@ def assemble_system_prompt(selections, user_metadata_block=""):
         if procedure:
             problem_lines.append(f"PROCEDURE: {procedure}")
         for key, value in problem_node.items():
-            if key in {"procedure", "exclusions", "anatomy_guardrails", "severity_modifiers", "mechanism_modifiers"}:
+            if key in {"procedure", "anatomy_guardrails", "severity_modifiers", "mechanism_modifiers"}:
                 continue
             if isinstance(value, str) and value.strip():
                 label = key.replace("_", " ").upper()
@@ -2134,6 +2137,9 @@ async def export_default_dataset(request: Request, _=Depends(require_auth)):
             dest = default_root / f"{cat}.json"
             dest.write_text(json.dumps(data, indent=4))
             written.append(dest.name)
+        triage_tree_dest = default_root / "triage_prompt_tree.json"
+        triage_tree_dest.write_text(json.dumps(get_triage_prompt_tree(), indent=2, ensure_ascii=False), encoding="utf-8")
+        written.append(triage_tree_dest.name)
         # Copy medicine uploads
         src_med = store["uploads"] / "medicines"
         if src_med.exists():
@@ -2442,6 +2448,60 @@ async def upsert_single_inventory(item_id: str, request: Request, _=Depends(requ
         return JSONResponse({"error": "Server error"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+@app.get("/api/history/{entry_id}")
+async def get_history_entry(entry_id: str, _=Depends(require_auth)):
+    """Fetch one consultation log entry by ID."""
+    try:
+        entry = get_history_entry_by_id(entry_id)
+        if not entry:
+            return JSONResponse({"error": "History entry not found"}, status_code=status.HTTP_404_NOT_FOUND)
+        return JSONResponse(entry)
+    except Exception:
+        logger.exception("history get failed", extra={"entry_id": entry_id, "db_path": str(DB_PATH)})
+        return JSONResponse({"error": "Server error"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.put("/api/history/{entry_id}")
+async def upsert_history_entry_api(entry_id: str, request: Request, _=Depends(require_auth)):
+    """Update one consultation log entry without rewriting the full history list."""
+    try:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            return JSONResponse({"error": "Payload must be a JSON object."}, status_code=status.HTTP_400_BAD_REQUEST)
+
+        existing = get_history_entry_by_id(entry_id)
+        if not existing:
+            return JSONResponse({"error": "History entry not found"}, status_code=status.HTTP_404_NOT_FOUND)
+
+        merged = {**existing, **payload}
+        merged["id"] = entry_id
+        if payload.get("query") and not payload.get("user_query"):
+            merged["user_query"] = payload.get("query")
+        merged["updated_at"] = datetime.utcnow().isoformat()
+
+        upsert_history_entry(merged)
+        saved = get_history_entry_by_id(entry_id) or merged
+        return JSONResponse(saved)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=status.HTTP_400_BAD_REQUEST)
+    except Exception:
+        logger.exception("history upsert failed", extra={"entry_id": entry_id, "db_path": str(DB_PATH)})
+        return JSONResponse({"error": "Server error"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.delete("/api/history/{entry_id}")
+async def delete_history_entry_api(entry_id: str, _=Depends(require_auth)):
+    """Delete one consultation log entry by ID."""
+    try:
+        removed = delete_history_entry_by_id(entry_id)
+        if not removed:
+            return JSONResponse({"error": "History entry not found"}, status_code=status.HTTP_404_NOT_FOUND)
+        return {"status": "deleted", "id": entry_id}
+    except Exception:
+        logger.exception("history delete failed", extra={"entry_id": entry_id, "db_path": str(DB_PATH)})
+        return JSONResponse({"error": "Server error"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 @app.api_route("/api/data/{cat}", methods=["GET", "POST"])
 async def manage(cat: str, request: Request, _=Depends(require_auth)):
     """Generic data endpoint; delegates to db_op which is table-backed."""
@@ -2565,6 +2625,41 @@ async def save_triage_tree_settings(request: Request, _=Depends(require_auth)):
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_400_BAD_REQUEST)
     except Exception:
         logger.exception("triage tree save failed", extra={"db_path": str(DB_PATH)})
+        return JSONResponse({"error": "Server error"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.get("/api/settings/triage-tree/default")
+async def get_triage_tree_default_settings(_=Depends(require_auth)):
+    """
+    Get Triage Tree Default Settings helper.
+    Return canonical default triage tree loaded from the maintained JSON file.
+    """
+    try:
+        return {"payload": get_triage_prompt_tree_default()}
+    except FileNotFoundError as e:
+        return JSONResponse({"error": str(e)}, status_code=status.HTTP_404_NOT_FOUND)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=status.HTTP_400_BAD_REQUEST)
+    except Exception:
+        logger.exception("triage tree default load failed", extra={"db_path": str(DB_PATH)})
+        return JSONResponse({"error": "Server error"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@app.post("/api/settings/triage-tree/reset")
+async def reset_triage_tree_settings(_=Depends(require_auth)):
+    """
+    Reset Triage Tree Settings helper.
+    Reset triage decision tree in DB from canonical default JSON file.
+    """
+    try:
+        saved = reset_triage_prompt_tree_to_default()
+        return {"payload": saved}
+    except FileNotFoundError as e:
+        return JSONResponse({"error": str(e)}, status_code=status.HTTP_404_NOT_FOUND)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=status.HTTP_400_BAD_REQUEST)
+    except Exception:
+        logger.exception("triage tree reset failed", extra={"db_path": str(DB_PATH)})
         return JSONResponse({"error": "Server error"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 

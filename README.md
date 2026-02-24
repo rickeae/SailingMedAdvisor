@@ -68,6 +68,12 @@ chmod +x run_med_advisor.sh
 - Local: `http://127.0.0.1:5000`
 - LAN: `http://<your-machine-ip>:5000`
 
+Portable startup (works on machines without a working GPU):
+
+```bash
+FORCE_CUDA=0 ALLOW_CPU_FALLBACK_ON_CUDA_ERROR=1 ./run_med_advisor.sh
+```
+
 ## Fresh Install On A New Computer (Contest Repro Path)
 
 Use the installer script to set up and verify a new machine:

@@ -129,7 +129,7 @@ Installation complete.
 
 Next steps:
 1) Start app:
-   ./run_med_advisor.sh
+   FORCE_CUDA=0 ALLOW_CPU_FALLBACK_ON_CUDA_ERROR=1 ./run_med_advisor.sh
 2) Open:
    http://127.0.0.1:5000
 3) In Settings > Offline Readiness Check:
@@ -137,4 +137,3 @@ Next steps:
    - Download missing models (while online)
    - Enable offline mode before offshore use
 EOF
-

@@ -65,13 +65,19 @@ Verification covers:
 ## 4. Start the Application
 
 ```bash
-./run_med_advisor.sh
+FORCE_CUDA=0 ALLOW_CPU_FALLBACK_ON_CUDA_ERROR=1 ./run_med_advisor.sh
 ```
 
 Open:
 
 - Local: `http://127.0.0.1:5000`
 - LAN: `http://<machine-ip>:5000`
+
+GPU-known-good optional start:
+
+```bash
+FORCE_CUDA=1 ALLOW_CPU_FALLBACK_ON_CUDA_ERROR=1 ./run_med_advisor.sh
+```
 
 ## 5. Prepare for Offline Use (Before Departure)
 

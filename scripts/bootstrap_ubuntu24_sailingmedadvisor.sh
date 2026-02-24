@@ -26,6 +26,7 @@
 #   --repo-url <url>       Repo URL (default: public GitHub URL)
 #   --skip-system-packages Skip apt install step
 #   --start                Start app after verification
+#   --prefer-gpu-start     Prefer GPU settings when starting app (default is CPU-safe start)
 #   --force-cuda <0|1>     Set FORCE_CUDA explicitly when starting app
 #   --help                 Show usage
 
@@ -36,6 +37,7 @@ BRANCH="main"
 TARGET_DIR="${HOME}/SailingMedAdvisor"
 SKIP_SYSTEM_PACKAGES="0"
 START_APP="0"
+PREFER_GPU_START="0"
 FORCE_CUDA_OVERRIDE=""
 
 usage() {
@@ -48,6 +50,7 @@ Flags:
   --repo-url <url>        Repo URL (default: https://github.com/rickeae/SailingMedAdvisor.git)
   --skip-system-packages  Skip apt package installation
   --start                 Start app after successful verification
+  --prefer-gpu-start      Prefer GPU startup flags (default start is CPU-safe)
   --force-cuda <0|1>      Force FORCE_CUDA value when starting app
   --help                  Show this help text
 EOF
@@ -65,6 +68,8 @@ while [[ $# -gt 0 ]]; do
       SKIP_SYSTEM_PACKAGES="1"; shift ;;
     --start)
       START_APP="1"; shift ;;
+    --prefer-gpu-start)
+      PREFER_GPU_START="1"; shift ;;
     --force-cuda)
       FORCE_CUDA_OVERRIDE="$2"; shift 2 ;;
     --help|-h)
@@ -137,6 +142,12 @@ resolve_force_cuda() {
     echo "$FORCE_CUDA_OVERRIDE"
     return
   fi
+  # Default to CPU-safe startup for reproducibility across unknown machines.
+  # This avoids failing on hosts with partial/broken GPU drivers.
+  if [[ "$PREFER_GPU_START" != "1" ]]; then
+    echo "0"
+    return
+  fi
   if command -v nvidia-smi >/dev/null 2>&1; then
     echo "1"
   else
@@ -151,8 +162,13 @@ start_project_if_requested() {
   cd "$TARGET_DIR"
   chmod +x run_med_advisor.sh
   FORCE_CUDA_VALUE="$(resolve_force_cuda)"
-  echo "[step] Starting SailingMedAdvisor with FORCE_CUDA=${FORCE_CUDA_VALUE}"
-  FORCE_CUDA="$FORCE_CUDA_VALUE" ./run_med_advisor.sh
+  if [[ "$FORCE_CUDA_VALUE" == "1" ]]; then
+    echo "[step] Starting SailingMedAdvisor in GPU-preferred mode (FORCE_CUDA=1)"
+    FORCE_CUDA=1 ALLOW_CPU_FALLBACK_ON_CUDA_ERROR=1 ./run_med_advisor.sh
+  else
+    echo "[step] Starting SailingMedAdvisor in CPU-safe mode (FORCE_CUDA=0)"
+    FORCE_CUDA=0 ALLOW_CPU_FALLBACK_ON_CUDA_ERROR=1 ./run_med_advisor.sh
+  fi
 }
 
 main() {
@@ -174,11 +190,10 @@ Installed at: $TARGET_DIR
 
 To run manually:
   cd "$TARGET_DIR"
-  FORCE_CUDA=$(resolve_force_cuda) ./run_med_advisor.sh
+  FORCE_CUDA=0 ALLOW_CPU_FALLBACK_ON_CUDA_ERROR=1 ./run_med_advisor.sh
 
 EOF
   start_project_if_requested
 }
 
 main "$@"
-

@@ -129,9 +129,13 @@ const MODEL_CHOICES = [
 
 let modelAvailabilityState = {
     loaded: false,
+    hasAnyRunnableModel: true,
     hasAnyLocalModel: true,
+    runnableModels: MODEL_CHOICES.map((m) => m.value),
     availableModels: MODEL_CHOICES.map((m) => m.value),
     missingModels: [],
+    inferenceMode: 'local',
+    remoteTokenSet: false,
     message: '',
 };
 let modelSelectSignature = '';
@@ -149,7 +153,7 @@ function buildEmptyResponsePlaceholderHtml() {
  * Keep this block synchronized with implementation changes.
  */
 function hasRunnableLocalModel() {
-    return !modelAvailabilityState.loaded || !!modelAvailabilityState.hasAnyLocalModel;
+    return !modelAvailabilityState.loaded || !!modelAvailabilityState.hasAnyRunnableModel;
 }
 
 /**
@@ -165,11 +169,13 @@ function noLocalModelsMessage() {
  * Keep this block synchronized with implementation changes.
  */
 function applyModelAvailabilityToSelects() {
-    const available = Array.isArray(modelAvailabilityState.availableModels)
-        ? modelAvailabilityState.availableModels.filter((v) => !!String(v || '').trim())
-        : [];
+    const available = Array.isArray(modelAvailabilityState.runnableModels) && modelAvailabilityState.runnableModels.length
+        ? modelAvailabilityState.runnableModels.filter((v) => !!String(v || '').trim())
+        : (Array.isArray(modelAvailabilityState.availableModels)
+            ? modelAvailabilityState.availableModels.filter((v) => !!String(v || '').trim())
+            : []);
     const hasAny = hasRunnableLocalModel();
-    const signature = `${modelAvailabilityState.loaded ? '1' : '0'}|${available.sort().join('|')}|${hasAny ? '1' : '0'}`;
+    const signature = `${modelAvailabilityState.loaded ? '1' : '0'}|${available.slice().sort().join('|')}|${hasAny ? '1' : '0'}|${modelAvailabilityState.inferenceMode || 'local'}`;
     if (signature === modelSelectSignature) return;
     modelSelectSignature = signature;
 
@@ -196,7 +202,7 @@ function applyModelAvailabilityToSelects() {
         } else {
             const opt = document.createElement('option');
             opt.value = '';
-            opt.textContent = 'No local MedGemma model installed';
+            opt.textContent = 'No MedGemma model available';
             select.appendChild(opt);
             select.value = '';
         }
@@ -217,9 +223,15 @@ async function refreshModelAvailability(options = {}) {
         }
         modelAvailabilityState = {
             loaded: true,
+            hasAnyRunnableModel: !!payload.has_any_runnable_model,
             hasAnyLocalModel: !!payload.has_any_local_model,
+            runnableModels: Array.isArray(payload.runnable_models)
+                ? payload.runnable_models
+                : (Array.isArray(payload.available_models) ? payload.available_models : []),
             availableModels: Array.isArray(payload.available_models) ? payload.available_models : [],
             missingModels: Array.isArray(payload.missing_models) ? payload.missing_models : [],
+            inferenceMode: String(payload.inference_mode || 'local'),
+            remoteTokenSet: !!payload.remote_token_set,
             message: (payload.message || '').trim(),
         };
         applyModelAvailabilityToSelects();
@@ -230,7 +242,11 @@ async function refreshModelAvailability(options = {}) {
         modelAvailabilityState = {
             ...modelAvailabilityState,
             loaded: false,
+            hasAnyRunnableModel: true,
             hasAnyLocalModel: true,
+            runnableModels: MODEL_CHOICES.map((m) => m.value),
+            inferenceMode: 'local',
+            remoteTokenSet: false,
             message: '',
         };
         modelSelectSignature = '';

@@ -2387,7 +2387,9 @@ async def chat_metrics(request: Request, _=Depends(require_auth)):
 
 def _local_model_availability_payload() -> dict:
     """
-    Report local cache availability for required MedGemma models.
+    Report model availability for required MedGemma models.
+    Local installs are always tracked; runnable models may include remote-mode
+    execution when local inference is disabled and a remote token is configured.
     """
     models = []
     available_models = []
@@ -2404,19 +2406,38 @@ def _local_model_availability_payload() -> dict:
             available_models.append(model_name)
         else:
             missing_models.append(model_name)
-    has_any = bool(available_models)
-    message = (
-        "No local MedGemma models are installed. Open Settings -> Offline Readiness Check to download at least one model."
-        if not has_any
-        else ""
-    )
+    remote_mode = bool(DISABLE_LOCAL_INFERENCE)
+    remote_token_set = bool(HF_REMOTE_TOKEN)
+    runnable_models = list(available_models)
+    if remote_mode and remote_token_set:
+        # In HF/remote mode the backend can route both model choices through
+        # the remote inference endpoint without local cache files.
+        runnable_models = list(REQUIRED_MODELS)
+    has_any_local = bool(available_models)
+    has_any_runnable = bool(runnable_models)
+    message = ""
+    if not has_any_runnable:
+        if remote_mode and not remote_token_set:
+            message = (
+                "Remote inference mode is enabled but HF_REMOTE_TOKEN is missing. "
+                "Configure HF_REMOTE_TOKEN or switch back to local inference."
+            )
+        else:
+            message = (
+                "No local MedGemma models are installed. Open Settings -> Offline Readiness Check "
+                "to download at least one model."
+            )
     return {
         "models": models,
         "required_models": list(REQUIRED_MODELS),
         "available_models": available_models,
+        "runnable_models": runnable_models,
         "missing_models": missing_models,
-        "has_any_local_model": has_any,
-        "disable_submit": not has_any,
+        "has_any_local_model": has_any_local,
+        "has_any_runnable_model": has_any_runnable,
+        "disable_submit": not has_any_runnable,
+        "inference_mode": "remote" if remote_mode else "local",
+        "remote_token_set": remote_token_set,
         "message": message,
     }
 

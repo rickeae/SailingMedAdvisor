@@ -431,7 +431,11 @@ def _request_is_hf_runtime(request: Optional[Request] = None) -> bool:
     if not host:
         return False
     host_only = host.split(":", 1)[0]
-    return host_only.endswith(".hf.space") or host_only.endswith(".huggingface.co")
+    return (
+        host_only.endswith(".hf.space")
+        or host_only.endswith(".huggingface.co")
+        or host_only in {"huggingface.co", "www.huggingface.co"}
+    )
 
 
 def _use_remote_inference(request: Optional[Request] = None) -> bool:

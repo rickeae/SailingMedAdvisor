@@ -1274,7 +1274,6 @@ async function saveTriagePromptTree(options = {}) {
         if (typeof refreshPromptPreview === 'function') {
             refreshPromptPreview(true);
         }
-        console.log('[settings] triage tree saved', { reason, domainCount });
     } catch (err) {
         updateTriageTreeStatus(`Save failed: ${err.message}`, true);
     }
@@ -1467,18 +1466,14 @@ function bindSettingsDirtyTracking() {
  * - After applying stored user mode
  */
 async function loadSettingsUI() {
-    console.log('[settings] loadSettingsUI called');
     try {
         const url = '/api/data/settings';
         const res = await fetch(url, { credentials: 'same-origin' });
-        console.log('[settings] fetch response status:', res.status);
         if (!res.ok) throw new Error(`Settings load failed (${res.status})`);
         const s = await res.json();
-        console.log('[settings] loaded settings:', s);
         applySettingsToUI(s);
         loadPromptTemplates().catch(() => {});
         loadTriagePromptTree().catch(() => {});
-        console.log('[settings] settings applied to UI');
         try { localStorage.setItem('user_mode', s.user_mode || 'user'); } catch (err) { /* ignore */ }
         if (!offlineInitialized) {
             offlineInitialized = true;
@@ -1487,7 +1482,7 @@ async function loadSettingsUI() {
             });
         }
     } catch (err) {
-        console.error('[settings] load error', err);
+        console.error('Settings load error', err);
         alert(`Unable to load settings: ${err.message}`);
         const localMode = (() => {
             try { return localStorage.getItem('user_mode') || 'user'; } catch (e) { return 'user'; }
@@ -1595,7 +1590,6 @@ async function saveSettings(showAlert = true, reason = 'manual') {
         if (offlineToggle) s.offline_force_flags = !!offlineToggle.checked;
         s.vaccine_types = normalizeVaccineTypes(vaccineTypeList);
         s.pharmacy_labels = normalizePharmacyLabels(pharmacyLabelList);
-        console.log('[settings] saving', { reason, payload: s });
         updateSettingsStatus('Saving…', false);
         const headers = { 'Content-Type': 'application/json' };
         const url = '/api/data/settings';
@@ -1615,10 +1609,8 @@ async function saveSettings(showAlert = true, reason = 'manual') {
         }
         const updated = await res.json();
         if (saveSeq !== settingsSaveSequence) {
-            console.log('[settings] ignoring stale save response', { saveSeq, latest: settingsSaveSequence, reason });
             return false;
         }
-        console.log('[settings] save response', updated);
         // Preserve the locally selected user_mode to avoid flicker if the server echoes stale data
         const merged = {
             ...updated,
@@ -1640,14 +1632,13 @@ async function saveSettings(showAlert = true, reason = 'manual') {
         return true;
     } catch (err) {
         if (saveSeq !== settingsSaveSequence) {
-            console.log('[settings] ignoring stale save error', { saveSeq, latest: settingsSaveSequence, reason, error: err?.message });
             return false;
         }
         if (showAlert) {
             alert(`Unable to save settings: ${err.message}`);
         }
         updateSettingsStatus(`Save error: ${err.message}`, true);
-        console.error('[settings] save error', err);
+        console.error('Settings save error', err);
         return false;
     }
 }

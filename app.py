@@ -16,14 +16,16 @@ import torch
 import transformers
 import os
 
-# --- HF Space Diagnostic Output ---
-print("--- ENVIRONMENT DIAGNOSTICS ---")
-print(f"torch version: {torch.__version__}")
-print(f"torch cuda: {torch.version.cuda}")
-print(f"transformers version: {transformers.__version__}")
-print(f"CUDA Available: {torch.cuda.is_available()}")
-print(f"HUGGINGFACE_SPACE_ID: {os.environ.get('HUGGINGFACE_SPACE_ID')}")
-print("-------------------------------")
+# Keep startup output concise by default.
+SHOW_STARTUP_DIAGNOSTICS = os.environ.get("STARTUP_DIAGNOSTICS", "0").strip() == "1"
+if SHOW_STARTUP_DIAGNOSTICS:
+    print("--- ENVIRONMENT DIAGNOSTICS ---")
+    print(f"torch version: {torch.__version__}")
+    print(f"torch cuda: {torch.version.cuda}")
+    print(f"transformers version: {transformers.__version__}")
+    print(f"CUDA Available: {torch.cuda.is_available()}")
+    print(f"HUGGINGFACE_SPACE_ID: {os.environ.get('HUGGINGFACE_SPACE_ID')}")
+    print("-------------------------------")
 
 # Guard against unstable FP16 on GPUs that support BF16.
 if os.environ.get("FORCE_FP16", "").strip() == "1" and torch.cuda.is_available() and torch.cuda.is_bf16_supported():
@@ -205,8 +207,8 @@ def _patch_gemma3_mask_for_torch():
 
 _patch_gemma3_mask_for_torch()
 
-# Local inference debug logging (enabled by default outside HF Spaces)
-DEBUG_LOCAL_INFERENCE = os.environ.get("DEBUG_LOCAL_INFERENCE", "1" if not IS_HF_SPACE else "0") == "1"
+# Local inference debug logging (disabled by default to avoid noisy console output)
+DEBUG_LOCAL_INFERENCE = os.environ.get("DEBUG_LOCAL_INFERENCE", "0") == "1"
 _DEBUG_START = time.perf_counter()
 
 def _dbg(msg: str):
@@ -2512,20 +2514,8 @@ async def manage(cat: str, request: Request, _=Depends(require_auth)):
             except Exception:
                 form = await request.form()
                 payload = dict(form)
-            if cat == "vessel":
-                try:
-                    from db_store import DB_PATH as _DB_PATH
-                    logger.info(f"[vessel] save request payload={payload} db_path={_DB_PATH}")
-                except Exception:
-                    logger.info(f"[vessel] save request payload={payload}")
             return JSONResponse(db_op(cat, payload))
         result = db_op(cat)
-        if cat == "vessel":
-            try:
-                from db_store import DB_PATH as _DB_PATH
-                logger.info(f"[vessel] load result={result} db_path={_DB_PATH}")
-            except Exception:
-                logger.info(f"[vessel] load result={result}")
         return JSONResponse(result)
     except ValueError as e:
         try:

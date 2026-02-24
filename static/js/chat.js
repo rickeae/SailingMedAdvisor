@@ -1507,7 +1507,6 @@ async function sendChatMessage() {
 
 // Handle Enter key for submission
 document.addEventListener('DOMContentLoaded', () => {
-    console.log('[DEBUG] chat.js DOMContentLoaded');
     // Apply mode/model UI state immediately so selectors are ready before
     // deferred startup work completes.
     updateUI();
@@ -1567,11 +1566,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Debug current patient select state
     const pSelect = document.getElementById('p-select');
-    if (pSelect) {
-        console.log('[DEBUG] p-select initial options', pSelect.options.length, Array.from(pSelect.options).map(o => o.value));
-    } else {
-        console.warn('[DEBUG] p-select not found on DOMContentLoaded');
-    }
+    if (!pSelect) console.warn('Patient selector not found on startup');
 });
 
 /**

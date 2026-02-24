@@ -255,12 +255,12 @@ async function ensureMedicalChestLoaded() {
         const hasBackendData = (Array.isArray(invData) && invData.length > 0)
             || (Array.isArray(toolsData) && toolsData.length > 0);
         if (hasBackendData) {
-            console.warn('[DEBUG] Medical Chest rendered empty; retrying load once.');
+            console.warn('Medical Chest rendered empty; retrying load once.');
             await new Promise((resolve) => setTimeout(resolve, 300));
             await runMedicalChestLoadCycle();
         }
     } catch (err) {
-        console.warn('[DEBUG] Medical Chest retry probe failed:', err);
+        console.warn('Medical Chest retry probe failed:', err);
     }
 }
 
@@ -565,7 +565,6 @@ async function ensureCrewData() {
  * @param {string} n - Tab name/ID to show
  */
 async function showTab(trigger, n) {
-    console.log('[DEBUG] showTab ->', n);
     document.querySelectorAll('.content').forEach(c=>c.style.display='none');
     document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
     document.getElementById(n).style.display='flex'; 
@@ -596,7 +595,7 @@ async function showTab(trigger, n) {
                 await ensureVesselLoaded();
             }
         } catch (err) {
-            console.warn('[DEBUG] showTab loadData failed:', err);
+            console.warn('Tab load data failed:', err);
         }
         loadContext(n);
     } else if (n === 'OnboardEquipment') {
@@ -607,7 +606,7 @@ async function showTab(trigger, n) {
         try {
             await ensureCrewData();
         } catch (err) {
-            console.warn('[DEBUG] Chat crew load failed:', err);
+            console.warn('Chat crew load failed:', err);
         }
         loadContext('Chat');
         if (typeof window.syncStartPanelWithConsultationState === 'function') {
@@ -677,7 +676,6 @@ async function loadData(options = {}) {
         return loadDataInFlight;
     }
     loadDataInFlight = (async () => {
-        console.log('[DEBUG] loadData: start', opts);
         try {
             const historyResPromise = fetch('/api/data/history', { credentials: 'same-origin' })
                 .catch((err) => {
@@ -726,7 +724,6 @@ async function loadData(options = {}) {
                     data = cachedPatientsRoster;
                 } else {
                     data = await res.json();
-                    console.log('[DEBUG] loadData: patients status', res.status, 'length', Array.isArray(data) ? data.length : 'n/a');
                     if (!Array.isArray(data)) throw new Error('Unexpected patients data format');
                     cachedPatientsRoster = data;
                     populateCrewSelectFast(data);
@@ -741,7 +738,6 @@ async function loadData(options = {}) {
             }
 
             const [historyRes, settingsRes] = await Promise.all([historyResPromise, settingsResPromise]);
-            console.log('[DEBUG] loadData: status history', historyRes ? historyRes.status : 'error', 'settings', settingsRes ? settingsRes.status : 'error');
             if (!settingsRes || !settingsRes.ok) console.warn('Settings request failed:', settingsRes ? settingsRes.status : 'network');
 
             // Parse history, but never block crew rendering if it fails
@@ -769,12 +765,12 @@ async function loadData(options = {}) {
 
             // Ensure crew renderer is ready; retry briefly if the script is still loading
             if (typeof loadCrewData !== 'function') {
-                console.warn('[DEBUG] loadCrewData missing; retrying shortly…');
+                console.warn('loadCrewData missing; retrying shortly…');
                 setTimeout(() => {
                     if (typeof loadCrewData === 'function') {
                         loadCrewData(data, history, settings || {});
                     } else {
-                        console.error('[DEBUG] loadCrewData still missing after retry.');
+                        console.error('loadCrewData still missing after retry.');
                     }
                 }, 150);
                 return;
@@ -783,7 +779,7 @@ async function loadData(options = {}) {
             crewDataLoaded = true;
 
         } catch (err) {
-            console.error('[DEBUG] Failed to load crew data', err);
+            console.error('Failed to load crew data', err);
             window.CACHED_SETTINGS = window.CACHED_SETTINGS || {};
             // Gracefully clear UI to avoid JS errors
             const pSelect = document.getElementById('p-select');
@@ -866,13 +862,12 @@ window.toggleBannerControls = toggleBannerControls;
 function runCriticalStartup() {
     if (startupCriticalInitDone) return;
     startupCriticalInitDone = true;
-    console.log('[DEBUG] runCriticalStartup: start');
     migrateCollapsiblePrefs();
     // Use cached lightweight crew options immediately to avoid a blank selector
     // while network requests are still in flight.
     hydrateCrewSelectFromCache();
     startupCrewReadyPromise = ensureCrewData().catch((err) => {
-        console.warn('[DEBUG] ensureCrewData failed during critical boot:', err);
+        console.warn('ensureCrewData failed during critical boot:', err);
     });
     updateUI();
     toggleBannerControls('Chat');
@@ -888,24 +883,23 @@ function runCriticalStartup() {
 function runDeferredStartup() {
     if (startupDeferredInitDone) return;
     startupDeferredInitDone = true;
-    console.log('[DEBUG] runDeferredStartup: start');
     const preloadMedicalChest = () => {
         // Preload Medical Chest after crew dropdown hydration to prioritize chat readiness.
         if (typeof preloadPharmacy === 'function') {
-            preloadPharmacy().catch((err) => console.warn('[DEBUG] preloadPharmacy failed:', err));
+            preloadPharmacy().catch((err) => console.warn('preloadPharmacy failed:', err));
         }
         if (typeof loadWhoMedsFromServer === 'function') {
-            loadWhoMedsFromServer().catch((err) => console.warn('[DEBUG] preload WHO meds failed:', err));
+            loadWhoMedsFromServer().catch((err) => console.warn('preload WHO meds failed:', err));
         }
         if (typeof ensurePharmacyLabels === 'function') {
-            ensurePharmacyLabels().catch((err) => console.warn('[DEBUG] preload pharmacy labels failed:', err));
+            ensurePharmacyLabels().catch((err) => console.warn('preload pharmacy labels failed:', err));
         }
         if (typeof loadPharmacy === 'function') {
             loadPharmacy(); // pre-warm Medical Chest so list is ready when tab opens
         }
     };
     const crewReady = startupCrewReadyPromise || ensureCrewData().catch((err) => {
-        console.warn('[DEBUG] ensureCrewData failed during deferred boot:', err);
+        console.warn('ensureCrewData failed during deferred boot:', err);
     });
     crewReady.finally(() => {
         if (typeof window.requestIdleCallback === 'function') {
@@ -930,7 +924,7 @@ if (document.readyState === 'complete') {
 
 // Ensure loadCrewData exists before any calls (safety for race conditions)
 if (typeof window.loadCrewData !== 'function') {
-    console.error('[DEBUG] window.loadCrewData is not defined at main.js load time.');
+    console.error('window.loadCrewData is not defined at main.js load time.');
 }
 
 /**

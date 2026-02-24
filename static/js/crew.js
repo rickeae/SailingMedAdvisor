@@ -955,7 +955,6 @@ function loadCrewData(data, history = [], settings = {}) {
         console.warn('loadCrewData expected array, got', data);
         return;
     }
-    console.log('[DEBUG] loadCrewData called with', data.length, 'entries');
     historyStore = Array.isArray(history) ? history : [];
     historyStoreById = {};
     const historyMap = groupHistoryByPatient(historyStore);
@@ -991,7 +990,7 @@ function loadCrewData(data, history = [], settings = {}) {
         try {
             storedValue = localStorage.getItem(CREW_LAST_PATIENT_KEY);
         } catch (err) {
-            console.warn('[DEBUG] Unable to read last patient from storage:', err);
+            // Ignore storage read issues; fallback selection is handled below.
         }
         const options = data
             .map((p) => {
@@ -1014,10 +1013,8 @@ function loadCrewData(data, history = [], settings = {}) {
         } else {
             pSelect.value = '';
         }
-        console.log('[DEBUG] p-select options', pSelect.options.length, 'stored', storedValue, 'selected', pSelect.value);
         pSelect.onchange = (e) => {
             try { localStorage.setItem(CREW_LAST_PATIENT_KEY, e.target.value); } catch (err) { /* ignore */ }
-            console.log('[DEBUG] p-select changed to', e.target.value);
             if (typeof refreshPromptPreview === 'function') {
                 refreshPromptPreview();
             }
@@ -1230,7 +1227,6 @@ window.exportHistoryItemById = exportHistoryItemById;
 window.toggleHistoryEntryEditor = toggleHistoryEntryEditor;
 window.saveHistoryItemById = saveHistoryItemById;
 window.deleteHistoryItemById = deleteHistoryItemById;
-console.log('[DEBUG] crew.js loaded and loadCrewData attached');
 
 
 /**
@@ -1517,7 +1513,6 @@ async function autoSaveProfile(id) {
             });
             
             await fetch('/api/data/patients', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data), credentials:'same-origin'});
-            console.log(`Auto-saved profile for ${patient.firstName || ''} ${patient.lastName || ''}`);
             const pSelect = document.getElementById('p-select');
             if (pSelect) {
                 const option = pSelect.querySelector(`option[value="${id}"]`);
@@ -2049,7 +2044,6 @@ function setVesselFieldValues(payload, sourceLabel) {
     Object.entries(VESSEL_INPUT_MAP).forEach(([id, key]) => {
         const val = payload?.[key] || '';
         setVal(id, val);
-        if (sourceLabel) console.log(`[VESSEL] ${sourceLabel} set`, id, '->', val);
     });
 }
 
@@ -2115,9 +2109,8 @@ async function uploadVesselPhoto(fieldName, inputElement) {
                 body: JSON.stringify({ field: fieldName, data: event.target.result || '' }),
                 credentials: 'same-origin',
             });
-            const txt = await resp.text();
             if (!resp.ok) {
-                console.warn('[VESSEL] upload photo failed', resp.status, txt.slice(0, 200));
+                console.warn('Vessel photo upload failed', resp.status);
                 alert('Upload failed. Please try again.');
                 return;
             }
@@ -2129,7 +2122,7 @@ async function uploadVesselPhoto(fieldName, inputElement) {
             }
             await loadVesselInfo();
         } catch (err) {
-            console.warn('[VESSEL] upload photo error', err);
+            console.warn('Vessel photo upload error', err);
             alert('Upload failed. Please try again.');
         } finally {
             if (inputElement) inputElement.value = '';
@@ -2149,9 +2142,8 @@ async function deleteVesselPhoto(fieldName) {
             body: JSON.stringify({ field: fieldName, data: '' }),
             credentials: 'same-origin',
         });
-        const txt = await resp.text();
         if (!resp.ok) {
-            console.warn('[VESSEL] delete photo failed', resp.status, txt.slice(0, 200));
+            console.warn('Vessel photo delete failed', resp.status);
             alert('Delete failed. Please try again.');
             return;
         }
@@ -2163,7 +2155,7 @@ async function deleteVesselPhoto(fieldName) {
         }
         await loadVesselInfo();
     } catch (err) {
-        console.warn('[VESSEL] delete photo error', err);
+        console.warn('Vessel photo delete error', err);
         alert('Delete failed. Please try again.');
     }
 }
@@ -2189,11 +2181,8 @@ async function deleteVesselPhoto(fieldName) {
  * Called by ensureVesselLoaded() on tab navigation to Vessel & Crew section.
  */
 async function loadVesselInfo() {
-    console.log('[VESSEL] loadVesselInfo invoked');
-
     // 1) use preloaded data if present (server-rendered)
     if (window.VESSEL_PREFILL && typeof window.VESSEL_PREFILL === 'object') {
-        console.log('[VESSEL] prefill available', window.VESSEL_PREFILL);
         const p = window.VESSEL_PREFILL;
         setVesselFieldValues(p, 'prefill');
         renderAllVesselPhotoPreviews(p);
@@ -2202,14 +2191,12 @@ async function loadVesselInfo() {
     // 2) fetch latest from API (overwrites prefill)
     try {
         const resp = await fetch('/api/data/vessel', {credentials:'same-origin'});
-        const text = await resp.text();
-        console.log('[VESSEL] loadVesselInfo fetch status', resp.status, 'body', text.slice(0,200));
-        const v = text ? JSON.parse(text) : {};
+        const v = resp.ok ? await resp.json() : {};
         setVesselFieldValues(v, 'API load');
         renderAllVesselPhotoPreviews(v);
         window.VESSEL_PREFILL = v;
     } catch (err) {
-        console.warn('[VESSEL] loadVesselInfo fetch failed', err);
+        console.warn('Vessel info load failed', err);
     }
 }
 
@@ -2240,18 +2227,13 @@ async function saveVesselInfo() {
     }
     vesselSaveInFlight = true;
 
-    console.log('[VESSEL] saveVesselInfo start');
     try {
         const v = {};
         Object.entries(VESSEL_INPUT_MAP).forEach(([id, key]) => {
             v[key] = document.getElementById(id)?.value || '';
         });
-        console.log('[VESSEL] saveVesselInfo payload', v);
         const resp = await fetch('/api/data/vessel', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(v), credentials:'same-origin'});
-        const respText = await resp.text();
-        console.log('[VESSEL] saveVesselInfo resp', resp.status, respText.slice(0,200));
         if (!resp.ok) {
-            console.warn('[VESSEL] saveVesselInfo failed', resp.status, respText);
             throw new Error(`Save failed (${resp.status})`);
         }
         const statusEl = document.getElementById('vessel-save-status');
@@ -2263,14 +2245,12 @@ async function saveVesselInfo() {
         // After save, pull latest to ensure UI matches persisted state
         try {
             const latestResp = await fetch('/api/data/vessel', {credentials:'same-origin'});
-            const latestText = await latestResp.text();
-            console.log('[VESSEL] post-save fetch status', latestResp.status, 'body', latestText.slice(0,200));
-            const latest = latestText ? JSON.parse(latestText) : {};
+            const latest = latestResp.ok ? await latestResp.json() : {};
             setVesselFieldValues(latest, 'post-save');
             renderAllVesselPhotoPreviews(latest);
             window.VESSEL_PREFILL = latest;
         } catch (err) {
-            console.warn('[VESSEL] post-save refresh failed', err);
+            console.warn('Vessel post-save refresh failed', err);
         }
         // Clear user-edited flags after successful save so subsequent loads can refresh
         Object.keys(VESSEL_INPUT_MAP).forEach(id => {
@@ -2281,7 +2261,7 @@ async function saveVesselInfo() {
         vesselSaveInFlight = false;
         if (vesselSaveQueued) {
             vesselSaveQueued = false;
-            saveVesselInfo().catch(err => console.warn('[VESSEL] queued save failed', err));
+            saveVesselInfo().catch(err => console.warn('Vessel queued save failed', err));
         }
     }
 }
@@ -2305,17 +2285,13 @@ function bindVesselAutosave() {
         const el = document.getElementById(id);
         if (el && !el.dataset.vesselAutosave) {
             el.dataset.vesselAutosave = '1';
-            const logVal = (evType) => console.log('[VESSEL] field event', evType, id, 'value=', el.value);
-            el.addEventListener('input', () => { el.dataset.userEdited = '1'; logVal('input'); });
-            el.addEventListener('change', () => { el.dataset.userEdited = '1'; logVal('change'); });
+            el.addEventListener('input', () => { el.dataset.userEdited = '1'; });
+            el.addEventListener('change', () => { el.dataset.userEdited = '1'; });
             el.addEventListener('mouseleave', () => {
                 if (el.dataset.userEdited) {
-                    logVal('mouseleave');
-                    console.log('[VESSEL] mouseleave -> immediate save');
-                    saveVesselInfo().catch(err => console.warn('[VESSEL] mouseleave save failed', err));
+                    saveVesselInfo().catch(err => console.warn('Vessel mouseleave save failed', err));
                 }
             });
-            console.log('[VESSEL] autosave bound to', id);
         }
     });
 }
@@ -2329,11 +2305,10 @@ function bindVesselAutosave() {
  * Setup Process:
  * 1. Binds auto-save event listeners to all vessel fields
  * 2. Loads initial vessel data from server
- * 3. Exposes debug helpers on window object
+ * 3. Exposes manual save helper on window object
  * 
- * Debug Helpers:
- * - window.VESSEL_DEBUG = true (enables verbose logging)
- * - window.forceSaveVessel() (manual save trigger for debugging)
+ * Manual Helper:
+ * - window.forceSaveVessel() (manual save trigger)
  * 
  * Called By:
  * Tab navigation handlers when user switches to Vessel & Crew tab.
@@ -2347,12 +2322,10 @@ async function ensureVesselLoaded() {
         try {
             await loadVesselInfo();
         } catch (err) {
-            console.warn('[VESSEL] initial loadVesselInfo failed:', err);
+            console.warn('Initial vessel load failed', err);
         }
     }
-    window.VESSEL_DEBUG = true;
     window.forceSaveVessel = saveVesselInfo;
-    console.log('[VESSEL] ensureVesselLoaded complete; VESSEL_DEBUG=true');
 }
 
 // Expose for other scripts

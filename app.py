@@ -415,6 +415,30 @@ _DB_WRITE_LOCK_ENV = (os.environ.get("DB_WRITE_LOCK") or "").strip().lower()
 DB_WRITE_LOCK_FORCED = _DB_WRITE_LOCK_ENV in {"1", "true", "yes", "on"} if _DB_WRITE_LOCK_ENV else None
 
 
+def _request_is_hf_runtime(request: Optional[Request] = None) -> bool:
+    """
+    Determine whether the current request is served from Hugging Face Space runtime.
+    This is host-aware so we still behave correctly when SPACE_* env vars are absent.
+    """
+    if IS_HF_SPACE:
+        return True
+    if request is None:
+        return False
+    try:
+        host = (request.headers.get("host") or "").strip().lower()
+    except Exception:
+        host = ""
+    if not host:
+        return False
+    host_only = host.split(":", 1)[0]
+    return host_only.endswith(".hf.space") or host_only.endswith(".huggingface.co")
+
+
+def _use_remote_inference(request: Optional[Request] = None) -> bool:
+    """Centralized switch for remote inference routing and model availability gating."""
+    return bool(DISABLE_LOCAL_INFERENCE or _request_is_hf_runtime(request))
+
+
 def _is_valid_sqlite(path: Path) -> bool:
     """
      Is Valid Sqlite helper.
@@ -2508,11 +2532,11 @@ async def chat_metrics(request: Request, _=Depends(require_auth)):
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-def _local_model_availability_payload() -> dict:
+def _local_model_availability_payload(remote_mode: bool = False) -> dict:
     """
     Report local cache availability for required MedGemma models.
     """
-    if DISABLE_LOCAL_INFERENCE:
+    if remote_mode:
         remote_models_env = (os.environ.get("REMOTE_AVAILABLE_MODELS") or "").strip()
         if remote_models_env:
             remote_models = [
@@ -2578,10 +2602,10 @@ def _local_model_availability_payload() -> dict:
 
 
 @app.get("/api/models/availability")
-async def models_availability(_=Depends(require_auth)):
+async def models_availability(request: Request, _=Depends(require_auth)):
     """Expose local model availability so UI can disable submit when no models are installed."""
     try:
-        return _local_model_availability_payload()
+        return _local_model_availability_payload(remote_mode=_use_remote_inference(request))
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -3572,6 +3596,7 @@ def _generate_response(
     cfg: dict,
     prelocked: bool = False,
     trace_id: str = "",
+    remote_mode: bool = False,
 ):
     """
      Generate Response helper.
@@ -3584,7 +3609,7 @@ def _generate_response(
         + f"cfg=tk:{cfg.get('tk')} t:{cfg.get('t')} p:{cfg.get('p')} k:{cfg.get('k')} rep:{cfg.get('rep_penalty')}"
     )
     # If local inference is disabled (HF Space), fall back to HF Inference API
-    if DISABLE_LOCAL_INFERENCE:
+    if remote_mode or DISABLE_LOCAL_INFERENCE:
         if not HF_REMOTE_TOKEN:
             _dbg("generate_response: remote path selected but HF_REMOTE_TOKEN missing")
             _runtime_log(
@@ -3694,11 +3719,13 @@ async def chat(request: Request, _=Depends(require_auth)):
             patient=p_name or "",
             message_len=len(msg),
             disable_local_inference=DISABLE_LOCAL_INFERENCE,
+            request_remote_inference=_use_remote_inference(request),
             is_hf_space=IS_HF_SPACE,
         )
 
-        if not DISABLE_LOCAL_INFERENCE:
-            model_availability = _local_model_availability_payload()
+        request_remote_inference = _use_remote_inference(request)
+        if not request_remote_inference:
+            model_availability = _local_model_availability_payload(remote_mode=False)
             if not model_availability.get("has_any_local_model"):
                 _runtime_log(
                     "chat.request.rejected",
@@ -3895,9 +3922,10 @@ async def chat(request: Request, _=Depends(require_auth)):
                 mode=mode,
                 model_choice=model_choice or "",
                 disable_local_inference=DISABLE_LOCAL_INFERENCE,
+                request_remote_inference=request_remote_inference,
                 force_cpu_slow=force_cpu_slow,
             )
-            if not DISABLE_LOCAL_INFERENCE:
+            if not request_remote_inference:
                 MODEL_MUTEX.acquire()
                 model_lock_acquired = True
                 res = await asyncio.to_thread(
@@ -3908,6 +3936,7 @@ async def chat(request: Request, _=Depends(require_auth)):
                     cfg,
                     True,
                     trace_id,
+                    False,
                 )
             else:
                 res = await asyncio.to_thread(
@@ -3918,6 +3947,7 @@ async def chat(request: Request, _=Depends(require_auth)):
                     cfg,
                     False,
                     trace_id,
+                    True,
                 )
             _runtime_log(
                 "chat.inference.success",

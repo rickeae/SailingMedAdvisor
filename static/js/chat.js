@@ -132,6 +132,7 @@ let modelAvailabilityState = {
     hasAnyLocalModel: true,
     availableModels: MODEL_CHOICES.map((m) => m.value),
     missingModels: [],
+    inferenceMode: 'local',
     message: '',
 };
 let modelSelectSignature = '';
@@ -165,7 +166,6 @@ function buildEmptyResponsePlaceholderHtml() {
  * Keep this block synchronized with implementation changes.
  */
 function hasRunnableLocalModel() {
-    if (isHfHostedRuntime()) return true;
     return !modelAvailabilityState.loaded || !!modelAvailabilityState.hasAnyLocalModel;
 }
 
@@ -174,7 +174,7 @@ function hasRunnableLocalModel() {
  * Keep this block synchronized with implementation changes.
  */
 function noLocalModelsMessage() {
-    if (isHfHostedRuntime()) {
+    if (String(modelAvailabilityState.inferenceMode || '').toLowerCase() === 'remote') {
         return modelAvailabilityState.message || 'Remote MedGemma is unavailable. Check HF secrets and Runtime Debug Log (HF).';
     }
     return modelAvailabilityState.message || NO_LOCAL_MODELS_MESSAGE;
@@ -195,7 +195,7 @@ function applyModelAvailabilityToSelects() {
 
     const availableSet = new Set(available);
     let activeChoices = MODEL_CHOICES.filter((choice) => availableSet.has(choice.value));
-    if (isHfHostedRuntime() && !activeChoices.length) {
+    if (String(modelAvailabilityState.inferenceMode || '').toLowerCase() === 'remote' && !activeChoices.length) {
         activeChoices = MODEL_CHOICES.map((choice) => ({
             ...choice,
             label: String(choice.label || '').replace('(local)', '(remote)'),
@@ -222,7 +222,7 @@ function applyModelAvailabilityToSelects() {
         } else {
             const opt = document.createElement('option');
             opt.value = '';
-            opt.textContent = isHfHostedRuntime()
+            opt.textContent = String(modelAvailabilityState.inferenceMode || '').toLowerCase() === 'remote'
                 ? 'Remote MedGemma unavailable'
                 : 'No local MedGemma model installed';
             select.appendChild(opt);
@@ -264,6 +264,7 @@ async function refreshModelAvailability(options = {}) {
             hasAnyLocalModel: inferredHasRunnable || !!payload.has_any_local_model || (remoteMode && isHfHostedRuntime()),
             availableModels: Array.isArray(payload.available_models) ? payload.available_models : mergedAvailableModels,
             missingModels: Array.isArray(payload.missing_models) ? payload.missing_models : [],
+            inferenceMode: String(payload.inference_mode || (remoteMode ? 'remote' : 'local')),
             message: (payload.message || '').trim(),
         };
         applyModelAvailabilityToSelects();
@@ -275,6 +276,7 @@ async function refreshModelAvailability(options = {}) {
             ...modelAvailabilityState,
             loaded: false,
             hasAnyLocalModel: true,
+            inferenceMode: 'local',
             message: '',
         };
         modelSelectSignature = '';

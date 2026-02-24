@@ -157,14 +157,30 @@ AUTO_DOWNLOAD_MODELS = os.environ.get("AUTO_DOWNLOAD_MODELS", "1" if os.environ.
 VERIFY_MODELS_ON_START = os.environ.get("VERIFY_MODELS_ON_START", "0") == "1"
 # Background model verification/download when online (non-blocking) — default off for speed
 AUTO_VERIFY_ONLINE = os.environ.get("AUTO_VERIFY_ONLINE", "0") == "1"
-# On HF Spaces, avoid local inference; edge/offline installs keep it enabled.
+# Detect HF runtime, but do not force remote inference by default.
 IS_HF_SPACE = bool(
     os.environ.get("HUGGINGFACE_SPACE_ID")
     or os.environ.get("SPACE_ID")
     or os.environ.get("HF_SPACE")
     or os.environ.get("HUGGINGFACE_SPACE")
 )
-DISABLE_LOCAL_INFERENCE = os.environ.get("DISABLE_LOCAL_INFERENCE") == "1" or IS_HF_SPACE
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    """Parse boolean env var with tolerant true/false string handling."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return bool(default)
+    val = str(raw).strip().lower()
+    if val in {"1", "true", "yes", "on"}:
+        return True
+    if val in {"0", "false", "no", "off"}:
+        return False
+    return bool(default)
+
+# Only disable local inference when explicitly configured.
+DISABLE_LOCAL_INFERENCE = _env_bool("DISABLE_LOCAL_INFERENCE", False)
+# Optional override: force remote inference only when on HF runtime.
+FORCE_REMOTE_INFERENCE_ON_HF = _env_bool("FORCE_REMOTE_INFERENCE_ON_HF", False)
 
 # Gemma3 masking patch for torch<2.6 (required when token_type_ids are present).
 def _torch_version_ge(major: int, minor: int) -> bool:
@@ -247,6 +263,7 @@ _dbg(
         [
             f"IS_HF_SPACE={IS_HF_SPACE}",
             f"DISABLE_LOCAL_INFERENCE={DISABLE_LOCAL_INFERENCE}",
+            f"FORCE_REMOTE_INFERENCE_ON_HF={FORCE_REMOTE_INFERENCE_ON_HF}",
             f"AUTO_DOWNLOAD_MODELS={AUTO_DOWNLOAD_MODELS}",
             f"VERIFY_MODELS_ON_START={VERIFY_MODELS_ON_START}",
             f"AUTO_VERIFY_ONLINE={AUTO_VERIFY_ONLINE}",
@@ -283,7 +300,7 @@ APP_HOME = BASE_DIR
 # Use app path as a fallback HF signal so we do not incorrectly force local-model gating.
 if not IS_HF_SPACE and str(APP_HOME).startswith("/home/user/app"):
     IS_HF_SPACE = True
-if os.environ.get("DISABLE_LOCAL_INFERENCE") == "1" or IS_HF_SPACE:
+if os.environ.get("DISABLE_LOCAL_INFERENCE") == "1":
     DISABLE_LOCAL_INFERENCE = True
 # Default persistence root to a writable local data directory unless explicitly overridden
 PERSIST_ROOT = Path(os.environ.get("PERSIST_ROOT") or (BASE_DIR / "data")).resolve()
@@ -440,7 +457,12 @@ def _request_is_hf_runtime(request: Optional[Request] = None) -> bool:
 
 def _use_remote_inference(request: Optional[Request] = None) -> bool:
     """Centralized switch for remote inference routing and model availability gating."""
-    return bool(DISABLE_LOCAL_INFERENCE or _request_is_hf_runtime(request))
+    if DISABLE_LOCAL_INFERENCE:
+        return True
+    # Keep local inference as default on HF unless explicitly forced.
+    if FORCE_REMOTE_INFERENCE_ON_HF and _request_is_hf_runtime(request):
+        return True
+    return False
 
 
 def _is_valid_sqlite(path: Path) -> bool:
@@ -611,6 +633,7 @@ async def _log_db_path():
             runtime_log_path=RUNTIME_LOG_PATH.resolve(),
             is_hf_space=IS_HF_SPACE,
             disable_local_inference=DISABLE_LOCAL_INFERENCE,
+            force_remote_inference_on_hf=FORCE_REMOTE_INFERENCE_ON_HF,
             remote_timeout_s=HF_REMOTE_TIMEOUT_SECONDS,
             remote_token_set=bool(HF_REMOTE_TOKEN),
         )
@@ -957,7 +980,7 @@ def _startup_model_check():
 
 def _background_verify_models():
     """Non-blocking model cache verify/download when online."""
-    if DISABLE_LOCAL_INFERENCE or IS_HF_SPACE or not AUTO_VERIFY_ONLINE:
+    if DISABLE_LOCAL_INFERENCE or not AUTO_VERIFY_ONLINE:
         return
     # Quick check: skip if nothing is missing
     missing = [m for m in verify_required_models(download_missing=False) if not m["cached"]]

@@ -279,6 +279,12 @@ from huggingface_hub import InferenceClient
 # Use the repo directory as the application home to avoid unwritable mount points
 BASE_DIR = Path(__file__).parent.resolve()
 APP_HOME = BASE_DIR
+# HF Spaces can occasionally omit the usual SPACE_* envs in some dev/runtime contexts.
+# Use app path as a fallback HF signal so we do not incorrectly force local-model gating.
+if not IS_HF_SPACE and str(APP_HOME).startswith("/home/user/app"):
+    IS_HF_SPACE = True
+if os.environ.get("DISABLE_LOCAL_INFERENCE") == "1" or IS_HF_SPACE:
+    DISABLE_LOCAL_INFERENCE = True
 # Default persistence root to a writable local data directory unless explicitly overridden
 PERSIST_ROOT = Path(os.environ.get("PERSIST_ROOT") or (BASE_DIR / "data")).resolve()
 

@@ -44,8 +44,18 @@ export USE_SPLASH_PURPLE_TABBAR="${USE_SPLASH_PURPLE_TABBAR:-0}"
 # Legacy env retained for compatibility with any existing checks.
 export USE_FLASH_ATTENTION="${USE_FLASH_ATTENTION:-$USE_FAST_SDP}"
 export TORCH_USE_CUDA_DSA=0
-# Force CUDA placement when available
-export FORCE_CUDA="${FORCE_CUDA:-1}"
+# Choose a safe default for mixed hardware:
+# - If user explicitly sets FORCE_CUDA, honor it.
+# - If unset, prefer GPU only when NVIDIA tooling is present.
+if [ -z "${FORCE_CUDA+x}" ]; then
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        export FORCE_CUDA="1"
+    else
+        export FORCE_CUDA="0"
+    fi
+else
+    export FORCE_CUDA
+fi
 # Keep GPU-only behavior by default; set to 1 only if we explicitly want CPU fallback on CUDA runtime faults.
 export ALLOW_CPU_FALLBACK_ON_CUDA_ERROR="${ALLOW_CPU_FALLBACK_ON_CUDA_ERROR:-0}"
 # Keep global cap high for 4B but reserve headroom for 27B KV cache.

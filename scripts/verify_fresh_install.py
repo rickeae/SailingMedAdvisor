@@ -45,7 +45,6 @@ REQUIRED_IMPORTS = [
     "safetensors",
     "huggingface_hub",
     "itsdangerous",
-    "dotenv",
 ]
 
 REQUIRED_FILES = [
@@ -309,4 +308,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

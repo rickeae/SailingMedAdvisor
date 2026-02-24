@@ -2385,6 +2385,51 @@ async def chat_metrics(request: Request, _=Depends(require_auth)):
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+def _local_model_availability_payload() -> dict:
+    """
+    Report local cache availability for required MedGemma models.
+    """
+    models = []
+    available_models = []
+    missing_models = []
+    for model_name in REQUIRED_MODELS:
+        cached, err = model_cache_status(model_name)
+        row = {
+            "model": model_name,
+            "installed": bool(cached),
+            "error": "" if cached else (err or "model cache missing"),
+        }
+        models.append(row)
+        if row["installed"]:
+            available_models.append(model_name)
+        else:
+            missing_models.append(model_name)
+    has_any = bool(available_models)
+    message = (
+        "No local MedGemma models are installed. Open Settings -> Offline Readiness Check to download at least one model."
+        if not has_any
+        else ""
+    )
+    return {
+        "models": models,
+        "required_models": list(REQUIRED_MODELS),
+        "available_models": available_models,
+        "missing_models": missing_models,
+        "has_any_local_model": has_any,
+        "disable_submit": not has_any,
+        "message": message,
+    }
+
+
+@app.get("/api/models/availability")
+async def models_availability(_=Depends(require_auth)):
+    """Expose local model availability so UI can disable submit when no models are installed."""
+    try:
+        return _local_model_availability_payload()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 @app.get("/api/chat/queue")
 async def chat_queue_status(request: Request, _=Depends(require_auth)):
     """Return the current in-memory inference queue state."""
@@ -3357,6 +3402,38 @@ async def chat(request: Request, _=Depends(require_auth)):
         is_start = session_action == "start" or not session_id
         if not session_id:
             session_id = f"session-{uuid.uuid4().hex}"
+
+        if not DISABLE_LOCAL_INFERENCE:
+            model_availability = _local_model_availability_payload()
+            if not model_availability.get("has_any_local_model"):
+                return JSONResponse(
+                    {
+                        "error": (
+                            model_availability.get("message")
+                            or "No local MedGemma models are installed."
+                        ),
+                        "models_unavailable": True,
+                        "model_availability": model_availability,
+                    },
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+            available_models = model_availability.get("available_models") or []
+            if available_models:
+                chosen_model = (model_choice or "").strip()
+                if not chosen_model:
+                    model_choice = available_models[0]
+                elif chosen_model not in available_models:
+                    return JSONResponse(
+                        {
+                            "error": (
+                                f"Selected model is not installed locally: {chosen_model}. "
+                                "Choose an installed model or download missing models in Settings."
+                            ),
+                            "models_unavailable": True,
+                            "model_availability": model_availability,
+                        },
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                    )
         _dbg(
             "chat request: "
             + f"mode={mode} model_choice={model_choice} force_28b={force_cpu_slow} "

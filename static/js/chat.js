@@ -121,6 +121,20 @@ const PROMPT_PREVIEW_CONTENT_KEY = 'sailingmed:promptPreviewContent';
 const CHAT_STATE_KEY = 'sailingmed:chatState';
 const SKIP_LAST_CHAT_KEY = 'sailingmed:skipLastChat';
 const EMPTY_RESPONSE_PLACEHOLDER_TEXT = 'No consultation response yet. Expand "Start New Triage Consultation" above and submit to generate guidance.';
+const NO_LOCAL_MODELS_MESSAGE = 'No local MedGemma models are installed. Open Settings -> Offline Readiness Check to download at least one model.';
+const MODEL_CHOICES = [
+    { value: 'google/medgemma-1.5-4b-it', label: 'medgemma-1.5-4b-it (local)' },
+    { value: 'google/medgemma-27b-text-it', label: 'medgemma-27b-text-it (local)' },
+];
+
+let modelAvailabilityState = {
+    loaded: false,
+    hasAnyLocalModel: true,
+    availableModels: MODEL_CHOICES.map((m) => m.value),
+    missingModels: [],
+    message: '',
+};
+let modelSelectSignature = '';
 
 /**
  * buildEmptyResponsePlaceholderHtml: function-level behavior note for maintainers.
@@ -128,6 +142,105 @@ const EMPTY_RESPONSE_PLACEHOLDER_TEXT = 'No consultation response yet. Expand "S
  */
 function buildEmptyResponsePlaceholderHtml() {
     return `<div class="chat-empty-state">${escapeHtml(EMPTY_RESPONSE_PLACEHOLDER_TEXT)}</div>`;
+}
+
+/**
+ * hasRunnableLocalModel: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function hasRunnableLocalModel() {
+    return !modelAvailabilityState.loaded || !!modelAvailabilityState.hasAnyLocalModel;
+}
+
+/**
+ * noLocalModelsMessage: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function noLocalModelsMessage() {
+    return modelAvailabilityState.message || NO_LOCAL_MODELS_MESSAGE;
+}
+
+/**
+ * applyModelAvailabilityToSelects: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+function applyModelAvailabilityToSelects() {
+    const available = Array.isArray(modelAvailabilityState.availableModels)
+        ? modelAvailabilityState.availableModels.filter((v) => !!String(v || '').trim())
+        : [];
+    const hasAny = hasRunnableLocalModel();
+    const signature = `${modelAvailabilityState.loaded ? '1' : '0'}|${available.sort().join('|')}|${hasAny ? '1' : '0'}`;
+    if (signature === modelSelectSignature) return;
+    modelSelectSignature = signature;
+
+    const availableSet = new Set(available);
+    const activeChoices = MODEL_CHOICES.filter((choice) => availableSet.has(choice.value));
+    const selectIds = ['model-select', 'chat-model-select'];
+    selectIds.forEach((selectId) => {
+        const select = document.getElementById(selectId);
+        if (!select) return;
+        const previous = select.value || '';
+        select.innerHTML = '';
+        if (hasAny && activeChoices.length) {
+            activeChoices.forEach((choice) => {
+                const opt = document.createElement('option');
+                opt.value = choice.value;
+                opt.textContent = choice.label;
+                select.appendChild(opt);
+            });
+            if (activeChoices.some((choice) => choice.value === previous)) {
+                select.value = previous;
+            } else {
+                select.value = activeChoices[0].value;
+            }
+        } else {
+            const opt = document.createElement('option');
+            opt.value = '';
+            opt.textContent = 'No local MedGemma model installed';
+            select.appendChild(opt);
+            select.value = '';
+        }
+    });
+}
+
+/**
+ * refreshModelAvailability: function-level behavior note for maintainers.
+ * Keep this block synchronized with implementation changes.
+ */
+async function refreshModelAvailability(options = {}) {
+    const opts = (options && typeof options === 'object') ? options : {};
+    try {
+        const res = await fetch('/api/models/availability', { credentials: 'same-origin' });
+        const payload = await res.json();
+        if (!res.ok || payload.error) {
+            throw new Error(payload.error || `Status ${res.status}`);
+        }
+        modelAvailabilityState = {
+            loaded: true,
+            hasAnyLocalModel: !!payload.has_any_local_model,
+            availableModels: Array.isArray(payload.available_models) ? payload.available_models : [],
+            missingModels: Array.isArray(payload.missing_models) ? payload.missing_models : [],
+            message: (payload.message || '').trim(),
+        };
+        applyModelAvailabilityToSelects();
+        updateUI();
+        return modelAvailabilityState;
+    } catch (err) {
+        // Fail open on transport/API issues: keep UI usable and avoid false disable.
+        modelAvailabilityState = {
+            ...modelAvailabilityState,
+            loaded: false,
+            hasAnyLocalModel: true,
+            message: '',
+        };
+        modelSelectSignature = '';
+        applyModelAvailabilityToSelects();
+        updateUI();
+        if (!opts.silent) {
+            console.warn('[chat] unable to load model availability', err);
+        }
+        return modelAvailabilityState;
+    }
 }
 
 // Model performance tracking: { model: {count, total_ms, avg_ms} }
@@ -896,8 +1009,15 @@ function updateUI() {
     const msg = document.getElementById('msg');
     const runBtn = document.getElementById('run-btn');
     const modelSelect = document.getElementById('model-select');
+    const sendBtn = document.getElementById('chat-send-btn');
+    const chatModelSelect = document.getElementById('chat-model-select');
+    const startModelWarning = document.getElementById('model-availability-warning');
+    const chatModelWarning = document.getElementById('chat-model-availability-warning');
     const promptRefreshInline = document.getElementById('prompt-refresh-inline');
     const promptHeader = document.getElementById('prompt-preview-header');
+    const localModelsAvailable = hasRunnableLocalModel();
+    const noModels = !localModelsAvailable;
+    const noModelsMsg = noLocalModelsMessage();
     
     // Remove both classes first
     banner.classList.remove('inquiry-mode', 'private-mode', 'no-privacy');
@@ -948,6 +1068,7 @@ function updateUI() {
             ? 'Submit to Start Triage Consultation'
             : 'Submit to Start Inquiry Consultation';
         runBtn.style.background = currentMode === 'triage' ? 'var(--triage)' : 'var(--inquiry)';
+        runBtn.title = noModels ? noModelsMsg : '';
     }
     if (promptRefreshInline) {
         const isExpanded = promptHeader && promptHeader.getAttribute('aria-expanded') === 'true';
@@ -960,13 +1081,46 @@ function updateUI() {
         const isExpanded = promptHeader && promptHeader.getAttribute('aria-expanded') === 'true';
         promptRefreshInline.style.display = isExpanded ? 'flex' : 'none';
     }
-    // Default model to 4B on load
-    if (modelSelect && !modelSelect.value) {
-        modelSelect.value = 'google/medgemma-1.5-4b-it';
+    applyModelAvailabilityToSelects();
+
+    // Default model to the first available option on load.
+    if (modelSelect && !modelSelect.value && modelSelect.options.length) {
+        modelSelect.value = modelSelect.options[0].value;
     }
     syncModelSelects();
     updateChatComposerVisibility();
     setStartFormDisabled(isSessionActive());
+
+    if (modelSelect) {
+        const sessionLocked = isSessionActive();
+        if (noModels) {
+            modelSelect.setAttribute('disabled', 'disabled');
+        } else if (!sessionLocked) {
+            modelSelect.removeAttribute('disabled');
+        }
+    }
+    if (chatModelSelect) {
+        if (noModels) {
+            chatModelSelect.setAttribute('disabled', 'disabled');
+        } else {
+            chatModelSelect.removeAttribute('disabled');
+        }
+    }
+    if (runBtn) {
+        runBtn.disabled = isSessionActive() || noModels;
+    }
+    if (sendBtn) {
+        sendBtn.disabled = !isSessionActive() || noModels;
+        sendBtn.title = noModels ? noModelsMsg : '';
+    }
+    if (startModelWarning) {
+        startModelWarning.textContent = noModelsMsg;
+        startModelWarning.style.display = noModels ? 'block' : 'none';
+    }
+    if (chatModelWarning) {
+        chatModelWarning.textContent = noModelsMsg;
+        chatModelWarning.style.display = noModels ? 'block' : 'none';
+    }
 }
 
 /**
@@ -1264,6 +1418,11 @@ function buildSessionMetaPayload({ initialQuery, patientId, patientName, mode })
 async function submitChatMessage({ message, isStart, force28b = false, queueWait = false }) {
     const txt = (message || '').trim();
     if (!txt || isProcessing) return;
+    if (!hasRunnableLocalModel()) {
+        alert(noLocalModelsMessage());
+        updateUI();
+        return;
+    }
     isProcessing = true;
     if (typeof window.flushSettingsBeforeChat === 'function') {
         try {
@@ -1409,8 +1568,7 @@ async function submitChatMessage({ message, isStart, force28b = false, queueWait
                 );
                 if (waitChoice) {
                     isProcessing = false;
-                    document.getElementById('run-btn').disabled = false;
-                    if (sendBtn) sendBtn.disabled = false;
+                    updateUI();
                     return submitChatMessage({ message: txt, isStart, force28b, queueWait: true });
                 }
                 if (display && normalizeMode(currentMode) === mode) {
@@ -1430,8 +1588,7 @@ async function submitChatMessage({ message, isStart, force28b = false, queueWait
             const ok = confirm(res.error || 'The 28B model on CPU can take an hour or more. Continue?');
             if (ok) {
                 isProcessing = false;
-                document.getElementById('run-btn').disabled = false;
-                if (sendBtn) sendBtn.disabled = false;
+                updateUI();
                 return submitChatMessage({ message: txt, isStart, force28b: true });
             }
             if (display && normalizeMode(currentMode) === mode) {
@@ -1497,12 +1654,16 @@ async function submitChatMessage({ message, isStart, force28b = false, queueWait
         clearBlockerCountdown();
         const blocker = document.getElementById('chat-blocker');
         if (blocker) blocker.classList.remove('active');
-        document.getElementById('run-btn').disabled = false;
-        if (sendBtn) sendBtn.disabled = false;
+        updateUI();
     }
 }
 
 async function runChat(promptText = null, force28b = false) {
+    if (!hasRunnableLocalModel()) {
+        alert(noLocalModelsMessage());
+        updateUI();
+        return;
+    }
     if (isSessionActive(currentMode)) {
         alert('Expand "Start New Consultation" to begin a new consultation.');
         return;
@@ -1526,6 +1687,11 @@ async function runChat(promptText = null, force28b = false) {
 }
 
 async function sendChatMessage() {
+    if (!hasRunnableLocalModel()) {
+        alert(noLocalModelsMessage());
+        updateUI();
+        return;
+    }
     if (!isSessionActive(currentMode)) {
         alert('Start a new consultation first.');
         return;
@@ -1541,6 +1707,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Apply mode/model UI state immediately so selectors are ready before
     // deferred startup work completes.
     updateUI();
+    refreshModelAvailability({ silent: true }).catch(() => {});
     syncModelSelects();
     setupPromptInjectionPanel();
     loadTriageDecisionTree()
@@ -1984,6 +2151,7 @@ window.handleStartPanelToggle = handleStartPanelToggle;
 window.syncStartPanelWithConsultationState = syncStartPanelWithConsultationState;
 window.renderTranscript = renderTranscript;
 window.resetConsultationUiForDemo = resetConsultationUiForDemo;
+window.refreshModelAvailability = refreshModelAvailability;
 
 /**
  * syncPromptPreviewForMode: function-level behavior note for maintainers.

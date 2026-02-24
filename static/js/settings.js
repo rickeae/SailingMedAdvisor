@@ -2495,6 +2495,9 @@ async function runOfflineCheck(downloadMissing = false) {
         renderOfflineStatus(message);
         updateOfflineFlagButton();
         updateSettingsMeta(window.CACHED_SETTINGS || {});
+        if (typeof window.refreshModelAvailability === 'function') {
+            window.refreshModelAvailability({ silent: true }).catch(() => {});
+        }
     } catch (err) {
         renderOfflineStatus(`Error: ${err.message}. If missing models persist, stay online and click "Download missing models".`, true);
     } finally {
@@ -2542,6 +2545,9 @@ async function toggleOfflineFlags(forceEnable) {
         renderOfflineStatus(formatOfflineStatus(data));
         updateOfflineFlagButton();
         updateSettingsMeta(window.CACHED_SETTINGS || {});
+        if (typeof window.refreshModelAvailability === 'function') {
+            window.refreshModelAvailability({ silent: true }).catch(() => {});
+        }
     } catch (err) {
         renderOfflineStatus(`Unable to set offline flags: ${err.message}`, true);
     }

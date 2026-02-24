@@ -493,6 +493,17 @@ MODEL_BUSY_META = {
     "patient": "",
     "started_at": "",
 }
+try:
+    CHAT_QUEUE_MAX = int(os.environ.get("CHAT_QUEUE_MAX", "6"))
+except Exception:
+    CHAT_QUEUE_MAX = 6
+if CHAT_QUEUE_MAX < 1:
+    CHAT_QUEUE_MAX = 1
+CHAT_QUEUE_LOCK = threading.Lock()
+CHAT_QUEUE_COND = threading.Condition(CHAT_QUEUE_LOCK)
+CHAT_QUEUE_NEXT_TICKET = 1
+CHAT_QUEUE_SERVING_TICKET = 1
+CHAT_QUEUE_ENTRIES = {}
 
 
 def _set_model_busy_meta(model_choice: str, mode: str, session_id: str, patient: str) -> None:
@@ -539,6 +550,112 @@ def _get_model_busy_meta() -> dict:
     """
     with MODEL_BUSY_META_LOCK:
         return dict(MODEL_BUSY_META)
+
+
+def _chat_queue_snapshot_locked() -> dict:
+    """
+    Return queue state while holding CHAT_QUEUE_LOCK.
+    """
+    ordered_tickets = sorted(CHAT_QUEUE_ENTRIES.keys())
+    active_ticket = CHAT_QUEUE_SERVING_TICKET if CHAT_QUEUE_SERVING_TICKET in CHAT_QUEUE_ENTRIES else None
+    waiting_count = max(len(ordered_tickets) - (1 if active_ticket is not None else 0), 0)
+    active_entry = CHAT_QUEUE_ENTRIES.get(active_ticket) if active_ticket is not None else None
+    active = None
+    if isinstance(active_entry, dict):
+        active = {
+            "ticket": active_ticket,
+            "model_choice": active_entry.get("model_choice") or "",
+            "mode": active_entry.get("mode") or "",
+            "session_id": active_entry.get("session_id") or "",
+            "patient": active_entry.get("patient") or "",
+            "started_at": active_entry.get("started_at") or "",
+            "queued_at": active_entry.get("queued_at") or "",
+        }
+    return {
+        "max": CHAT_QUEUE_MAX,
+        "depth": len(ordered_tickets),
+        "waiting": waiting_count,
+        "next_ticket": CHAT_QUEUE_NEXT_TICKET,
+        "serving_ticket": CHAT_QUEUE_SERVING_TICKET,
+        "active": active,
+    }
+
+
+def _chat_queue_snapshot() -> dict:
+    """
+    Return queue state for API/debug visibility.
+    """
+    with CHAT_QUEUE_LOCK:
+        return _chat_queue_snapshot_locked()
+
+
+def _chat_queue_enqueue(model_choice: str, mode: str, session_id: str, patient: str):
+    """
+    Register a chat request in the global inference queue.
+    """
+    global CHAT_QUEUE_NEXT_TICKET
+    with CHAT_QUEUE_COND:
+        if len(CHAT_QUEUE_ENTRIES) >= CHAT_QUEUE_MAX:
+            return None, _chat_queue_snapshot_locked()
+        ticket = CHAT_QUEUE_NEXT_TICKET
+        CHAT_QUEUE_NEXT_TICKET += 1
+        CHAT_QUEUE_ENTRIES[ticket] = {
+            "ticket": ticket,
+            "model_choice": (model_choice or "").strip(),
+            "mode": (mode or "").strip(),
+            "session_id": (session_id or "").strip(),
+            "patient": (patient or "").strip(),
+            "queued_at": datetime.utcnow().isoformat(),
+            "started_at": "",
+        }
+        ordered_tickets = sorted(CHAT_QUEUE_ENTRIES.keys())
+        try:
+            position = ordered_tickets.index(ticket) + 1
+        except ValueError:
+            position = len(ordered_tickets)
+        snapshot = _chat_queue_snapshot_locked()
+        snapshot["position"] = position
+        snapshot["ticket"] = ticket
+        return ticket, snapshot
+
+
+def _chat_queue_wait_turn(ticket: int) -> int:
+    """
+    Block until a queued request reaches the active inference slot.
+    Returns the queue wait duration in seconds.
+    """
+    with CHAT_QUEUE_COND:
+        while True:
+            if ticket not in CHAT_QUEUE_ENTRIES:
+                raise RuntimeError("CHAT_QUEUE_TICKET_MISSING")
+            if ticket == CHAT_QUEUE_SERVING_TICKET:
+                now = datetime.utcnow()
+                entry = CHAT_QUEUE_ENTRIES.get(ticket) or {}
+                entry["started_at"] = now.isoformat()
+                CHAT_QUEUE_ENTRIES[ticket] = entry
+                queued_at_iso = entry.get("queued_at") or ""
+                wait_seconds = 0
+                if queued_at_iso:
+                    try:
+                        wait_seconds = max(int((now - datetime.fromisoformat(queued_at_iso)).total_seconds()), 0)
+                    except Exception:
+                        wait_seconds = 0
+                return wait_seconds
+            CHAT_QUEUE_COND.wait(timeout=0.5)
+
+
+def _chat_queue_release(ticket: int) -> None:
+    """
+    Advance the queue after a chat completes (success or failure).
+    """
+    global CHAT_QUEUE_SERVING_TICKET
+    with CHAT_QUEUE_COND:
+        CHAT_QUEUE_ENTRIES.pop(ticket, None)
+        if ticket == CHAT_QUEUE_SERVING_TICKET:
+            CHAT_QUEUE_SERVING_TICKET += 1
+        while CHAT_QUEUE_SERVING_TICKET < CHAT_QUEUE_NEXT_TICKET and CHAT_QUEUE_SERVING_TICKET not in CHAT_QUEUE_ENTRIES:
+            CHAT_QUEUE_SERVING_TICKET += 1
+        CHAT_QUEUE_COND.notify_all()
 # Configure SDP backends safely.
 # Keep math SDP enabled as a guaranteed fallback to avoid:
 # "No available kernel. Aborting execution."
@@ -2268,6 +2385,15 @@ async def chat_metrics(request: Request, _=Depends(require_auth)):
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+@app.get("/api/chat/queue")
+async def chat_queue_status(request: Request, _=Depends(require_auth)):
+    """Return the current in-memory inference queue state."""
+    try:
+        return {"queue": _chat_queue_snapshot()}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 @app.get("/api/triage/options")
 async def triage_options(_=Depends(require_auth)):
     """Expose dropdown options for triage form (table-backed)."""
@@ -3280,42 +3406,31 @@ async def chat(request: Request, _=Depends(require_auth)):
             logger.exception("Unable to persist last_prompt_verbatim")
 
         model_lock_acquired = False
-        if not DISABLE_LOCAL_INFERENCE:
-            model_lock_acquired = MODEL_MUTEX.acquire(blocking=False)
-            if not model_lock_acquired:
-                busy_meta = _get_model_busy_meta()
-                busy_started_at = busy_meta.get("started_at") or ""
-                busy_elapsed_seconds = None
-                if busy_started_at:
-                    try:
-                        busy_elapsed_seconds = max(
-                            int((datetime.utcnow() - datetime.fromisoformat(busy_started_at)).total_seconds()),
-                            0,
-                        )
-                    except Exception:
-                        busy_elapsed_seconds = None
-                active_model = (busy_meta.get("model_choice") or "").strip() or "another consultation"
-                elapsed_text = (
-                    f" (elapsed: {busy_elapsed_seconds}s)"
-                    if isinstance(busy_elapsed_seconds, int)
-                    else ""
-                )
-                return JSONResponse(
-                    {
-                        "error": (
-                            f"GPU is currently busy running {active_model}{elapsed_text}. "
-                            "Please wait for that run to finish, then submit again."
-                        ),
-                        "gpu_busy": True,
-                        "busy": busy_meta,
-                        "busy_elapsed_seconds": busy_elapsed_seconds,
-                    },
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                )
-            _set_model_busy_meta(model_choice or "", mode, session_id, p_name)
+        busy_meta_set = False
+        queue_ticket = None
+        queue_wait_seconds = 0
+        queue_snapshot = {}
+        queue_ticket, queue_snapshot = _chat_queue_enqueue(model_choice or "", mode, session_id, p_name)
+        if queue_ticket is None:
+            return JSONResponse(
+                {
+                    "error": (
+                        "Inference queue is full. "
+                        "Please wait for active consultations to finish and submit again."
+                    ),
+                    "queue_full": True,
+                    "queue": queue_snapshot,
+                },
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+        queue_wait_seconds = await asyncio.to_thread(_chat_queue_wait_turn, queue_ticket)
+        _set_model_busy_meta(model_choice or "", mode, session_id, p_name)
+        busy_meta_set = True
 
         try:
-            if model_lock_acquired:
+            if not DISABLE_LOCAL_INFERENCE:
+                MODEL_MUTEX.acquire()
+                model_lock_acquired = True
                 res = await asyncio.to_thread(
                     _generate_response,
                     model_choice,
@@ -3328,6 +3443,11 @@ async def chat(request: Request, _=Depends(require_auth)):
                 res = await asyncio.to_thread(_generate_response, model_choice, force_cpu_slow, prompt, cfg)
         except RuntimeError as e:
             _dbg(f"chat runtime error: {e}")
+            if str(e) == "CHAT_QUEUE_TICKET_MISSING":
+                return JSONResponse(
+                    {"error": "Queue ticket was lost. Please submit again."},
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
             if str(e) == "SLOW_28B_CPU":
                 return JSONResponse(
                     {
@@ -3357,10 +3477,16 @@ async def chat(request: Request, _=Depends(require_auth)):
             return JSONResponse({"error": str(e)}, status_code=status.HTTP_400_BAD_REQUEST)
         finally:
             if model_lock_acquired:
-                _clear_model_busy_meta()
                 try:
                     MODEL_MUTEX.release()
                 except RuntimeError:
+                    pass
+            if busy_meta_set:
+                _clear_model_busy_meta()
+            if queue_ticket is not None:
+                try:
+                    _chat_queue_release(queue_ticket)
+                except Exception:
                     pass
         elapsed_ms = max(int((datetime.now() - start_time).total_seconds() * 1000), 0)
 
@@ -3437,6 +3563,9 @@ async def chat(request: Request, _=Depends(require_auth)):
                 "response": res,
                 "model": models["active_name"],
                 "duration_ms": elapsed_ms,
+                "queue_wait_seconds": queue_wait_seconds,
+                "queue_ticket": queue_ticket,
+                "queue_position_on_submit": queue_snapshot.get("position"),
                 "model_metrics": metrics,
                 "triage_pathway_supplemented": bool(prompt_meta.get("triage_pathway_supplemented")),
                 "triage_pathway_status": prompt_meta.get("triage_pathway_status"),

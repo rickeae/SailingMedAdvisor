@@ -2567,9 +2567,13 @@ def _local_model_availability_payload(remote_mode: bool = False) -> dict:
             "models": models,
             "required_models": remote_models,
             "available_models": remote_models if has_remote else [],
+            "runnable_models": remote_models if has_remote else [],
             "missing_models": [] if has_remote else remote_models,
             "has_any_local_model": has_remote,
+            "has_any_runnable_model": has_remote,
             "disable_submit": not has_remote,
+            "inference_mode": "remote",
+            "remote_token_set": has_remote,
             "message": message,
         }
 
@@ -3628,27 +3632,96 @@ def _generate_response(
         model_name = model_choice or REMOTE_MODEL
         _dbg(f"generate_response: remote inference model={model_name}")
         call_started = time.perf_counter()
+        requested_max_new_tokens = int(cfg.get("tk") or 1024)
+        requested_temperature = float(cfg.get("t") or 0.2)
+        requested_top_p = float(cfg.get("p") or 0.9)
+        requested_top_k = cfg.get("k")
         _runtime_log(
             "inference.remote.start",
             trace_id=trace_id,
             model=model_name,
             prompt_len=len(prompt or ""),
-            max_new_tokens=cfg.get("tk"),
-            temperature=cfg.get("t"),
-            top_p=cfg.get("p"),
-            top_k=cfg.get("k"),
+            max_new_tokens=requested_max_new_tokens,
+            temperature=requested_temperature,
+            top_p=requested_top_p,
+            top_k=requested_top_k,
             timeout_s=HF_REMOTE_TIMEOUT_SECONDS,
         )
-        try:
-            resp = client.text_generation(
-                prompt,
+        out = ""
+        attempt_errors = []
+        attempt_specs = [
+            {
+                "label": "primary",
+                "max_new_tokens": max(1, requested_max_new_tokens),
+                "temperature": requested_temperature,
+                "top_p": requested_top_p,
+                "top_k": requested_top_k,
+            },
+            {
+                # Fallback for providers that reject some sampler combos or very high token budgets.
+                "label": "fallback",
+                "max_new_tokens": max(1, min(requested_max_new_tokens, 2048)),
+                "temperature": max(requested_temperature, 0.1),
+                "top_p": requested_top_p,
+                "top_k": None,
+            },
+        ]
+        for idx, spec in enumerate(attempt_specs, start=1):
+            kwargs = {
+                "model": model_name,
+                "max_new_tokens": int(spec["max_new_tokens"]),
+                "temperature": float(spec["temperature"]),
+                "top_p": float(spec["top_p"]),
+                "details": False,
+                "stream": False,
+            }
+            top_k_val = spec.get("top_k")
+            if top_k_val is not None and int(top_k_val) > 0:
+                kwargs["top_k"] = int(top_k_val)
+            _runtime_log(
+                "inference.remote.attempt",
+                trace_id=trace_id,
                 model=model_name,
-                max_new_tokens=cfg["tk"],
-                temperature=cfg["t"],
-                top_p=cfg["p"],
-                top_k=cfg.get("k"),
+                attempt=idx,
+                label=spec.get("label", f"attempt_{idx}"),
+                max_new_tokens=kwargs["max_new_tokens"],
+                temperature=kwargs["temperature"],
+                top_p=kwargs["top_p"],
+                top_k=kwargs.get("top_k"),
             )
-        except Exception as exc:
+            try:
+                resp = client.text_generation(prompt, **kwargs)
+                if isinstance(resp, str):
+                    out = resp.strip()
+                elif hasattr(resp, "generated_text"):
+                    out = str(getattr(resp, "generated_text") or "").strip()
+                else:
+                    out = str(resp or "").strip()
+                if out:
+                    break
+                raise RuntimeError("Remote inference returned an empty response body.")
+            except Exception as exc:
+                exc_text = str(exc).strip()
+                exc_repr = repr(exc)
+                if isinstance(exc, StopIteration) and not exc_text:
+                    exc_text = "Remote provider returned no tokens (StopIteration)."
+                attempt_errors.append(
+                    f"{spec.get('label', f'attempt_{idx}')}: {type(exc).__name__}: {exc_text or exc_repr}"
+                )
+                _runtime_log(
+                    "inference.remote.attempt_error",
+                    level=logging.ERROR,
+                    trace_id=trace_id,
+                    model=model_name,
+                    attempt=idx,
+                    label=spec.get("label", f"attempt_{idx}"),
+                    error_type=type(exc).__name__,
+                    error=exc_text or exc_repr,
+                    traceback=traceback.format_exc(limit=6),
+                )
+                continue
+
+        if not out:
             elapsed_ms = int((time.perf_counter() - call_started) * 1000)
             _runtime_log(
                 "inference.remote.error",
@@ -3656,11 +3729,17 @@ def _generate_response(
                 trace_id=trace_id,
                 model=model_name,
                 elapsed_ms=elapsed_ms,
-                error_type=type(exc).__name__,
-                error=str(exc),
+                error_type="RuntimeError",
+                error="All remote inference attempts failed",
+                attempts=" || ".join(attempt_errors) if attempt_errors else "",
             )
-            raise RuntimeError(f"REMOTE_INFERENCE_FAILED: {exc}") from exc
-        out = resp.strip()
+            if attempt_errors:
+                raise RuntimeError(
+                    "REMOTE_INFERENCE_FAILED: all attempts failed. "
+                    + " | ".join(attempt_errors)
+                )
+            raise RuntimeError("REMOTE_INFERENCE_FAILED: all attempts failed.")
+
         elapsed_ms = int((time.perf_counter() - call_started) * 1000)
         _runtime_log(
             "inference.remote.success",

@@ -252,10 +252,17 @@ async function refreshModelAvailability(options = {}) {
             : [];
         const mergedAvailableModels = availableFromPayload.length ? availableFromPayload : availableFromRows;
         const remoteMode = String(payload.mode || '').toLowerCase() === 'remote';
+        const payloadDisableSubmit = (typeof payload.disable_submit === 'boolean') ? payload.disable_submit : null;
+        const payloadHasRunnable = (typeof payload.has_any_runnable_model === 'boolean')
+            ? payload.has_any_runnable_model
+            : (payloadDisableSubmit === null ? null : !payloadDisableSubmit);
+        const inferredHasRunnable = payloadHasRunnable === null
+            ? (remoteMode ? !!payload.remote_token_set : mergedAvailableModels.length > 0)
+            : !!payloadHasRunnable;
         modelAvailabilityState = {
             loaded: true,
-            hasAnyLocalModel: !!payload.has_any_local_model || (remoteMode && isHfHostedRuntime()),
-            availableModels: mergedAvailableModels,
+            hasAnyLocalModel: inferredHasRunnable || !!payload.has_any_local_model || (remoteMode && isHfHostedRuntime()),
+            availableModels: Array.isArray(payload.available_models) ? payload.available_models : mergedAvailableModels,
             missingModels: Array.isArray(payload.missing_models) ? payload.missing_models : [],
             message: (payload.message || '').trim(),
         };

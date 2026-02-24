@@ -68,6 +68,32 @@ chmod +x run_med_advisor.sh
 - Local: `http://127.0.0.1:5000`
 - LAN: `http://<your-machine-ip>:5000`
 
+## Fresh Install On A New Computer (Contest Repro Path)
+
+Use the installer script to set up and verify a new machine:
+
+```bash
+git clone https://github.com/rickeae/SailingMedAdvisor.git
+cd SailingMedAdvisor
+chmod +x scripts/install_fresh_copy.sh
+./scripts/install_fresh_copy.sh --skip-clone
+```
+
+For full instructions and troubleshooting, see `docs/FRESH_INSTALL.md`.
+
+You can re-run the deterministic installation verification at any time:
+
+```bash
+./.venv/bin/python scripts/verify_fresh_install.py
+```
+
+For a clean Ubuntu 24.04 environment, you can run the all-in-one bootstrap script:
+
+```bash
+chmod +x scripts/bootstrap_ubuntu24_sailingmedadvisor.sh
+./scripts/bootstrap_ubuntu24_sailingmedadvisor.sh
+```
+
 ## Demo Reproduction (27B scenario)
 
 For the Kaggle demo scenario, use the 27B model path in the UI:

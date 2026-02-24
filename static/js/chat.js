@@ -136,6 +136,22 @@ let modelAvailabilityState = {
 };
 let modelSelectSignature = '';
 
+function isHfHostedRuntime() {
+    try {
+        const host = String(window.location.hostname || '').toLowerCase();
+        const path = String(window.location.pathname || '').toLowerCase();
+        return (
+            host.endsWith('.hf.space')
+            || host.endsWith('.huggingface.co')
+            || host === 'huggingface.co'
+            || host === 'www.huggingface.co'
+            || path.startsWith('/spaces/')
+        );
+    } catch (_) {
+        return false;
+    }
+}
+
 /**
  * buildEmptyResponsePlaceholderHtml: function-level behavior note for maintainers.
  * Keep this block synchronized with implementation changes.
@@ -149,6 +165,7 @@ function buildEmptyResponsePlaceholderHtml() {
  * Keep this block synchronized with implementation changes.
  */
 function hasRunnableLocalModel() {
+    if (isHfHostedRuntime()) return true;
     return !modelAvailabilityState.loaded || !!modelAvailabilityState.hasAnyLocalModel;
 }
 
@@ -157,6 +174,9 @@ function hasRunnableLocalModel() {
  * Keep this block synchronized with implementation changes.
  */
 function noLocalModelsMessage() {
+    if (isHfHostedRuntime()) {
+        return modelAvailabilityState.message || 'Remote MedGemma is unavailable. Check HF secrets and Runtime Debug Log (HF).';
+    }
     return modelAvailabilityState.message || NO_LOCAL_MODELS_MESSAGE;
 }
 
@@ -174,7 +194,13 @@ function applyModelAvailabilityToSelects() {
     modelSelectSignature = signature;
 
     const availableSet = new Set(available);
-    const activeChoices = MODEL_CHOICES.filter((choice) => availableSet.has(choice.value));
+    let activeChoices = MODEL_CHOICES.filter((choice) => availableSet.has(choice.value));
+    if (isHfHostedRuntime() && !activeChoices.length) {
+        activeChoices = MODEL_CHOICES.map((choice) => ({
+            ...choice,
+            label: String(choice.label || '').replace('(local)', '(remote)'),
+        }));
+    }
     const selectIds = ['model-select', 'chat-model-select'];
     selectIds.forEach((selectId) => {
         const select = document.getElementById(selectId);
@@ -196,7 +222,9 @@ function applyModelAvailabilityToSelects() {
         } else {
             const opt = document.createElement('option');
             opt.value = '';
-            opt.textContent = 'No local MedGemma model installed';
+            opt.textContent = isHfHostedRuntime()
+                ? 'Remote MedGemma unavailable'
+                : 'No local MedGemma model installed';
             select.appendChild(opt);
             select.value = '';
         }
@@ -215,10 +243,19 @@ async function refreshModelAvailability(options = {}) {
         if (!res.ok || payload.error) {
             throw new Error(payload.error || `Status ${res.status}`);
         }
+        const availableFromPayload = Array.isArray(payload.available_models) ? payload.available_models : [];
+        const availableFromRows = Array.isArray(payload.models)
+            ? payload.models
+                .filter((row) => !!(row && row.installed))
+                .map((row) => String(row.model || '').trim())
+                .filter((v) => !!v)
+            : [];
+        const mergedAvailableModels = availableFromPayload.length ? availableFromPayload : availableFromRows;
+        const remoteMode = String(payload.mode || '').toLowerCase() === 'remote';
         modelAvailabilityState = {
             loaded: true,
-            hasAnyLocalModel: !!payload.has_any_local_model,
-            availableModels: Array.isArray(payload.available_models) ? payload.available_models : [],
+            hasAnyLocalModel: !!payload.has_any_local_model || (remoteMode && isHfHostedRuntime()),
+            availableModels: mergedAvailableModels,
             missingModels: Array.isArray(payload.missing_models) ? payload.missing_models : [],
             message: (payload.message || '').trim(),
         };

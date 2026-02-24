@@ -111,6 +111,8 @@ from db_store import (
     set_context_payload,
     update_item_verified,
     upsert_inventory_item,
+    set_db_write_lock,
+    get_db_write_lock,
 )
 
 logger = logging.getLogger("uvicorn.error")
@@ -327,6 +329,8 @@ PREVIOUS_DATA_ROOT_DB = DATA_ROOT / "app.db"
 SEED_DB_LOCAL = APP_HOME / "seed" / "app.db"
 # Remote seeding disabled by default to avoid unintended downloads; set SEED_DB_URL to enable.
 SEED_DB_URL = os.environ.get("SEED_DB_URL") or None
+_DB_WRITE_LOCK_ENV = (os.environ.get("DB_WRITE_LOCK") or "").strip().lower()
+DB_WRITE_LOCK_FORCED = _DB_WRITE_LOCK_ENV in {"1", "true", "yes", "on"} if _DB_WRITE_LOCK_ENV else None
 
 
 def _is_valid_sqlite(path: Path) -> bool:
@@ -417,6 +421,30 @@ def _bootstrap_db(force: bool = False):
 
 _bootstrap_db()
 configure_db(DB_PATH)
+
+
+def _apply_db_write_lock_setting(candidate=None):
+    """
+    Apply DB write-lock policy.
+
+    Priority:
+    1) Environment override DB_WRITE_LOCK (if set)
+    2) Persisted settings_meta.db_write_lock
+    """
+    if DB_WRITE_LOCK_FORCED is not None:
+        set_db_write_lock(DB_WRITE_LOCK_FORCED)
+        return DB_WRITE_LOCK_FORCED
+    if candidate is None:
+        try:
+            meta = get_settings_meta() or {}
+            candidate = bool(meta.get("db_write_lock"))
+        except Exception:
+            candidate = False
+    set_db_write_lock(bool(candidate))
+    return bool(candidate)
+
+
+_apply_db_write_lock_setting()
 
 DEFAULT_store_LABEL = "Default"
 DEFAULT_store = None
@@ -1121,6 +1149,8 @@ def get_defaults():
         "rep_penalty": 1.1,
         "mission_context": "Isolated Medical Station offshore.",
         "user_mode": "user",
+        "db_write_lock": bool(get_db_write_lock()),
+        "db_write_lock_forced": DB_WRITE_LOCK_FORCED is not None,
         "last_prompt_verbatim": "",
         "vaccine_types": [
             "Diphtheria, Tetanus, and Pertussis (DTaP/Tdap)",
@@ -1260,7 +1290,9 @@ def db_op(cat, data=None, store=None):
             set_settings_meta(
                 user_mode=data.get("user_mode"),
                 offline_force_flags=data.get("offline_force_flags"),
+                db_write_lock=data.get("db_write_lock"),
             )
+            _apply_db_write_lock_setting(data.get("db_write_lock"))
             return {**get_defaults(), **data}
         if cat == "inventory":
             if not isinstance(data, list):
@@ -2505,6 +2537,8 @@ async def db_status():
             "stores": 1,
             "crew_rows": crew,
             "vessel_rows": vessel,
+            "db_write_lock": bool(get_db_write_lock()),
+            "db_write_lock_forced": DB_WRITE_LOCK_FORCED is not None,
         }
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -2529,6 +2563,7 @@ async def db_create():
         if DB_PATH.exists():
             DB_PATH.unlink()
         configure_db(DB_PATH)
+        _apply_db_write_lock_setting()
         _store_dirs(DEFAULT_store_LABEL)
         return {"status": "created"}
     except Exception as e:
@@ -2559,6 +2594,7 @@ async def db_upload(file: UploadFile = File(...)):
             tmp.close()
         shutil.move(tmp.name, DB_PATH)
         configure_db(DB_PATH)
+        _apply_db_write_lock_setting()
         _store_dirs(DEFAULT_store_LABEL)
         return {"status": "uploaded"}
     except Exception as e:

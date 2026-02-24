@@ -1181,6 +1181,13 @@
                             <div style="margin-top:10px;">
                                 <a class="btn btn-sm" style="background:#b23b00; display:inline-block;" href="/logout?fresh=1" onclick="if (typeof forceClearCache === 'function') { forceClearCache(); return false; }"><span class="dev-tag">dev:cache-bust</span>Force Reload</a>
                             </div>
+                            <label style="display:flex; align-items:center; gap:8px; font-size:12px; color:#333; margin-top:10px;">
+                                <input type="checkbox" id="db_write_lock" />
+                                Database Write Lock (read-only mode)
+                            </label>
+                            <div id="db-write-lock-forced-note" style="margin-top:6px; font-size:12px; color:#b23b00; display:none;">
+                                Write lock is forced by environment variable <code>DB_WRITE_LOCK</code>.
+                            </div>
                             <div style="margin-top:8px; font-size:12px; color:#555;">
                                 User: hides advanced controls. Advanced: shows prompt tools. Developer: also shows dev tags.
                             </div>

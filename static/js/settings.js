@@ -113,7 +113,9 @@ const DEFAULT_SETTINGS = {
     pharmacy_labels: ["Antibiotic", "Analgesic", "Cardiac", "Respiratory", "Gastrointestinal", "Endocrine", "Emergency"],
     equipment_categories: [],
     consumable_categories: [],
-    offline_force_flags: false
+    offline_force_flags: false,
+    db_write_lock: false,
+    db_write_lock_forced: false,
 };
 
 // ============================================================================
@@ -349,6 +351,16 @@ function applySettingsToUI(data = {}) {
             }
         }
     });
+    const dbWriteLockEl = document.getElementById('db_write_lock');
+    const dbWriteLockForcedNote = document.getElementById('db-write-lock-forced-note');
+    if (dbWriteLockEl) {
+        const forced = !!merged.db_write_lock_forced;
+        dbWriteLockEl.disabled = forced;
+        dbWriteLockEl.title = forced ? 'Locked by environment variable DB_WRITE_LOCK' : '';
+        if (dbWriteLockForcedNote) {
+            dbWriteLockForcedNote.style.display = forced ? 'block' : 'none';
+        }
+    }
     setUserMode(merged.user_mode);
     try { localStorage.setItem('user_mode', merged.user_mode || 'user'); } catch (err) { /* ignore */ }
     window.CACHED_SETTINGS = merged;
@@ -1575,7 +1587,7 @@ async function saveSettings(showAlert = true, reason = 'manual') {
     try {
         const s = {};
         const numeric = new Set(['tr_temp','tr_tok','tr_p','tr_k','in_temp','in_tok','in_p','in_k','rep_penalty']);
-        ['triage_instruction','inquiry_instruction','tr_temp','tr_tok','tr_p','tr_k','in_temp','in_tok','in_p','in_k','mission_context','rep_penalty','user_mode'].forEach(k => {
+        ['triage_instruction','inquiry_instruction','tr_temp','tr_tok','tr_p','tr_k','in_temp','in_tok','in_p','in_k','mission_context','rep_penalty','user_mode','db_write_lock'].forEach(k => {
             const el = document.getElementById(k);
             if (!el) return;
             const val = el.type === 'checkbox' ? el.checked : el.value;

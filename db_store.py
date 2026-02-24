@@ -26,6 +26,7 @@ from typing import Optional, Any, Dict
 logger = logging.getLogger("uvicorn.error")
 
 DB_PATH: Path
+DB_WRITE_LOCK = False
 TRIAGE_TREE_DEFAULT_JSON_PATH = Path(__file__).resolve().parent / "seed" / "triage_prompt_tree.default.json"
 
 
@@ -39,6 +40,17 @@ def configure_db(path: Path):
     _upgrade_schema()
 
 
+def set_db_write_lock(enabled: bool):
+    """Set database query-only mode for all future connections."""
+    global DB_WRITE_LOCK
+    DB_WRITE_LOCK = bool(enabled)
+
+
+def get_db_write_lock() -> bool:
+    """Return whether DB write lock (query-only mode) is enabled."""
+    return bool(DB_WRITE_LOCK)
+
+
 def _conn():
     """
      Conn helper.
@@ -50,6 +62,10 @@ def _conn():
         conn.execute("PRAGMA foreign_keys = ON;")
         # Keep temp tables in memory to avoid filesystem issues when sorting large BLOB rows
         conn.execute("PRAGMA temp_store = MEMORY;")
+        if DB_WRITE_LOCK:
+            conn.execute("PRAGMA query_only = ON;")
+        else:
+            conn.execute("PRAGMA query_only = OFF;")
     except Exception:
         pass
     return conn
@@ -242,6 +258,7 @@ def _init_db():
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 user_mode TEXT,
                 offline_force_flags INTEGER DEFAULT 0,
+                db_write_lock INTEGER DEFAULT 0,
                 last_prompt_verbatim TEXT,
                 updated_at TEXT NOT NULL
             );
@@ -857,21 +874,24 @@ def _maybe_migrate_settings_meta(conn, now):
         data = {}
     user_mode = data.get("user_mode")
     offline_force_flags = 1 if data.get("offline_force_flags") else 0
+    db_write_lock = 1 if data.get("db_write_lock") else 0
     last_prompt_verbatim = data.get("last_prompt_verbatim")
     _ensure_settings_meta_columns(conn)
     conn.execute(
         """
-        INSERT INTO settings_meta(id, user_mode, offline_force_flags, last_prompt_verbatim, updated_at)
-        VALUES(1, :user_mode, :offline_force_flags, :last_prompt_verbatim, :updated_at)
+        INSERT INTO settings_meta(id, user_mode, offline_force_flags, db_write_lock, last_prompt_verbatim, updated_at)
+        VALUES(1, :user_mode, :offline_force_flags, :db_write_lock, :last_prompt_verbatim, :updated_at)
         ON CONFLICT(id) DO UPDATE SET
             user_mode=excluded.user_mode,
             offline_force_flags=excluded.offline_force_flags,
+            db_write_lock=excluded.db_write_lock,
             last_prompt_verbatim=excluded.last_prompt_verbatim,
             updated_at=excluded.updated_at;
         """,
         {
             "user_mode": user_mode,
             "offline_force_flags": offline_force_flags,
+            "db_write_lock": db_write_lock,
             "last_prompt_verbatim": last_prompt_verbatim,
             "updated_at": now,
         },
@@ -2215,6 +2235,8 @@ def _ensure_settings_meta_columns(conn):
         names = {c["name"] for c in cols}
         if "last_prompt_verbatim" not in names:
             conn.execute("ALTER TABLE settings_meta ADD COLUMN last_prompt_verbatim TEXT;")
+        if "db_write_lock" not in names:
+            conn.execute("ALTER TABLE settings_meta ADD COLUMN db_write_lock INTEGER DEFAULT 0;")
     except Exception as exc:
         logger.warning("Unable to add settings_meta columns: %s", exc)
 
@@ -3781,13 +3803,14 @@ def get_settings_meta():
     with _conn() as conn:
         _ensure_settings_meta_columns(conn)
         row = conn.execute(
-            "SELECT user_mode, offline_force_flags, last_prompt_verbatim FROM settings_meta WHERE id=1"
+            "SELECT user_mode, offline_force_flags, db_write_lock, last_prompt_verbatim FROM settings_meta WHERE id=1"
         ).fetchone()
     if not row:
         return {}
     return {
         "user_mode": row["user_mode"],
         "offline_force_flags": bool(row["offline_force_flags"]),
+        "db_write_lock": bool(row["db_write_lock"]),
         "last_prompt_verbatim": row["last_prompt_verbatim"],
     }
 
@@ -3795,6 +3818,7 @@ def get_settings_meta():
 def set_settings_meta(
     user_mode: str = None,
     offline_force_flags: bool = None,
+    db_write_lock: bool = None,
     last_prompt_verbatim: str = None,
 ):
     """
@@ -3805,17 +3829,18 @@ def set_settings_meta(
     with _conn() as conn:
         _ensure_settings_meta_columns(conn)
         existing = conn.execute(
-            "SELECT user_mode, offline_force_flags, last_prompt_verbatim FROM settings_meta WHERE id=1"
+            "SELECT user_mode, offline_force_flags, db_write_lock, last_prompt_verbatim FROM settings_meta WHERE id=1"
         ).fetchone()
         if existing is None:
             conn.execute(
                 """
-                INSERT INTO settings_meta(id, user_mode, offline_force_flags, last_prompt_verbatim, updated_at)
-                VALUES(1, :user_mode, :offline_force_flags, :last_prompt_verbatim, :updated_at)
+                INSERT INTO settings_meta(id, user_mode, offline_force_flags, db_write_lock, last_prompt_verbatim, updated_at)
+                VALUES(1, :user_mode, :offline_force_flags, :db_write_lock, :last_prompt_verbatim, :updated_at)
                 """,
                 {
                     "user_mode": user_mode,
                     "offline_force_flags": 1 if offline_force_flags else 0,
+                    "db_write_lock": 1 if db_write_lock else 0,
                     "last_prompt_verbatim": last_prompt_verbatim,
                     "updated_at": now,
                 },
@@ -3826,6 +3851,7 @@ def set_settings_meta(
                 UPDATE settings_meta
                 SET user_mode=COALESCE(:user_mode, user_mode),
                     offline_force_flags=COALESCE(:offline_force_flags, offline_force_flags),
+                    db_write_lock=COALESCE(:db_write_lock, db_write_lock),
                     last_prompt_verbatim=COALESCE(:last_prompt_verbatim, last_prompt_verbatim),
                     updated_at=:updated_at
                 WHERE id=1
@@ -3833,6 +3859,7 @@ def set_settings_meta(
                 {
                     "user_mode": user_mode,
                     "offline_force_flags": None if offline_force_flags is None else (1 if offline_force_flags else 0),
+                    "db_write_lock": None if db_write_lock is None else (1 if db_write_lock else 0),
                     "last_prompt_verbatim": last_prompt_verbatim,
                     "updated_at": now,
                 },

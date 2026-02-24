@@ -3722,6 +3722,70 @@ def _generate_response(
                 continue
 
         if not out:
+            # Some router backends (especially multimodal pipeline tags) do not
+            # respond reliably to text_generation, but do respond to chat_completion.
+            chat_max_tokens = max(1, min(requested_max_new_tokens, 2048))
+            chat_temperature = max(requested_temperature, 0.1)
+            _runtime_log(
+                "inference.remote.attempt",
+                trace_id=trace_id,
+                model=model_name,
+                attempt=len(attempt_specs) + 1,
+                label="chat_completion_fallback",
+                max_new_tokens=chat_max_tokens,
+                temperature=chat_temperature,
+                top_p=requested_top_p,
+                top_k=None,
+            )
+            try:
+                chat_resp = client.chat_completion(
+                    model=model_name,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=chat_max_tokens,
+                    temperature=chat_temperature,
+                    top_p=requested_top_p,
+                )
+                choices = getattr(chat_resp, "choices", None) or []
+                if choices:
+                    msg_obj = getattr(choices[0], "message", None)
+                    content_obj = getattr(msg_obj, "content", "")
+                    if isinstance(content_obj, str):
+                        out = content_obj.strip()
+                    elif isinstance(content_obj, list):
+                        text_parts = []
+                        for item in content_obj:
+                            if isinstance(item, dict):
+                                txt = str(item.get("text") or "").strip()
+                                if txt:
+                                    text_parts.append(txt)
+                            else:
+                                txt = str(item or "").strip()
+                                if txt:
+                                    text_parts.append(txt)
+                        out = "\n".join(text_parts).strip()
+                    else:
+                        out = str(content_obj or "").strip()
+                if not out:
+                    raise RuntimeError("chat_completion fallback returned an empty response body.")
+            except Exception as exc:
+                exc_text = str(exc).strip()
+                exc_repr = repr(exc)
+                attempt_errors.append(
+                    f"chat_completion_fallback: {type(exc).__name__}: {exc_text or exc_repr}"
+                )
+                _runtime_log(
+                    "inference.remote.attempt_error",
+                    level=logging.ERROR,
+                    trace_id=trace_id,
+                    model=model_name,
+                    attempt=len(attempt_specs) + 1,
+                    label="chat_completion_fallback",
+                    error_type=type(exc).__name__,
+                    error=exc_text or exc_repr,
+                    traceback=traceback.format_exc(limit=6),
+                )
+
+        if not out:
             elapsed_ms = int((time.perf_counter() - call_started) * 1000)
             _runtime_log(
                 "inference.remote.error",
